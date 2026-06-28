@@ -1,0 +1,13 @@
+[project]
+name = "velox-server"
+version = "0.0.1"
+description = "Always-on runtime for VELOX."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+]
+
+[tool.setuptools]
+packages = []
