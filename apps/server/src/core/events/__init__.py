@@ -6,6 +6,7 @@ business workflow logic.
 """
 
 from apps.server.src.core.events.models import UniversalEvent
+from apps.server.src.core.events.inbox import EventInbox
 from apps.server.src.core.events.normalizer import (
     BaseEventNormalizer,
     EventNormalizer,
@@ -16,6 +17,7 @@ from apps.server.src.core.events.store import EventStore
 
 __all__ = [
     "BaseEventNormalizer",
+    "EventInbox",
     "EventNormalizer",
     "EventRepository",
     "EventStore",

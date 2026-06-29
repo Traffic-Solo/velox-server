@@ -3,7 +3,7 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
-from apps.server.src.api.events import event_store
+from apps.server.src.api.events import event_inbox, event_store
 from apps.server.src.main import app
 
 
@@ -12,6 +12,7 @@ client = TestClient(app)
 
 def setup_function() -> None:
     event_store.clear()
+    event_inbox.clear()
 
 
 def test_post_events_accepts_universal_event() -> None:
@@ -57,6 +58,25 @@ def test_post_events_stores_event() -> None:
     assert event_store.get_event(event_id) is not None
 
 
+def test_post_events_adds_event_to_pending_inbox() -> None:
+    event_id = uuid4()
+
+    response = client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "test-suite",
+            "type": "test.created",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {"name": "example"},
+            "metadata": {"test": True},
+        },
+    )
+
+    assert response.status_code == 202
+    assert event_inbox.list_pending()[0].id == event_id
+
+
 def test_get_events_returns_stored_events() -> None:
     event_id = uuid4()
 
@@ -73,6 +93,27 @@ def test_get_events_returns_stored_events() -> None:
     )
 
     response = client.get("/events")
+
+    assert response.status_code == 200
+    assert response.json()[0]["id"] == str(event_id)
+
+
+def test_get_events_pending_returns_pending_events() -> None:
+    event_id = uuid4()
+
+    client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "test-suite",
+            "type": "test.created",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {"name": "example"},
+            "metadata": {"test": True},
+        },
+    )
+
+    response = client.get("/events/pending")
 
     assert response.status_code == 200
     assert response.json()[0]["id"] == str(event_id)
