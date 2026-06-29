@@ -8,9 +8,10 @@ database, queue, worker, or external integration.
 from uuid import UUID
 
 from apps.server.src.core.events.models import UniversalEvent
+from apps.server.src.core.events.repository import EventRepository
 
 
-class EventStore:
+class EventStore(EventRepository):
     """Append-only in-memory store for UniversalEvent instances."""
 
     def __init__(self) -> None:

@@ -4,10 +4,10 @@ from typing import Any
 
 from fastapi import APIRouter, status
 
-from apps.server.src.core.events import EventStore, UniversalEvent
+from apps.server.src.core.events import EventRepository, EventStore, UniversalEvent
 
 router = APIRouter(prefix="/events", tags=["events"])
-event_store = EventStore()
+event_store: EventRepository = EventStore()
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
