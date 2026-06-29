@@ -8,10 +8,10 @@ from apps.server.src.core.events import (
 from apps.server.src.core.planner import BasePlanner, Planner
 
 
-def create_processed_event() -> ProcessedEvent:
+def create_processed_event(category: str = "unknown") -> ProcessedEvent:
     event = UniversalEvent(source="gmail", type="message.received")
     classification = EventClassification(
-        category="communication",
+        category=category,
         confidence=1.0,
         labels=["gmail", "message.received"],
         reason="test classification",
@@ -69,3 +69,50 @@ def test_plan_accepts_processed_event() -> None:
     actions: list[Action] = planner.plan(processed_event)
 
     assert actions == []
+
+
+def test_base_planner_generates_review_pull_request_for_github() -> None:
+    planner = BasePlanner()
+
+    actions = planner.plan(create_processed_event("github"))
+
+    assert len(actions) == 1
+    assert actions[0].type == "review_pull_request"
+
+
+def test_base_planner_generates_summarize_email_for_gmail() -> None:
+    planner = BasePlanner()
+
+    actions = planner.plan(create_processed_event("gmail"))
+
+    assert len(actions) == 1
+    assert actions[0].type == "summarize_email"
+
+
+def test_base_planner_generates_prepare_meeting_for_calendar() -> None:
+    planner = BasePlanner()
+
+    actions = planner.plan(create_processed_event("calendar"))
+
+    assert len(actions) == 1
+    assert actions[0].type == "prepare_meeting"
+
+
+def test_base_planner_returns_empty_list_for_unknown_category() -> None:
+    planner = BasePlanner()
+
+    actions = planner.plan(create_processed_event("unknown"))
+
+    assert actions == []
+
+
+def test_base_planner_remains_deterministic() -> None:
+    planner = BasePlanner()
+    processed_event = create_processed_event("gmail")
+
+    first_actions = planner.plan(processed_event)
+    second_actions = planner.plan(processed_event)
+
+    assert [action.model_dump(exclude={"id", "created_at"}) for action in first_actions] == [
+        action.model_dump(exclude={"id", "created_at"}) for action in second_actions
+    ]

@@ -15,8 +15,29 @@ class Planner(Protocol):
 
 
 class BasePlanner:
-    """Base planner that intentionally produces no actions."""
+    """Deterministic rule-based planner for known event categories."""
+
+    _action_types_by_category = {
+        "github": "review_pull_request",
+        "gmail": "summarize_email",
+        "calendar": "prepare_meeting",
+    }
 
     def plan(self, processed_event: ProcessedEvent) -> list[Action]:
-        """Return an empty action list without side effects."""
-        return []
+        """Return candidate actions without executing them."""
+        action_type = self._action_types_by_category.get(
+            processed_event.classification.category
+        )
+        if action_type is None:
+            return []
+
+        return [
+            Action(
+                type=action_type,
+                target=str(processed_event.event.id),
+                metadata={
+                    "event_id": str(processed_event.event.id),
+                    "category": processed_event.classification.category,
+                },
+            )
+        ]
