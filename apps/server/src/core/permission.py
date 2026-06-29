@@ -2,9 +2,11 @@
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from apps.server.src.core.actions import Action
 
 
 class PermissionStatus(StrEnum):
@@ -43,3 +45,19 @@ class PermissionDecision(BaseModel):
         if value.utcoffset() != UTC.utcoffset(value):
             raise ValueError("created_at must be in UTC")
         return value
+
+
+class PermissionEngine(Protocol):
+    """Contract for evaluating whether an action is permitted."""
+
+    def evaluate(self, action: Action) -> PermissionDecision:
+        """Return a permission decision for an action."""
+        ...
+
+
+class BasePermissionEngine:
+    """Default permission engine that allows actions without side effects."""
+
+    def evaluate(self, action: Action) -> PermissionDecision:
+        """Return an allowed decision without mutating or executing the action."""
+        return PermissionDecision(status=PermissionStatus.ALLOWED)
