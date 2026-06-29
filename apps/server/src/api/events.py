@@ -92,10 +92,12 @@ def process_event(event_id: UUID) -> dict[str, Any]:
     )
     container.event_inbox.mark_processed(event_id)
 
+    actions = container.planner.plan(processed_event)
+    container.action_queue.enqueue_many(actions)
     response = processed_event.model_dump(mode="json")
     response["actions"] = [
         action.model_dump(mode="json")
-        for action in container.planner.plan(processed_event)
+        for action in actions
     ]
     return response
 

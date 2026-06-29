@@ -16,6 +16,7 @@ def setup_function() -> None:
     container.event_repository.clear()
     container.event_inbox.clear()
     container.event_lifecycle_states.clear()
+    container.action_queue.clear()
 
 
 def test_post_events_accepts_universal_event() -> None:
@@ -224,6 +225,54 @@ def test_process_event_actions_default_to_empty_list() -> None:
     response = client.post(f"/events/{event_id}/process")
 
     assert response.json()["actions"] == []
+
+
+def test_processing_endpoint_enqueues_planner_actions(monkeypatch: pytest.MonkeyPatch) -> None:
+    from apps.server.src.core.events import EventClassification, ProcessedEvent, ResolvedContext
+
+    class GithubPipeline:
+        def process(self, event):
+            classification = EventClassification(
+                category="github",
+                confidence=1.0,
+                labels=[event.source, event.type],
+                reason="test classification",
+            )
+            context = ResolvedContext(
+                event=event,
+                classification=classification,
+                context={},
+                sources=[],
+                confidence=classification.confidence,
+                reason="test context",
+            )
+            return ProcessedEvent(
+                event=event,
+                classification=classification,
+                context=context,
+            )
+
+    event_id = uuid4()
+    container = get_container()
+    monkeypatch.setattr(container, "event_processing_pipeline", GithubPipeline())
+
+    client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "github",
+            "type": "pull_request.opened",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {"number": 1},
+            "metadata": {},
+        },
+    )
+
+    response = client.post(f"/events/{event_id}/process")
+
+    assert response.status_code == 200
+    assert get_container().action_queue.count() == 1
+    assert get_container().action_queue.list()[0].type == "review_pull_request"
 
 
 def test_processed_event_classification_category_is_correct() -> None:

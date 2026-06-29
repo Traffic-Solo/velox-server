@@ -2,6 +2,7 @@
 
 from uuid import UUID
 
+from apps.server.src.core.action_queue import ActionQueue
 from apps.server.src.core.events import (
     BaseContextResolver,
     EventInbox,
@@ -25,6 +26,7 @@ class ApplicationContainer:
         self.event_inbox = EventInbox()
         self.event_lifecycle_manager = EventLifecycleManager()
         self.event_lifecycle_states: dict[UUID, EventLifecycleState] = {}
+        self.action_queue = ActionQueue()
         self.event_classifier: EventClassifier = RuleBasedEventClassifier()
         self.context_resolver: ContextResolver = BaseContextResolver()
         self.event_processing_pipeline = EventProcessingPipeline(
