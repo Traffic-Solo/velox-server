@@ -22,6 +22,10 @@ from apps.server.src.core.events.normalizer import (
     EventNormalizer,
     NormalizationError,
 )
+from apps.server.src.core.events.pipeline import (
+    EventProcessingPipeline,
+    ProcessedEvent,
+)
 from apps.server.src.core.events.repository import EventRepository
 from apps.server.src.core.events.store import EventStore
 
@@ -33,9 +37,11 @@ __all__ = [
     "EventClassifier",
     "EventInbox",
     "EventNormalizer",
+    "EventProcessingPipeline",
     "EventRepository",
     "EventStore",
     "NormalizationError",
+    "ProcessedEvent",
     "ResolvedContext",
     "RuleBasedEventClassifier",
     "UniversalEvent",
