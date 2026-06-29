@@ -31,17 +31,6 @@ def list_events() -> list[dict[str, Any]]:
     return [event.model_dump(mode="json") for event in event_store.list_events()]
 
 
-@router.get("/inbox")
-def read_event_inbox() -> dict[str, Any]:
-    """Return the current event inbox without processing events."""
-    events = [event.model_dump(mode="json") for event in event_inbox.list_pending()]
-    return {
-        "status": "ok",
-        "count": len(events),
-        "events": events,
-    }
-
-
 @router.get("/pending")
 def list_pending_events() -> list[dict[str, Any]]:
     """Return pending inbox events in enqueue order."""

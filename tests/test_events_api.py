@@ -119,6 +119,12 @@ def test_get_events_pending_returns_pending_events() -> None:
     assert response.json()[0]["id"] == str(event_id)
 
 
+def test_get_events_inbox_is_not_public() -> None:
+    response = client.get("/events/inbox")
+
+    assert response.status_code == 404
+
+
 def test_process_existing_event_returns_200() -> None:
     event_id = uuid4()
     client.post(
