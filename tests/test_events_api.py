@@ -3,7 +3,7 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
-from apps.server.src.api.events import event_inbox, event_store
+from apps.server.src.core.container import get_container
 from apps.server.src.main import app
 
 
@@ -11,8 +11,9 @@ client = TestClient(app)
 
 
 def setup_function() -> None:
-    event_store.clear()
-    event_inbox.clear()
+    container = get_container()
+    container.event_repository.clear()
+    container.event_inbox.clear()
 
 
 def test_post_events_accepts_universal_event() -> None:
@@ -55,7 +56,7 @@ def test_post_events_stores_event() -> None:
     )
 
     assert response.status_code == 202
-    assert event_store.get_event(event_id) is not None
+    assert get_container().event_repository.get_event(event_id) is not None
 
 
 def test_post_events_adds_event_to_pending_inbox() -> None:
@@ -74,7 +75,7 @@ def test_post_events_adds_event_to_pending_inbox() -> None:
     )
 
     assert response.status_code == 202
-    assert event_inbox.list_pending()[0].id == event_id
+    assert get_container().event_inbox.list_pending()[0].id == event_id
 
 
 def test_get_events_returns_stored_events() -> None:
@@ -208,7 +209,7 @@ def test_processed_event_is_removed_from_pending_inbox() -> None:
     response = client.post(f"/events/{event_id}/process")
 
     assert response.status_code == 200
-    assert event_inbox.list_pending() == []
+    assert get_container().event_inbox.list_pending() == []
 
 
 def test_post_events_validates_universal_event_request_body() -> None:

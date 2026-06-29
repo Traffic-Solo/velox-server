@@ -5,20 +5,18 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
 
-from apps.server.src.core.container import ApplicationContainer
+from apps.server.src.core.container import get_container
 from apps.server.src.core.events import UniversalEvent
 
 router = APIRouter(prefix="/events", tags=["events"])
-container = ApplicationContainer()
-event_store = container.event_repository
-event_inbox = container.event_inbox
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
 def accept_event(event: UniversalEvent) -> dict[str, str]:
     """Accept and store a valid event without processing it."""
-    stored_event = event_store.append(event)
-    event_inbox.enqueue(stored_event)
+    container = get_container()
+    stored_event = container.event_repository.append(event)
+    container.event_inbox.enqueue(stored_event)
     return {
         "status": "accepted",
         "event_id": str(stored_event.id),
@@ -28,24 +26,30 @@ def accept_event(event: UniversalEvent) -> dict[str, str]:
 @router.get("")
 def list_events() -> list[dict[str, Any]]:
     """Return stored events in append order."""
-    return [event.model_dump(mode="json") for event in event_store.list_events()]
+    container = get_container()
+    return [
+        event.model_dump(mode="json")
+        for event in container.event_repository.list_events()
+    ]
 
 
 @router.get("/pending")
 def list_pending_events() -> list[dict[str, Any]]:
     """Return pending inbox events in enqueue order."""
-    return [event.model_dump(mode="json") for event in event_inbox.list_pending()]
+    container = get_container()
+    return [event.model_dump(mode="json") for event in container.event_inbox.list_pending()]
 
 
 @router.post("/{event_id}/process")
 def process_event(event_id: UUID) -> dict[str, Any]:
     """Manually process one stored event and remove it from the pending inbox."""
-    event = event_store.get_event(event_id)
+    container = get_container()
+    event = container.event_repository.get_event(event_id)
     if event is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
     processed_event = container.event_processing_pipeline.process(event)
-    event_inbox.mark_processed(event_id)
+    container.event_inbox.mark_processed(event_id)
 
     return processed_event.model_dump(mode="json")
 

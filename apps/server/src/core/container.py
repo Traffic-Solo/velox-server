@@ -24,3 +24,16 @@ class ApplicationContainer:
             classifier=self.event_classifier,
             context_resolver=self.context_resolver,
         )
+
+
+_container: ApplicationContainer | None = None
+
+
+def get_container() -> ApplicationContainer:
+    """Return the process-wide application container singleton."""
+    global _container
+
+    if _container is None:
+        _container = ApplicationContainer()
+
+    return _container
