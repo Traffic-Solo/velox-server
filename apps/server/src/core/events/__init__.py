@@ -18,6 +18,7 @@ from apps.server.src.core.events.context import (
 )
 from apps.server.src.core.events.inbox import EventInbox
 from apps.server.src.core.events.lifecycle import EventLifecycleState, EventStatus
+from apps.server.src.core.events.lifecycle_manager import EventLifecycleManager
 from apps.server.src.core.events.normalizer import (
     BaseEventNormalizer,
     EventNormalizer,
@@ -37,6 +38,7 @@ __all__ = [
     "EventClassification",
     "EventClassifier",
     "EventInbox",
+    "EventLifecycleManager",
     "EventLifecycleState",
     "EventNormalizer",
     "EventProcessingPipeline",
