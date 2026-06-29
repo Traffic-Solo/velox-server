@@ -1,8 +1,12 @@
 """Application service container."""
 
+from uuid import UUID
+
 from apps.server.src.core.events import (
     BaseContextResolver,
     EventInbox,
+    EventLifecycleManager,
+    EventLifecycleState,
     EventProcessingPipeline,
     EventRepository,
     EventStore,
@@ -18,6 +22,8 @@ class ApplicationContainer:
     def __init__(self) -> None:
         self.event_repository: EventRepository = EventStore()
         self.event_inbox = EventInbox()
+        self.event_lifecycle_manager = EventLifecycleManager()
+        self.event_lifecycle_states: dict[UUID, EventLifecycleState] = {}
         self.event_classifier: EventClassifier = RuleBasedEventClassifier()
         self.context_resolver: ContextResolver = BaseContextResolver()
         self.event_processing_pipeline = EventProcessingPipeline(

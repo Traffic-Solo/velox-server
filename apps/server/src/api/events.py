@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, status
 
 from apps.server.src.core.container import get_container
-from apps.server.src.core.events import UniversalEvent
+from apps.server.src.core.events import EventLifecycleState, UniversalEvent
 
 router = APIRouter(prefix="/events", tags=["events"])
 
@@ -17,6 +17,13 @@ def accept_event(event: UniversalEvent) -> dict[str, str]:
     container = get_container()
     stored_event = container.event_repository.append(event)
     container.event_inbox.enqueue(stored_event)
+    accepted_state = EventLifecycleState(
+        event_id=stored_event.id,
+        status="accepted",
+    )
+    container.event_lifecycle_states[stored_event.id] = (
+        container.event_lifecycle_manager.transition(accepted_state, "pending")
+    )
     return {
         "status": "accepted",
         "event_id": str(stored_event.id),
@@ -48,7 +55,41 @@ def process_event(event_id: UUID) -> dict[str, Any]:
     if event is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
-    processed_event = container.event_processing_pipeline.process(event)
+    lifecycle_state = container.event_lifecycle_states.get(event_id)
+    if lifecycle_state is None:
+        lifecycle_state = EventLifecycleState(event_id=event_id, status="pending")
+
+    try:
+        processing_state = container.event_lifecycle_manager.transition(
+            lifecycle_state,
+            "processing",
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
+    container.event_lifecycle_states[event_id] = processing_state
+
+    try:
+        processed_event = container.event_processing_pipeline.process(event)
+    except Exception as error:
+        container.event_lifecycle_states[event_id] = (
+            container.event_lifecycle_manager.transition(
+                processing_state,
+                "failed",
+                reason=str(error),
+            )
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(error),
+        ) from error
+
+    container.event_lifecycle_states[event_id] = (
+        container.event_lifecycle_manager.transition(processing_state, "processed")
+    )
     container.event_inbox.mark_processed(event_id)
 
     return processed_event.model_dump(mode="json")

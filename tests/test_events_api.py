@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 from apps.server.src.core.container import get_container
@@ -14,6 +15,7 @@ def setup_function() -> None:
     container = get_container()
     container.event_repository.clear()
     container.event_inbox.clear()
+    container.event_lifecycle_states.clear()
 
 
 def test_post_events_accepts_universal_event() -> None:
@@ -76,6 +78,25 @@ def test_post_events_adds_event_to_pending_inbox() -> None:
 
     assert response.status_code == 202
     assert get_container().event_inbox.list_pending()[0].id == event_id
+
+
+def test_post_events_creates_pending_lifecycle_state() -> None:
+    event_id = uuid4()
+
+    response = client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "test-suite",
+            "type": "test.created",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {"name": "example"},
+            "metadata": {"test": True},
+        },
+    )
+
+    assert response.status_code == 202
+    assert get_container().event_lifecycle_states[event_id].status == "pending"
 
 
 def test_get_events_returns_stored_events() -> None:
@@ -210,6 +231,76 @@ def test_processed_event_is_removed_from_pending_inbox() -> None:
 
     assert response.status_code == 200
     assert get_container().event_inbox.list_pending() == []
+
+
+def test_successful_processing_sets_lifecycle_state_to_processed() -> None:
+    event_id = uuid4()
+    client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "gmail",
+            "type": "message.received",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {"subject": "example"},
+            "metadata": {},
+        },
+    )
+
+    response = client.post(f"/events/{event_id}/process")
+
+    assert response.status_code == 200
+    assert get_container().event_lifecycle_states[event_id].status == "processed"
+
+
+def test_processing_failure_sets_lifecycle_state_to_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FailingPipeline:
+        def process(self, event):
+            raise RuntimeError("processing failed")
+
+    event_id = uuid4()
+    container = get_container()
+    monkeypatch.setattr(container, "event_processing_pipeline", FailingPipeline())
+    failure_client = TestClient(app, raise_server_exceptions=False)
+
+    failure_client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "gmail",
+            "type": "message.received",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {"subject": "example"},
+            "metadata": {},
+        },
+    )
+
+    response = failure_client.post(f"/events/{event_id}/process")
+
+    lifecycle_state = container.event_lifecycle_states[event_id]
+    assert response.status_code == 500
+    assert lifecycle_state.status == "failed"
+    assert lifecycle_state.reason == "processing failed"
+
+
+def test_invalid_lifecycle_transition_is_rejected() -> None:
+    event_id = uuid4()
+    client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "gmail",
+            "type": "message.received",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {"subject": "example"},
+            "metadata": {},
+        },
+    )
+    client.post(f"/events/{event_id}/process")
+
+    response = client.post(f"/events/{event_id}/process")
+
+    assert response.status_code == 409
 
 
 def test_post_events_validates_universal_event_request_body() -> None:
