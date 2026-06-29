@@ -1,12 +1,21 @@
-"""Read-only event model introspection endpoints."""
+"""Event API endpoints."""
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, status
 
 from apps.server.src.core.events import UniversalEvent
 
 router = APIRouter(prefix="/events", tags=["events"])
+
+
+@router.post("", status_code=status.HTTP_202_ACCEPTED)
+def accept_event(event: UniversalEvent) -> dict[str, str]:
+    """Accept a valid event without storing or processing it."""
+    return {
+        "status": "accepted",
+        "event_id": str(event.id),
+    }
 
 
 @router.get("/schema")

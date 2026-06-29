@@ -1,9 +1,48 @@
+from datetime import UTC, datetime
+from uuid import uuid4
+
 from fastapi.testclient import TestClient
 
 from apps.server.src.main import app
 
 
 client = TestClient(app)
+
+
+def test_post_events_accepts_universal_event() -> None:
+    event_id = uuid4()
+
+    response = client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "test-suite",
+            "type": "test.created",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {"name": "example"},
+            "metadata": {"test": True},
+            "correlation_id": None,
+            "causation_id": None,
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {
+        "status": "accepted",
+        "event_id": str(event_id),
+    }
+
+
+def test_post_events_validates_universal_event_request_body() -> None:
+    response = client.post(
+        "/events",
+        json={
+            "source": "   ",
+            "type": "test.created",
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_events_schema_returns_status_200() -> None:
