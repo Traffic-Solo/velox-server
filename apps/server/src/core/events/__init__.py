@@ -11,6 +11,11 @@ from apps.server.src.core.events.classifier import (
     EventClassifier,
     RuleBasedEventClassifier,
 )
+from apps.server.src.core.events.context import (
+    BaseContextResolver,
+    ContextResolver,
+    ResolvedContext,
+)
 from apps.server.src.core.events.inbox import EventInbox
 from apps.server.src.core.events.normalizer import (
     BaseEventNormalizer,
@@ -21,7 +26,9 @@ from apps.server.src.core.events.repository import EventRepository
 from apps.server.src.core.events.store import EventStore
 
 __all__ = [
+    "BaseContextResolver",
     "BaseEventNormalizer",
+    "ContextResolver",
     "EventClassification",
     "EventClassifier",
     "EventInbox",
@@ -29,6 +36,7 @@ __all__ = [
     "EventRepository",
     "EventStore",
     "NormalizationError",
+    "ResolvedContext",
     "RuleBasedEventClassifier",
     "UniversalEvent",
 ]
