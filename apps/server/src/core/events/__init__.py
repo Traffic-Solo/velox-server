@@ -1,0 +1,20 @@
+"""Core event model exports.
+
+The events package defines VELOX's canonical event contracts. These models are
+pure data structures and intentionally contain no persistence, routing, or
+business workflow logic.
+"""
+
+from apps.server.src.core.events.models import UniversalEvent
+from apps.server.src.core.events.normalizer import (
+    BaseEventNormalizer,
+    EventNormalizer,
+    NormalizationError,
+)
+
+__all__ = [
+    "BaseEventNormalizer",
+    "EventNormalizer",
+    "NormalizationError",
+    "UniversalEvent",
+]
