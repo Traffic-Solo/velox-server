@@ -1,13 +1,17 @@
 """Event API endpoints."""
 
 from typing import Any
+from uuid import UUID
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, HTTPException, status
 
 from apps.server.src.core.events import (
+    BaseContextResolver,
     EventInbox,
+    EventProcessingPipeline,
     EventRepository,
     EventStore,
+    RuleBasedEventClassifier,
     UniversalEvent,
 )
 
@@ -48,6 +52,23 @@ def read_event_inbox() -> dict[str, Any]:
 def list_pending_events() -> list[dict[str, Any]]:
     """Return pending inbox events in enqueue order."""
     return [event.model_dump(mode="json") for event in event_inbox.list_pending()]
+
+
+@router.post("/{event_id}/process")
+def process_event(event_id: UUID) -> dict[str, Any]:
+    """Manually process one stored event and remove it from the pending inbox."""
+    event = event_store.get_event(event_id)
+    if event is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    pipeline = EventProcessingPipeline(
+        classifier=RuleBasedEventClassifier(),
+        context_resolver=BaseContextResolver(),
+    )
+    processed_event = pipeline.process(event)
+    event_inbox.mark_processed(event_id)
+
+    return processed_event.model_dump(mode="json")
 
 
 @router.get("/schema")

@@ -119,6 +119,92 @@ def test_get_events_pending_returns_pending_events() -> None:
     assert response.json()[0]["id"] == str(event_id)
 
 
+def test_process_existing_event_returns_200() -> None:
+    event_id = uuid4()
+    client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "gmail",
+            "type": "message.received",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {"subject": "example"},
+            "metadata": {},
+        },
+    )
+
+    response = client.post(f"/events/{event_id}/process")
+
+    assert response.status_code == 200
+
+
+def test_process_event_response_contains_event_classification_and_context() -> None:
+    event_id = uuid4()
+    client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "gmail",
+            "type": "message.received",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {"subject": "example"},
+            "metadata": {},
+        },
+    )
+
+    response = client.post(f"/events/{event_id}/process")
+
+    body = response.json()
+    assert "event" in body
+    assert "classification" in body
+    assert "context" in body
+
+
+def test_processed_event_classification_category_is_correct() -> None:
+    event_id = uuid4()
+    client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "gmail",
+            "type": "message.received",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {"subject": "example"},
+            "metadata": {},
+        },
+    )
+
+    response = client.post(f"/events/{event_id}/process")
+
+    assert response.json()["classification"]["category"] == "communication"
+
+
+def test_process_missing_event_returns_404() -> None:
+    response = client.post(f"/events/{uuid4()}/process")
+
+    assert response.status_code == 404
+
+
+def test_processed_event_is_removed_from_pending_inbox() -> None:
+    event_id = uuid4()
+    client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "gmail",
+            "type": "message.received",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {"subject": "example"},
+            "metadata": {},
+        },
+    )
+
+    response = client.post(f"/events/{event_id}/process")
+
+    assert response.status_code == 200
+    assert event_inbox.list_pending() == []
+
+
 def test_post_events_validates_universal_event_request_body() -> None:
     response = client.post(
         "/events",
