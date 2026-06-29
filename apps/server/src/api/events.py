@@ -5,19 +5,13 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
 
-from apps.server.src.core.events import (
-    BaseContextResolver,
-    EventInbox,
-    EventProcessingPipeline,
-    EventRepository,
-    EventStore,
-    RuleBasedEventClassifier,
-    UniversalEvent,
-)
+from apps.server.src.core.container import ApplicationContainer
+from apps.server.src.core.events import UniversalEvent
 
 router = APIRouter(prefix="/events", tags=["events"])
-event_store: EventRepository = EventStore()
-event_inbox = EventInbox()
+container = ApplicationContainer()
+event_store = container.event_repository
+event_inbox = container.event_inbox
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
@@ -61,11 +55,7 @@ def process_event(event_id: UUID) -> dict[str, Any]:
     if event is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
-    pipeline = EventProcessingPipeline(
-        classifier=RuleBasedEventClassifier(),
-        context_resolver=BaseContextResolver(),
-    )
-    processed_event = pipeline.process(event)
+    processed_event = container.event_processing_pipeline.process(event)
     event_inbox.mark_processed(event_id)
 
     return processed_event.model_dump(mode="json")
