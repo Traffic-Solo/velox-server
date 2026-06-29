@@ -31,6 +31,12 @@ def test_container_exposes_event_processing_pipeline() -> None:
     assert container.event_processing_pipeline is not None
 
 
+def test_container_exposes_planner() -> None:
+    container = ApplicationContainer()
+
+    assert container.planner is not None
+
+
 def test_get_container_returns_application_container() -> None:
     container = get_container()
 

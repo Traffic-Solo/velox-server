@@ -92,7 +92,12 @@ def process_event(event_id: UUID) -> dict[str, Any]:
     )
     container.event_inbox.mark_processed(event_id)
 
-    return processed_event.model_dump(mode="json")
+    response = processed_event.model_dump(mode="json")
+    response["actions"] = [
+        action.model_dump(mode="json")
+        for action in container.planner.plan(processed_event)
+    ]
+    return response
 
 
 @router.get("/schema")

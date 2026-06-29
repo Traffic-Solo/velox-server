@@ -188,6 +188,44 @@ def test_process_event_response_contains_event_classification_and_context() -> N
     assert "context" in body
 
 
+def test_process_event_response_includes_actions() -> None:
+    event_id = uuid4()
+    client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "gmail",
+            "type": "message.received",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {"subject": "example"},
+            "metadata": {},
+        },
+    )
+
+    response = client.post(f"/events/{event_id}/process")
+
+    assert "actions" in response.json()
+
+
+def test_process_event_actions_default_to_empty_list() -> None:
+    event_id = uuid4()
+    client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "gmail",
+            "type": "message.received",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {"subject": "example"},
+            "metadata": {},
+        },
+    )
+
+    response = client.post(f"/events/{event_id}/process")
+
+    assert response.json()["actions"] == []
+
+
 def test_processed_event_classification_category_is_correct() -> None:
     event_id = uuid4()
     client.post(

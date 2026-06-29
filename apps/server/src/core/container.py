@@ -14,6 +14,7 @@ from apps.server.src.core.events import (
 )
 from apps.server.src.core.events.classifier import EventClassifier
 from apps.server.src.core.events.context import ContextResolver
+from apps.server.src.core.planner import BasePlanner, Planner
 
 
 class ApplicationContainer:
@@ -30,6 +31,7 @@ class ApplicationContainer:
             classifier=self.event_classifier,
             context_resolver=self.context_resolver,
         )
+        self.planner: Planner = BasePlanner()
 
 
 _container: ApplicationContainer | None = None
