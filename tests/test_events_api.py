@@ -248,6 +248,56 @@ def test_processing_endpoint_enqueues_planner_actions() -> None:
     assert get_container().action_queue.list()[0].type == "review_pull_request"
 
 
+def test_actions_queue_endpoint_returns_empty_queue_by_default() -> None:
+    response = client.get("/actions/queue")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_actions_queue_endpoint_returns_queued_action() -> None:
+    event_id = uuid4()
+    client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "github",
+            "type": "pull_request.opened",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {"number": 1},
+            "metadata": {},
+        },
+    )
+    client.post(f"/events/{event_id}/process")
+
+    response = client.get("/actions/queue")
+
+    assert response.status_code == 200
+    assert response.json()[0]["type"] == "review_pull_request"
+
+
+def test_actions_queue_endpoint_does_not_clear_queue() -> None:
+    event_id = uuid4()
+    client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "github",
+            "type": "pull_request.opened",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {"number": 1},
+            "metadata": {},
+        },
+    )
+    client.post(f"/events/{event_id}/process")
+
+    first_response = client.get("/actions/queue")
+    second_response = client.get("/actions/queue")
+
+    assert first_response.json() == second_response.json()
+    assert get_container().action_queue.count() == 1
+
+
 def test_processed_event_classification_category_is_correct() -> None:
     event_id = uuid4()
     client.post(

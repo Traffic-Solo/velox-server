@@ -8,10 +8,17 @@ from fastapi import APIRouter, HTTPException, status
 from apps.server.src.core.container import get_container
 from apps.server.src.core.events import EventLifecycleState, UniversalEvent
 
-router = APIRouter(prefix="/events", tags=["events"])
+router = APIRouter(tags=["events"])
 
 
-@router.post("", status_code=status.HTTP_202_ACCEPTED)
+@router.get("/actions/queue")
+def list_action_queue() -> list[dict[str, Any]]:
+    """Return currently queued actions without mutating the queue."""
+    container = get_container()
+    return [action.model_dump(mode="json") for action in container.action_queue.list()]
+
+
+@router.post("/events", status_code=status.HTTP_202_ACCEPTED)
 def accept_event(event: UniversalEvent) -> dict[str, str]:
     """Accept and store a valid event without processing it."""
     container = get_container()
@@ -30,7 +37,7 @@ def accept_event(event: UniversalEvent) -> dict[str, str]:
     }
 
 
-@router.get("")
+@router.get("/events")
 def list_events() -> list[dict[str, Any]]:
     """Return stored events in append order."""
     container = get_container()
@@ -40,14 +47,14 @@ def list_events() -> list[dict[str, Any]]:
     ]
 
 
-@router.get("/pending")
+@router.get("/events/pending")
 def list_pending_events() -> list[dict[str, Any]]:
     """Return pending inbox events in enqueue order."""
     container = get_container()
     return [event.model_dump(mode="json") for event in container.event_inbox.list_pending()]
 
 
-@router.post("/{event_id}/process")
+@router.post("/events/{event_id}/process")
 def process_event(event_id: UUID) -> dict[str, Any]:
     """Manually process one stored event and remove it from the pending inbox."""
     container = get_container()
@@ -102,7 +109,7 @@ def process_event(event_id: UUID) -> dict[str, Any]:
     return response
 
 
-@router.get("/schema")
+@router.get("/events/schema")
 def read_event_schema() -> dict[str, Any]:
     """Return the public schema contract for the Universal Event Model."""
     sample_event = UniversalEvent(
