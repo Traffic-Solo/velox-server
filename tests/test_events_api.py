@@ -3,10 +3,15 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+from apps.server.src.api.events import event_store
 from apps.server.src.main import app
 
 
 client = TestClient(app)
+
+
+def setup_function() -> None:
+    event_store.clear()
 
 
 def test_post_events_accepts_universal_event() -> None:
@@ -31,6 +36,46 @@ def test_post_events_accepts_universal_event() -> None:
         "status": "accepted",
         "event_id": str(event_id),
     }
+
+
+def test_post_events_stores_event() -> None:
+    event_id = uuid4()
+
+    response = client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "test-suite",
+            "type": "test.created",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {"name": "example"},
+            "metadata": {"test": True},
+        },
+    )
+
+    assert response.status_code == 202
+    assert event_store.get_event(event_id) is not None
+
+
+def test_get_events_returns_stored_events() -> None:
+    event_id = uuid4()
+
+    client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "test-suite",
+            "type": "test.created",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {"name": "example"},
+            "metadata": {"test": True},
+        },
+    )
+
+    response = client.get("/events")
+
+    assert response.status_code == 200
+    assert response.json()[0]["id"] == str(event_id)
 
 
 def test_post_events_validates_universal_event_request_body() -> None:

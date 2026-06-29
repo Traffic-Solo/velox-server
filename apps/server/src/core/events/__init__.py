@@ -11,10 +11,12 @@ from apps.server.src.core.events.normalizer import (
     EventNormalizer,
     NormalizationError,
 )
+from apps.server.src.core.events.store import EventStore
 
 __all__ = [
     "BaseEventNormalizer",
     "EventNormalizer",
+    "EventStore",
     "NormalizationError",
     "UniversalEvent",
 ]

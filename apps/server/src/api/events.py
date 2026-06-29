@@ -4,18 +4,26 @@ from typing import Any
 
 from fastapi import APIRouter, status
 
-from apps.server.src.core.events import UniversalEvent
+from apps.server.src.core.events import EventStore, UniversalEvent
 
 router = APIRouter(prefix="/events", tags=["events"])
+event_store = EventStore()
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
 def accept_event(event: UniversalEvent) -> dict[str, str]:
-    """Accept a valid event without storing or processing it."""
+    """Accept and store a valid event without processing it."""
+    stored_event = event_store.append(event)
     return {
         "status": "accepted",
-        "event_id": str(event.id),
+        "event_id": str(stored_event.id),
     }
+
+
+@router.get("")
+def list_events() -> list[dict[str, Any]]:
+    """Return stored events in append order."""
+    return [event.model_dump(mode="json") for event in event_store.list_events()]
 
 
 @router.get("/schema")
