@@ -8,28 +8,46 @@ def classify_source(source: str):
     return classifier.classify(event)
 
 
-def test_classifier_returns_communication_for_gmail_source() -> None:
-    classification = classify_source("gmail")
-
-    assert classification.category == "communication"
-
-
-def test_classifier_returns_schedule_for_calendar_source() -> None:
-    classification = classify_source("google-calendar")
-
-    assert classification.category == "schedule"
-
-
-def test_classifier_returns_development_for_github_source() -> None:
+def test_classifier_returns_github_for_github_source() -> None:
     classification = classify_source("github")
 
-    assert classification.category == "development"
+    assert classification.category == "github"
 
 
-def test_classifier_returns_system_for_system_source() -> None:
-    classification = classify_source("system")
+def test_classifier_returns_github_for_github_com_source() -> None:
+    classification = classify_source("github.com")
 
-    assert classification.category == "system"
+    assert classification.category == "github"
+
+
+def test_classifier_returns_gmail_for_gmail_source() -> None:
+    classification = classify_source("gmail")
+
+    assert classification.category == "gmail"
+
+
+def test_classifier_returns_gmail_for_google_mail_source() -> None:
+    classification = classify_source("google-mail")
+
+    assert classification.category == "gmail"
+
+
+def test_classifier_returns_calendar_for_calendar_source() -> None:
+    classification = classify_source("calendar")
+
+    assert classification.category == "calendar"
+
+
+def test_classifier_returns_calendar_for_google_calendar_source() -> None:
+    classification = classify_source("google-calendar")
+
+    assert classification.category == "calendar"
+
+
+def test_classifier_returns_calendar_for_apple_calendar_source() -> None:
+    classification = classify_source("apple-calendar")
+
+    assert classification.category == "calendar"
 
 
 def test_classifier_returns_unknown_for_unknown_source() -> None:

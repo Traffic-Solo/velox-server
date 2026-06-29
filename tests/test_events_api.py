@@ -208,7 +208,7 @@ def test_process_event_response_includes_actions() -> None:
     assert "actions" in response.json()
 
 
-def test_process_event_actions_default_to_empty_list() -> None:
+def test_process_event_actions_include_planner_output() -> None:
     event_id = uuid4()
     client.post(
         "/events",
@@ -224,38 +224,11 @@ def test_process_event_actions_default_to_empty_list() -> None:
 
     response = client.post(f"/events/{event_id}/process")
 
-    assert response.json()["actions"] == []
+    assert response.json()["actions"][0]["type"] == "summarize_email"
 
 
-def test_processing_endpoint_enqueues_planner_actions(monkeypatch: pytest.MonkeyPatch) -> None:
-    from apps.server.src.core.events import EventClassification, ProcessedEvent, ResolvedContext
-
-    class GithubPipeline:
-        def process(self, event):
-            classification = EventClassification(
-                category="github",
-                confidence=1.0,
-                labels=[event.source, event.type],
-                reason="test classification",
-            )
-            context = ResolvedContext(
-                event=event,
-                classification=classification,
-                context={},
-                sources=[],
-                confidence=classification.confidence,
-                reason="test context",
-            )
-            return ProcessedEvent(
-                event=event,
-                classification=classification,
-                context=context,
-            )
-
+def test_processing_endpoint_enqueues_planner_actions() -> None:
     event_id = uuid4()
-    container = get_container()
-    monkeypatch.setattr(container, "event_processing_pipeline", GithubPipeline())
-
     client.post(
         "/events",
         json={
@@ -291,7 +264,7 @@ def test_processed_event_classification_category_is_correct() -> None:
 
     response = client.post(f"/events/{event_id}/process")
 
-    assert response.json()["classification"]["category"] == "communication"
+    assert response.json()["classification"]["category"] == "gmail"
 
 
 def test_process_missing_event_returns_404() -> None:

@@ -33,14 +33,16 @@ class RuleBasedEventClassifier:
         """Classify an event using static source-name rules."""
         source = event.source.lower()
 
-        if "gmail" in source:
-            category = "communication"
-        elif "calendar" in source:
-            category = "schedule"
-        elif "github" in source:
-            category = "development"
-        elif "system" in source:
-            category = "system"
+        if "github" in source or "github.com" in source:
+            category = "github"
+        elif "gmail" in source or "google-mail" in source:
+            category = "gmail"
+        elif (
+            "calendar" in source
+            or "google-calendar" in source
+            or "apple-calendar" in source
+        ):
+            category = "calendar"
         else:
             category = "unknown"
 
