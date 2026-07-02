@@ -1,7 +1,7 @@
 from apps.server.src.core.action_lifecycle import ActionStatus
 from apps.server.src.core.action_lifecycle_manager import ActionLifecycleManager
 from apps.server.src.core.action_queue import ActionQueue
-from apps.server.src.core.actions import Action
+from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.workers.executor import (
     WorkerExecutionResult,
     WorkerExecutionStatus,
@@ -71,12 +71,16 @@ def test_worker_runtime_calls_executor() -> None:
 
 def test_worker_runtime_uses_registry_resolved_executor() -> None:
     queue = ActionQueue()
-    action = Action(type="prepare_meeting", target="event-1")
+    action = Action(
+        type="prepare_meeting",
+        target="event-1",
+        executor_role=ExecutorRole.CONTEXT_PREPARATION,
+    )
     queue.enqueue(action)
     fallback_executor = RecordingExecutor(result_status=WorkerExecutionStatus.FAILED)
     registered_executor = RecordingExecutor(result_status=WorkerExecutionStatus.SUCCEEDED)
     executor_registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
-    executor_registry.register("prepare_meeting", registered_executor)
+    executor_registry.register(ExecutorRole.CONTEXT_PREPARATION, registered_executor)
     runtime = WorkerRuntime(
         action_queue=queue,
         action_lifecycle_manager=ActionLifecycleManager(),

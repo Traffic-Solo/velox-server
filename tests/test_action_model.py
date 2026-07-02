@@ -4,7 +4,7 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
-from apps.server.src.core.actions import Action
+from apps.server.src.core.actions import Action, ExecutorRole
 
 
 def test_action_creation() -> None:
@@ -50,3 +50,19 @@ def test_action_metadata_defaults_to_empty_dict() -> None:
     action = Action(type="email.reply", target="message-123")
 
     assert action.metadata == {}
+
+
+def test_action_can_carry_executor_role() -> None:
+    action = Action(
+        type="email.reply",
+        target="message-123",
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+
+    assert action.executor_role == ExecutorRole.CONTENT_SUMMARY
+
+
+def test_action_executor_role_defaults_to_none() -> None:
+    action = Action(type="email.reply", target="message-123")
+
+    assert action.executor_role is None

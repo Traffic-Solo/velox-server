@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
-from apps.server.src.core.actions import Action
+from apps.server.src.core.actions import Action, ExecutorRole
 
 
 class WorkerExecutionStatus(StrEnum):
@@ -51,39 +51,25 @@ class WorkerExecutorRegistry:
         self._executors: dict[str, WorkerExecutor] = {}
         self._fallback_executor = fallback_executor or NoOpWorkerExecutor()
 
-    def register(self, key: str, executor: WorkerExecutor) -> None:
-        """Register an executor for a vendor-neutral action key."""
-        normalized_key = key.strip()
+    def register(self, role: ExecutorRole | str, executor: WorkerExecutor) -> None:
+        """Register an executor for a vendor-neutral role."""
+        normalized_key = self._normalize_role(role)
         if not normalized_key:
-            raise ValueError("executor registry key must not be empty")
+            raise ValueError("executor registry role must not be empty")
 
         self._executors[normalized_key] = executor
 
     def resolve(self, action: Action) -> WorkerExecutor:
         """Resolve the best executor for an action, falling back to no-op."""
-        for key in self._candidate_keys(action):
-            executor = self._executors.get(key)
-            if executor is not None:
-                return executor
+        role = self._normalize_role(action.executor_role)
+        if not role:
+            return self._fallback_executor
 
-        return self._fallback_executor
+        return self._executors.get(role, self._fallback_executor)
 
-    def _candidate_keys(self, action: Action) -> list[str]:
-        metadata = action.metadata
-        candidates = [
-            metadata.get("executor_key"),
-            metadata.get("worker_role"),
-            metadata.get("role"),
-            action.type,
-        ]
-
-        keys: list[str] = []
-        for candidate in candidates:
-            if not isinstance(candidate, str):
-                continue
-
-            key = candidate.strip()
-            if key and key not in keys:
-                keys.append(key)
-
-        return keys
+    def _normalize_role(self, role: ExecutorRole | str | None) -> str:
+        if isinstance(role, ExecutorRole):
+            return role.value
+        if isinstance(role, str):
+            return role.strip()
+        return ""

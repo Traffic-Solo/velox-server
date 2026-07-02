@@ -2,7 +2,7 @@
 
 from typing import Protocol
 
-from apps.server.src.core.actions import Action
+from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.core.events import ProcessedEvent
 
 
@@ -22,6 +22,11 @@ class BasePlanner:
         "gmail": "summarize_email",
         "calendar": "prepare_meeting",
     }
+    _executor_roles_by_category = {
+        "github": ExecutorRole.CONTENT_REVIEW,
+        "gmail": ExecutorRole.CONTENT_SUMMARY,
+        "calendar": ExecutorRole.CONTEXT_PREPARATION,
+    }
 
     def plan(self, processed_event: ProcessedEvent) -> list[Action]:
         """Return candidate actions without executing them."""
@@ -35,6 +40,9 @@ class BasePlanner:
             Action(
                 type=action_type,
                 target=str(processed_event.event.id),
+                executor_role=self._executor_roles_by_category[
+                    processed_event.classification.category
+                ],
                 metadata={
                     "event_id": str(processed_event.event.id),
                     "category": processed_event.classification.category,

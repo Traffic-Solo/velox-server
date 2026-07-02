@@ -1,5 +1,5 @@
 from apps.server.src.core.container import ApplicationContainer, get_container
-from apps.server.src.core.actions import Action
+from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.core.permission import PermissionDecision, PermissionEngine
 from apps.server.src.workers.executor import WorkerExecutionResult, WorkerExecutionStatus
 
@@ -104,9 +104,16 @@ def test_container_exposes_wired_worker_runtime() -> None:
 
 def test_container_wired_worker_runtime_uses_executor_registry() -> None:
     container = ApplicationContainer()
-    action = Action(type="prepare_meeting", target="event-1")
+    action = Action(
+        type="prepare_meeting",
+        target="event-1",
+        executor_role=ExecutorRole.CONTEXT_PREPARATION,
+    )
     executor = ContainerRecordingExecutor()
-    container.worker_executor_registry.register("prepare_meeting", executor)
+    container.worker_executor_registry.register(
+        ExecutorRole.CONTEXT_PREPARATION,
+        executor,
+    )
     container.action_queue.enqueue(action)
 
     result = container.worker_runtime.process_next()

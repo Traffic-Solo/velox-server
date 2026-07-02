@@ -1,4 +1,4 @@
-from apps.server.src.core.actions import Action
+from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.workers.executor import (
     NoOpWorkerExecutor,
     WorkerExecutionResult,
@@ -69,20 +69,24 @@ def test_no_op_worker_executor_is_safe_default() -> None:
 def test_worker_executor_registry_registers_executor() -> None:
     registry = WorkerExecutorRegistry()
     executor = SuccessfulExecutor()
-    action = Action(type="summarize_email", target="event-1")
+    action = Action(
+        type="summarize_email",
+        target="event-1",
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
 
-    registry.register("summarize_email", executor)
+    registry.register(ExecutorRole.CONTENT_SUMMARY, executor)
 
     assert registry.resolve(action) is executor
 
 
-def test_worker_executor_registry_resolves_metadata_role_executor() -> None:
+def test_worker_executor_registry_resolves_string_executor_role() -> None:
     registry = WorkerExecutorRegistry()
     executor = SuccessfulExecutor()
     action = Action(
         type="generic_action",
         target="event-1",
-        metadata={"role": "summarizer"},
+        executor_role="summarizer",
     )
 
     registry.register("summarizer", executor)
@@ -94,6 +98,18 @@ def test_worker_executor_registry_falls_back_to_no_op_executor() -> None:
     fallback_executor = NoOpWorkerExecutor()
     registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
     action = Action(type="missing_executor", target="event-1")
+
+    assert registry.resolve(action) is fallback_executor
+
+
+def test_worker_executor_registry_falls_back_for_unknown_executor_role() -> None:
+    fallback_executor = NoOpWorkerExecutor()
+    registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
+    action = Action(
+        type="generic_action",
+        target="event-1",
+        executor_role="unknown_role",
+    )
 
     assert registry.resolve(action) is fallback_executor
 

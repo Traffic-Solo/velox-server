@@ -43,6 +43,7 @@ Sprint 1 - VELOX Core Platform
 - Planner
 - Rule-based Planner
 - Action Model
+- Action Executor Role Model
 - Action Queue
 - Action Queue API
 - Action Lifecycle
@@ -55,13 +56,26 @@ Sprint 1 - VELOX Core Platform
 - Worker Executor Contract
 - Worker Executor Runtime Wiring
 - Executor Registry
+- Executor Registry Explicit Role Resolution
 - Worker Runtime Executor Registry Resolution
 - NoOp Worker Executor Fallback
 - Worker Runtime Invocation API
 
 ## Current Next Slice
 
-Pending ChatGPT review and next slice assignment
+Worker Executor Role Registration and Invocation Observability
+
+Recommended next implementation step after Action Executor Role Model:
+make executor role registration and runtime invocation observability explicit without adding real integrations. The slice should keep roles vendor-neutral, preserve `NoOpWorkerExecutor` fallback behavior, and expose enough execution metadata to verify which role was requested and whether a role-specific executor was found.
+
+## Current Implementation Notes
+
+- `Action` carries an explicit first-class `ExecutorRole`.
+- `ExecutorRole` values are vendor-neutral and do not include Gmail, Google Calendar, Notion, Slack, or other integration-specific role names.
+- `BasePlanner` produces actions with executor roles.
+- `WorkerExecutorRegistry` resolves executors by explicit action role.
+- Backward compatibility is preserved because actions with no role, or with an unknown role, fall back to `NoOpWorkerExecutor`.
+- No real integrations or vendor-specific worker executors have been introduced.
 
 ## Workflow
 
@@ -123,5 +137,5 @@ After every implementation slice, update this file in the same commit if the imp
 - Apple Ecosystem Strategy references ADRs that are not yet created.
 - Engineering Board in Notion may still need reconciliation with current repository state.
 - Permission Engine Runtime implementation needs validation in the project virtualenv.
-- Executor Registry & Role Resolution focused tests were added, but validation still needs to be run in an environment where `python` is available on PATH.
-- No vendor-specific worker executor has been added; executor resolution remains role/key based and falls back to `NoOpWorkerExecutor` when no registered executor matches.
+- Action Executor Role Model validation still needs to be run in an environment where `python` is available on PATH.
+- No vendor-specific worker executor has been added; executor resolution remains role-based and falls back to `NoOpWorkerExecutor` when no registered executor matches.

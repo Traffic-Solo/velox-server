@@ -1,10 +1,19 @@
 """Core action model."""
 
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class ExecutorRole(StrEnum):
+    """Vendor-neutral worker executor roles."""
+
+    CONTENT_REVIEW = "content_review"
+    CONTENT_SUMMARY = "content_summary"
+    CONTEXT_PREPARATION = "context_preparation"
 
 
 class Action(BaseModel):
@@ -16,6 +25,7 @@ class Action(BaseModel):
     type: str
     target: str
     payload: dict[str, Any] = Field(default_factory=dict)
+    executor_role: ExecutorRole | str | None = None
     status: Literal["pending", "approved", "rejected", "completed"] = "pending"
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     metadata: dict[str, Any] = Field(default_factory=dict)

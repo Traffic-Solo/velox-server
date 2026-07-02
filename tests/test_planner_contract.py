@@ -1,4 +1,4 @@
-from apps.server.src.core.actions import Action
+from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.core.events import (
     EventClassification,
     ProcessedEvent,
@@ -78,6 +78,7 @@ def test_base_planner_generates_review_pull_request_for_github() -> None:
 
     assert len(actions) == 1
     assert actions[0].type == "review_pull_request"
+    assert actions[0].executor_role == ExecutorRole.CONTENT_REVIEW
 
 
 def test_base_planner_generates_summarize_email_for_gmail() -> None:
@@ -87,6 +88,7 @@ def test_base_planner_generates_summarize_email_for_gmail() -> None:
 
     assert len(actions) == 1
     assert actions[0].type == "summarize_email"
+    assert actions[0].executor_role == ExecutorRole.CONTENT_SUMMARY
 
 
 def test_base_planner_generates_prepare_meeting_for_calendar() -> None:
@@ -96,6 +98,7 @@ def test_base_planner_generates_prepare_meeting_for_calendar() -> None:
 
     assert len(actions) == 1
     assert actions[0].type == "prepare_meeting"
+    assert actions[0].executor_role == ExecutorRole.CONTEXT_PREPARATION
 
 
 def test_base_planner_returns_empty_list_for_unknown_category() -> None:
