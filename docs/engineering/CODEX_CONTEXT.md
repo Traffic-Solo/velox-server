@@ -9,7 +9,7 @@ This file is the canonical repository handoff for Codex engineering sessions.
 - One Codex chat equals one completed engineering slice.
 - Every new Codex chat must read this file first.
 - Do not rely on long previous chat history.
-- Never assume repository structure. Discover it first if uncertain.
+- Never assume file names or repository structure. Search the repository first if uncertain.
 
 ## Current Sprint
 
@@ -58,6 +58,28 @@ Permission Engine Runtime
 ## Workflow
 
 Codex -> Review -> Commit -> Push -> Notion Sync -> Next Slice
+
+## Slice Execution Protocol
+
+Every engineering slice must follow this protocol:
+
+1. Read `docs/engineering/CODEX_CONTEXT.md`.
+2. Discover the target module.
+3. Inspect existing public interfaces.
+4. Confirm the insertion point.
+5. Implement the slice.
+6. Run focused tests.
+7. Run broader regression tests when appropriate.
+8. Update `docs/engineering/CODEX_CONTEXT.md` if engineering state changed.
+9. Present:
+   - changed files;
+   - summary;
+   - validation results;
+   - blockers.
+10. Wait for ChatGPT review before committing.
+11. Commit.
+12. Push.
+13. Sync Notion.
 
 ## Definition of Done
 
