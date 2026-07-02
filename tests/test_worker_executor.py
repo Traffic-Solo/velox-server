@@ -1,6 +1,8 @@
 from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.workers.executor import (
     NoOpWorkerExecutor,
+    WorkerExecutionFailure,
+    WorkerExecutionFailureCategory,
     WorkerExecutionResult,
     WorkerExecutionStatus,
     WorkerExecutor,
@@ -23,6 +25,10 @@ class FailedExecutor:
             action=action,
             status=WorkerExecutionStatus.FAILED,
             reason="execution failed",
+            failure=WorkerExecutionFailure(
+                category=WorkerExecutionFailureCategory.INTERNAL,
+                message="execution failed",
+            ),
         )
 
 
@@ -53,6 +59,59 @@ def test_worker_executor_failed_execution_result() -> None:
     assert result.action == action
     assert result.status == WorkerExecutionStatus.FAILED
     assert result.reason == "execution failed"
+    assert result.failure is not None
+    assert result.failure.category == WorkerExecutionFailureCategory.INTERNAL
+
+
+def test_worker_execution_failure_supports_transient_category() -> None:
+    failure = WorkerExecutionFailure(
+        category=WorkerExecutionFailureCategory.TRANSIENT,
+        message="temporary outage",
+        metadata={"retry_after_seconds": 30},
+    )
+
+    assert failure.category == WorkerExecutionFailureCategory.TRANSIENT
+    assert failure.message == "temporary outage"
+    assert failure.metadata == {"retry_after_seconds": 30}
+
+
+def test_worker_execution_failure_supports_permanent_category() -> None:
+    failure = WorkerExecutionFailure(
+        category=WorkerExecutionFailureCategory.PERMANENT,
+        message="invalid action",
+        metadata={"field": "target"},
+    )
+
+    assert failure.category == WorkerExecutionFailureCategory.PERMANENT
+    assert failure.message == "invalid action"
+    assert failure.metadata == {"field": "target"}
+
+
+def test_worker_execution_failure_supports_internal_category() -> None:
+    failure = WorkerExecutionFailure(
+        category=WorkerExecutionFailureCategory.INTERNAL,
+        message="executor error",
+        metadata={"component": "worker"},
+    )
+
+    assert failure.category == WorkerExecutionFailureCategory.INTERNAL
+    assert failure.message == "executor error"
+    assert failure.metadata == {"component": "worker"}
+
+
+def test_worker_execution_success_remains_backward_compatible() -> None:
+    action = Action(type="summarize_email", target="event-1")
+
+    result = WorkerExecutionResult(
+        action=action,
+        status=WorkerExecutionStatus.SUCCEEDED,
+    )
+
+    assert result.action == action
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.reason is None
+    assert result.metadata == {}
+    assert result.failure is None
 
 
 def test_no_op_worker_executor_is_safe_default() -> None:

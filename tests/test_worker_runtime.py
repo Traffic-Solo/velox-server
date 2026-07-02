@@ -3,6 +3,8 @@ from apps.server.src.core.action_lifecycle_manager import ActionLifecycleManager
 from apps.server.src.core.action_queue import ActionQueue
 from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.workers.executor import (
+    WorkerExecutionFailure,
+    WorkerExecutionFailureCategory,
     WorkerExecutionResult,
     WorkerExecutionStatus,
     WorkerExecutor,
@@ -31,6 +33,21 @@ class RecordingExecutor:
 class RaisingExecutor:
     def execute(self, action: Action) -> WorkerExecutionResult:
         raise RuntimeError("executor boom")
+
+
+class FailureContractExecutor:
+    def execute(self, action: Action) -> WorkerExecutionResult:
+        return WorkerExecutionResult(
+            action=action,
+            status=WorkerExecutionStatus.FAILED,
+            reason="contract failure",
+            metadata={"handled_by": "failure-contract-executor"},
+            failure=WorkerExecutionFailure(
+                category=WorkerExecutionFailureCategory.PERMANENT,
+                message="invalid worker input",
+                metadata={"field": "target"},
+            ),
+        )
 
 
 def create_runtime(
@@ -199,6 +216,7 @@ def test_worker_runtime_successful_executor_result_updates_processing_result() -
     assert result.action is not None
     assert result.action.status == "completed"
     assert result.action.metadata["worker_execution"]["status"] == "succeeded"
+    assert result.action.metadata["worker_execution"]["failure"] is None
 
 
 def test_worker_runtime_failed_executor_result_updates_processing_result() -> None:
@@ -221,6 +239,42 @@ def test_worker_runtime_failed_executor_result_updates_processing_result() -> No
     assert result.action is not None
     assert result.action.status == action.status
     assert result.action.metadata["worker_execution"]["status"] == "failed"
+
+
+def test_worker_runtime_records_failure_contract() -> None:
+    queue = ActionQueue()
+    action = Action(type="summarize_email", target="event-1")
+    queue.enqueue(action)
+    runtime = create_runtime(queue, FailureContractExecutor())
+
+    result = runtime.process_next()
+
+    assert result.processed is True
+    assert result.execution_status == WorkerExecutionStatus.FAILED
+    assert result.execution_reason == "contract failure"
+    assert result.lifecycle_state is not None
+    assert result.lifecycle_state.status == ActionStatus.FAILED
+    assert result.action is not None
+    assert result.action.metadata["worker_execution"]["failure"] == {
+        "category": "permanent",
+        "message": "invalid worker input",
+        "metadata": {"field": "target"},
+    }
+
+
+def test_worker_runtime_observation_reflects_failure_classification() -> None:
+    queue = ActionQueue()
+    action = Action(type="summarize_email", target="event-1")
+    queue.enqueue(action)
+    runtime = create_runtime(queue, FailureContractExecutor())
+
+    result = runtime.process_next()
+
+    assert result.action is not None
+    observation = result.action.metadata["worker_execution"]["observation"]
+    assert observation["status"] == "failed"
+    assert observation["failure_category"] == "permanent"
+    assert observation["failure_message"] == "invalid worker input"
 
 
 def test_worker_runtime_catches_executor_exception_as_failed_result() -> None:
@@ -248,8 +302,20 @@ def test_worker_runtime_catches_executor_exception_as_failed_result() -> None:
         "exception_type": "RuntimeError",
         "exception_message": "executor boom",
     }
+    assert result.action.metadata["worker_execution"]["failure"] == {
+        "category": "internal",
+        "message": "executor raised exception: executor boom",
+        "metadata": {
+            "exception_type": "RuntimeError",
+            "exception_message": "executor boom",
+        },
+    }
     assert result.action.metadata["worker_execution"]["finished_at"] is not None
     assert result.action.metadata["worker_execution"]["observation"]["status"] == "failed"
+    assert (
+        result.action.metadata["worker_execution"]["observation"]["failure_category"]
+        == "internal"
+    )
     assert result.action.metadata["worker_execution"]["observation"]["reason"] == (
         "executor raised exception: executor boom"
     )

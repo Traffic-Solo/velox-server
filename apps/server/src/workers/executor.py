@@ -14,6 +14,23 @@ class WorkerExecutionStatus(StrEnum):
     FAILED = "failed"
 
 
+class WorkerExecutionFailureCategory(StrEnum):
+    """Vendor-neutral worker execution failure categories."""
+
+    TRANSIENT = "transient"
+    PERMANENT = "permanent"
+    INTERNAL = "internal"
+
+
+@dataclass(frozen=True)
+class WorkerExecutionFailure:
+    """Vendor-neutral failure details returned by a worker executor."""
+
+    category: WorkerExecutionFailureCategory
+    message: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
 @dataclass(frozen=True)
 class WorkerExecutionResult:
     """Role-level result returned by a worker executor."""
@@ -22,6 +39,7 @@ class WorkerExecutionResult:
     status: WorkerExecutionStatus
     reason: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    failure: WorkerExecutionFailure | None = None
 
 
 @dataclass(frozen=True)

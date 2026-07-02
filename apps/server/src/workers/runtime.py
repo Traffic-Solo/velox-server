@@ -11,6 +11,8 @@ from apps.server.src.core.action_lifecycle_manager import ActionLifecycleManager
 from apps.server.src.core.action_queue import ActionQueue
 from apps.server.src.core.actions import Action
 from apps.server.src.workers.executor import (
+    WorkerExecutionFailure,
+    WorkerExecutionFailureCategory,
     WorkerExecutionResult,
     WorkerExecutionStatus,
     WorkerExecutor,
@@ -31,6 +33,8 @@ class WorkerExecutionObservation:
     finished_at: datetime | None = None
     duration_ms: float | None = None
     reason: str | None = None
+    failure_category: str | None = None
+    failure_message: str | None = None
     metadata: dict[str, Any] | None = None
 
     def as_metadata(self) -> dict[str, Any]:
@@ -47,6 +51,8 @@ class WorkerExecutionObservation:
             else None,
             "duration_ms": self.duration_ms,
             "reason": self.reason,
+            "failure_category": self.failure_category,
+            "failure_message": self.failure_message,
             "metadata": dict(self.metadata or {}),
         }
 
@@ -85,6 +91,7 @@ class InMemoryWorkerExecutionObserver:
         status: WorkerExecutionStatus,
         metadata: dict[str, Any],
         reason: str | None = None,
+        failure: WorkerExecutionFailure | None = None,
         duration_ms: float | None = None,
     ) -> WorkerExecutionObservation:
         """Record execution finish."""
@@ -92,6 +99,8 @@ class InMemoryWorkerExecutionObserver:
         observation.finished_at = datetime.now(UTC)
         observation.duration_ms = duration_ms
         observation.reason = reason
+        observation.failure_category = failure.category.value if failure is not None else None
+        observation.failure_message = failure.message if failure is not None else None
         observation.metadata = {
             **dict(observation.metadata or {}),
             **dict(metadata),
@@ -197,13 +206,23 @@ class WorkerRuntime:
                     "exception_type": type(exc).__name__,
                     "exception_message": str(exc),
                 },
+                failure=WorkerExecutionFailure(
+                    category=WorkerExecutionFailureCategory.INTERNAL,
+                    message=f"executor raised exception: {exc}",
+                    metadata={
+                        "exception_type": type(exc).__name__,
+                        "exception_message": str(exc),
+                    },
+                ),
             )
         duration_ms = round((perf_counter() - started_monotonic) * 1000, 3)
+        failure = self._failure_for_result(execution_result)
         observation = self._execution_observer.finish(
             observation=observation,
             status=execution_result.status,
             metadata=execution_result.metadata,
             reason=execution_result.reason,
+            failure=failure,
             duration_ms=duration_ms,
         )
         if execution_result.status == WorkerExecutionStatus.SUCCEEDED:
@@ -230,6 +249,7 @@ class WorkerRuntime:
             "worker_execution": {
                 "status": execution_result.status.value,
                 "reason": execution_result.reason,
+                "failure": self._failure_metadata(failure),
                 "requested_role": requested_role,
                 "executor_registered": executor_registered,
                 "started_at": observation.started_at.isoformat(),
@@ -258,6 +278,34 @@ class WorkerRuntime:
             processed=True,
             external_execution_performed=external_execution_performed,
         )
+
+    def _failure_for_result(
+        self,
+        execution_result: WorkerExecutionResult,
+    ) -> WorkerExecutionFailure | None:
+        if execution_result.status != WorkerExecutionStatus.FAILED:
+            return None
+
+        if execution_result.failure is not None:
+            return execution_result.failure
+
+        return WorkerExecutionFailure(
+            category=WorkerExecutionFailureCategory.INTERNAL,
+            message=execution_result.reason,
+        )
+
+    def _failure_metadata(
+        self,
+        failure: WorkerExecutionFailure | None,
+    ) -> dict[str, Any] | None:
+        if failure is None:
+            return None
+
+        return {
+            "category": failure.category.value,
+            "message": failure.message,
+            "metadata": dict(failure.metadata),
+        }
 
 
 class WorkerRuntimeInvocationService:
