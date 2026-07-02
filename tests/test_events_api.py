@@ -4,8 +4,15 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+from apps.server.src.core.action_lifecycle_manager import ActionLifecycleManager
+from apps.server.src.core.actions import Action
 from apps.server.src.core.container import get_container
 from apps.server.src.main import app
+from apps.server.src.core.permission import (
+    PermissionDecision,
+    PermissionEngineRuntime,
+    PermissionStatus,
+)
 
 
 client = TestClient(app)
@@ -246,6 +253,85 @@ def test_processing_endpoint_enqueues_planner_actions() -> None:
     assert response.status_code == 200
     assert get_container().action_queue.count() == 1
     assert get_container().action_queue.list()[0].type == "review_pull_request"
+
+
+def test_processing_endpoint_filters_denied_actions_before_queueing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DenyingPermissionEngine:
+        def evaluate(self, action: Action) -> PermissionDecision:
+            return PermissionDecision(
+                status=PermissionStatus.DENIED,
+                reason="blocked",
+            )
+
+    container = get_container()
+    monkeypatch.setattr(
+        container,
+        "permission_runtime",
+        PermissionEngineRuntime(
+            permission_engine=DenyingPermissionEngine(),
+            action_lifecycle_manager=ActionLifecycleManager(),
+        ),
+    )
+    event_id = uuid4()
+    client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "github",
+            "type": "pull_request.opened",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {"number": 1},
+            "metadata": {},
+        },
+    )
+
+    response = client.post(f"/events/{event_id}/process")
+
+    assert response.status_code == 200
+    assert container.action_queue.count() == 0
+
+
+def test_processing_endpoint_returns_denied_actions_with_permission_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DenyingPermissionEngine:
+        def evaluate(self, action: Action) -> PermissionDecision:
+            return PermissionDecision(
+                status=PermissionStatus.DENIED,
+                reason="blocked",
+            )
+
+    container = get_container()
+    monkeypatch.setattr(
+        container,
+        "permission_runtime",
+        PermissionEngineRuntime(
+            permission_engine=DenyingPermissionEngine(),
+            action_lifecycle_manager=ActionLifecycleManager(),
+        ),
+    )
+    event_id = uuid4()
+    client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "github",
+            "type": "pull_request.opened",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {"number": 1},
+            "metadata": {},
+        },
+    )
+
+    response = client.post(f"/events/{event_id}/process")
+    action = response.json()["actions"][0]
+
+    assert action["status"] == "rejected"
+    assert action["metadata"]["permission_decision"]["status"] == "denied"
+    assert action["metadata"]["action_lifecycle"]["status"] == "rejected"
+    assert response.json()["permission_decisions"][0]["decision"]["status"] == "denied"
 
 
 def test_actions_queue_endpoint_returns_empty_queue_by_default() -> None:

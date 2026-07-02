@@ -100,11 +100,21 @@ def process_event(event_id: UUID) -> dict[str, Any]:
     container.event_inbox.mark_processed(event_id)
 
     actions = container.planner.plan(processed_event)
-    container.action_queue.enqueue_many(actions)
+    permission_evaluations = container.permission_runtime.evaluate(actions)
+    container.action_queue.enqueue_many(
+        container.permission_runtime.queueable_actions(permission_evaluations)
+    )
     response = processed_event.model_dump(mode="json")
     response["actions"] = [
-        action.model_dump(mode="json")
-        for action in actions
+        evaluation.action.model_dump(mode="json")
+        for evaluation in permission_evaluations
+    ]
+    response["permission_decisions"] = [
+        {
+            "action_id": str(evaluation.action.id),
+            "decision": evaluation.decision.model_dump(mode="json"),
+        }
+        for evaluation in permission_evaluations
     ]
     return response
 

@@ -16,7 +16,11 @@ from apps.server.src.core.events import (
 )
 from apps.server.src.core.events.classifier import EventClassifier
 from apps.server.src.core.events.context import ContextResolver
-from apps.server.src.core.permission import BasePermissionEngine, PermissionEngine
+from apps.server.src.core.permission import (
+    BasePermissionEngine,
+    PermissionEngine,
+    PermissionEngineRuntime,
+)
 from apps.server.src.core.planner import BasePlanner, Planner
 
 
@@ -31,6 +35,10 @@ class ApplicationContainer:
         self.action_queue = ActionQueue()
         self.action_lifecycle_manager = ActionLifecycleManager()
         self.permission_engine: PermissionEngine = BasePermissionEngine()
+        self.permission_runtime = PermissionEngineRuntime(
+            permission_engine=self.permission_engine,
+            action_lifecycle_manager=self.action_lifecycle_manager,
+        )
         self.event_classifier: EventClassifier = RuleBasedEventClassifier()
         self.context_resolver: ContextResolver = BaseContextResolver()
         self.event_processing_pipeline = EventProcessingPipeline(

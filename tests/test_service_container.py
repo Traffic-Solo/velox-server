@@ -45,6 +45,12 @@ def test_container_exposes_permission_engine() -> None:
     assert container.permission_engine is not None
 
 
+def test_container_exposes_permission_runtime() -> None:
+    container = ApplicationContainer()
+
+    assert container.permission_runtime is not None
+
+
 def test_container_permission_engine_satisfies_contract() -> None:
     container = ApplicationContainer()
     engine: PermissionEngine = container.permission_engine

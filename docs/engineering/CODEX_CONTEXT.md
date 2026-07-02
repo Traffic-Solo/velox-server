@@ -50,10 +50,11 @@ Sprint 1 - VELOX Core Platform
 - Permission Decision Model
 - Permission Engine Contract
 - Permission Infrastructure Container Registration
+- Permission Engine Runtime
 
 ## Current Next Slice
 
-Permission Engine Runtime
+Permission Engine Runtime Review and Validation
 
 ## Workflow
 
@@ -115,3 +116,4 @@ After every implementation slice, update this file in the same commit if the imp
 - Apple Ecosystem Strategy references ADRs that are not yet created.
 - Engineering Board in Notion may still need reconciliation with current repository state.
 - Workers Runtime must not start before Permission Engine Runtime is verified.
+- Permission Engine Runtime implementation needs validation in the project virtualenv.
