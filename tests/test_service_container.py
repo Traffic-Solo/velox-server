@@ -1,4 +1,6 @@
 from apps.server.src.core.container import ApplicationContainer, get_container
+from apps.server.src.core.actions import Action
+from apps.server.src.core.permission import PermissionDecision, PermissionEngine
 
 
 def test_container_exposes_event_repository() -> None:
@@ -37,6 +39,27 @@ def test_container_exposes_planner() -> None:
     assert container.planner is not None
 
 
+def test_container_exposes_permission_engine() -> None:
+    container = ApplicationContainer()
+
+    assert container.permission_engine is not None
+
+
+def test_container_permission_engine_satisfies_contract() -> None:
+    container = ApplicationContainer()
+    engine: PermissionEngine = container.permission_engine
+
+    decision = engine.evaluate(Action(type="summarize_email", target="event-1"))
+
+    assert isinstance(decision, PermissionDecision)
+
+
+def test_container_exposes_action_lifecycle_manager() -> None:
+    container = ApplicationContainer()
+
+    assert container.action_lifecycle_manager is not None
+
+
 def test_get_container_returns_application_container() -> None:
     container = get_container()
 
@@ -48,3 +71,15 @@ def test_get_container_returns_same_instance() -> None:
     second_container = get_container()
 
     assert first_container is second_container
+
+
+def test_get_container_exposes_registered_permission_engine() -> None:
+    container = get_container()
+
+    assert container.permission_engine is not None
+
+
+def test_get_container_exposes_registered_action_lifecycle_manager() -> None:
+    container = get_container()
+
+    assert container.action_lifecycle_manager is not None

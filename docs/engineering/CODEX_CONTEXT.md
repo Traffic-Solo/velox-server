@@ -49,6 +49,7 @@ Sprint 1 - VELOX Core Platform
 - Action Lifecycle Manager
 - Permission Decision Model
 - Permission Engine Contract
+- Permission Infrastructure Container Registration
 
 ## Current Next Slice
 

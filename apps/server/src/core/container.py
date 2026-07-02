@@ -2,6 +2,7 @@
 
 from uuid import UUID
 
+from apps.server.src.core.action_lifecycle_manager import ActionLifecycleManager
 from apps.server.src.core.action_queue import ActionQueue
 from apps.server.src.core.events import (
     BaseContextResolver,
@@ -15,6 +16,7 @@ from apps.server.src.core.events import (
 )
 from apps.server.src.core.events.classifier import EventClassifier
 from apps.server.src.core.events.context import ContextResolver
+from apps.server.src.core.permission import BasePermissionEngine, PermissionEngine
 from apps.server.src.core.planner import BasePlanner, Planner
 
 
@@ -27,6 +29,8 @@ class ApplicationContainer:
         self.event_lifecycle_manager = EventLifecycleManager()
         self.event_lifecycle_states: dict[UUID, EventLifecycleState] = {}
         self.action_queue = ActionQueue()
+        self.action_lifecycle_manager = ActionLifecycleManager()
+        self.permission_engine: PermissionEngine = BasePermissionEngine()
         self.event_classifier: EventClassifier = RuleBasedEventClassifier()
         self.context_resolver: ContextResolver = BaseContextResolver()
         self.event_processing_pipeline = EventProcessingPipeline(
