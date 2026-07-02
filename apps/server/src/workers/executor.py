@@ -30,3 +30,15 @@ class WorkerExecutor(Protocol):
 
     def execute(self, action: Action) -> WorkerExecutionResult:
         """Execute an action and return an explicit execution result."""
+
+
+class NoOpWorkerExecutor:
+    """Safe default executor that performs no external work."""
+
+    def execute(self, action: Action) -> WorkerExecutionResult:
+        """Return a successful no-op execution result."""
+        return WorkerExecutionResult(
+            action=action,
+            status=WorkerExecutionStatus.SUCCEEDED,
+            metadata={"external_execution_performed": False},
+        )

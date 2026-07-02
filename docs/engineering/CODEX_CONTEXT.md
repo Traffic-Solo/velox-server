@@ -53,10 +53,11 @@ Sprint 1 - VELOX Core Platform
 - Permission Engine Runtime
 - Worker Runtime Foundation
 - Worker Executor Contract
+- Worker Executor Runtime Wiring
 
 ## Current Next Slice
 
-Worker Executor Runtime Wiring
+Pending ChatGPT Review
 
 ## Workflow
 

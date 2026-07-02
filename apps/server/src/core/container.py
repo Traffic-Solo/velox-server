@@ -22,6 +22,7 @@ from apps.server.src.core.permission import (
     PermissionEngineRuntime,
 )
 from apps.server.src.core.planner import BasePlanner, Planner
+from apps.server.src.workers.executor import NoOpWorkerExecutor, WorkerExecutor
 from apps.server.src.workers.runtime import WorkerRuntime
 
 
@@ -40,9 +41,11 @@ class ApplicationContainer:
             permission_engine=self.permission_engine,
             action_lifecycle_manager=self.action_lifecycle_manager,
         )
+        self.worker_executor: WorkerExecutor = NoOpWorkerExecutor()
         self.worker_runtime = WorkerRuntime(
             action_queue=self.action_queue,
             action_lifecycle_manager=self.action_lifecycle_manager,
+            worker_executor=self.worker_executor,
         )
         self.event_classifier: EventClassifier = RuleBasedEventClassifier()
         self.context_resolver: ContextResolver = BaseContextResolver()

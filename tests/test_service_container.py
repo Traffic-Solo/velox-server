@@ -57,6 +57,25 @@ def test_container_exposes_worker_runtime() -> None:
     assert container.worker_runtime is not None
 
 
+def test_container_exposes_worker_executor() -> None:
+    container = ApplicationContainer()
+
+    assert container.worker_executor is not None
+
+
+def test_container_exposes_wired_worker_runtime() -> None:
+    container = ApplicationContainer()
+    action = Action(type="external.vendor.call", target="remote-system")
+    container.action_queue.enqueue(action)
+
+    result = container.worker_runtime.process_next()
+
+    assert result.processed is True
+    assert result.external_execution_performed is False
+    assert result.action is not None
+    assert result.action.metadata["external_execution_performed"] is False
+
+
 def test_container_permission_engine_satisfies_contract() -> None:
     container = ApplicationContainer()
     engine: PermissionEngine = container.permission_engine

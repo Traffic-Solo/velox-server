@@ -6,6 +6,7 @@ from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionSt
 from apps.server.src.core.action_lifecycle_manager import ActionLifecycleManager
 from apps.server.src.core.action_queue import ActionQueue
 from apps.server.src.core.actions import Action
+from apps.server.src.workers.executor import WorkerExecutionStatus, WorkerExecutor
 
 
 @dataclass(frozen=True)
@@ -14,6 +15,8 @@ class WorkerProcessingResult:
 
     action: Action | None
     lifecycle_state: ActionLifecycleState | None
+    execution_status: WorkerExecutionStatus | None
+    execution_reason: str | None
     processed: bool
     external_execution_performed: bool
 
@@ -25,9 +28,11 @@ class WorkerRuntime:
         self,
         action_queue: ActionQueue,
         action_lifecycle_manager: ActionLifecycleManager,
+        worker_executor: WorkerExecutor,
     ) -> None:
         self._action_queue = action_queue
         self._action_lifecycle_manager = action_lifecycle_manager
+        self._worker_executor = worker_executor
 
     def process_next(self) -> WorkerProcessingResult:
         """Process one queued action if available."""
@@ -36,6 +41,8 @@ class WorkerRuntime:
             return WorkerProcessingResult(
                 action=None,
                 lifecycle_state=None,
+                execution_status=None,
+                execution_reason=None,
                 processed=False,
                 external_execution_performed=False,
             )
@@ -49,25 +56,49 @@ class WorkerRuntime:
             lifecycle_state,
             ActionStatus.EXECUTING,
         )
-        lifecycle_state = self._action_lifecycle_manager.transition(
-            lifecycle_state,
-            ActionStatus.COMPLETED,
+
+        execution_result = self._worker_executor.execute(action)
+        if execution_result.status == WorkerExecutionStatus.SUCCEEDED:
+            lifecycle_state = self._action_lifecycle_manager.transition(
+                lifecycle_state,
+                ActionStatus.COMPLETED,
+            )
+            action_status = "completed"
+        else:
+            lifecycle_state = self._action_lifecycle_manager.transition(
+                lifecycle_state,
+                ActionStatus.FAILED,
+                reason=execution_result.reason,
+            )
+            action_status = action.status
+
+        external_execution_performed = bool(
+            execution_result.metadata.get("external_execution_performed", False)
         )
 
-        processed_action = action.model_copy(
+        metadata = {
+            **execution_result.action.metadata,
+            "action_lifecycle": lifecycle_state.model_dump(mode="json"),
+            "worker_execution": {
+                "status": execution_result.status.value,
+                "reason": execution_result.reason,
+                "metadata": dict(execution_result.metadata),
+            },
+            "external_execution_performed": external_execution_performed,
+        }
+
+        processed_action = execution_result.action.model_copy(
             update={
-                "status": "completed",
-                "metadata": {
-                    **action.metadata,
-                    "action_lifecycle": lifecycle_state.model_dump(mode="json"),
-                    "external_execution_performed": False,
-                },
+                "status": action_status,
+                "metadata": metadata,
             }
         )
 
         return WorkerProcessingResult(
             action=processed_action,
             lifecycle_state=lifecycle_state,
+            execution_status=execution_result.status,
+            execution_reason=execution_result.reason,
             processed=True,
-            external_execution_performed=False,
+            external_execution_performed=external_execution_performed,
         )
