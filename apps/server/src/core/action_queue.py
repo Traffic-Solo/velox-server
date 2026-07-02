@@ -20,6 +20,12 @@ class ActionQueue:
             self.enqueue(action)
         return actions
 
+    def dequeue(self) -> Action | None:
+        """Remove and return the next queued action, if any."""
+        if not self._actions:
+            return None
+        return self._actions.pop(0)
+
     def list(self) -> list[Action]:
         """Return queued actions in FIFO order."""
         return list(self._actions)

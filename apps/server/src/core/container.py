@@ -22,6 +22,7 @@ from apps.server.src.core.permission import (
     PermissionEngineRuntime,
 )
 from apps.server.src.core.planner import BasePlanner, Planner
+from apps.server.src.workers.runtime import WorkerRuntime
 
 
 class ApplicationContainer:
@@ -37,6 +38,10 @@ class ApplicationContainer:
         self.permission_engine: PermissionEngine = BasePermissionEngine()
         self.permission_runtime = PermissionEngineRuntime(
             permission_engine=self.permission_engine,
+            action_lifecycle_manager=self.action_lifecycle_manager,
+        )
+        self.worker_runtime = WorkerRuntime(
+            action_queue=self.action_queue,
             action_lifecycle_manager=self.action_lifecycle_manager,
         )
         self.event_classifier: EventClassifier = RuleBasedEventClassifier()

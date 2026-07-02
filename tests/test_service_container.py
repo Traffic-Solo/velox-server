@@ -51,6 +51,12 @@ def test_container_exposes_permission_runtime() -> None:
     assert container.permission_runtime is not None
 
 
+def test_container_exposes_worker_runtime() -> None:
+    container = ApplicationContainer()
+
+    assert container.worker_runtime is not None
+
+
 def test_container_permission_engine_satisfies_contract() -> None:
     container = ApplicationContainer()
     engine: PermissionEngine = container.permission_engine
@@ -89,3 +95,9 @@ def test_get_container_exposes_registered_action_lifecycle_manager() -> None:
     container = get_container()
 
     assert container.action_lifecycle_manager is not None
+
+
+def test_get_container_exposes_registered_worker_runtime() -> None:
+    container = get_container()
+
+    assert container.worker_runtime is not None

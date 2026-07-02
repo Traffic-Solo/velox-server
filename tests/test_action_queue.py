@@ -34,6 +34,24 @@ def test_action_queue_preserves_fifo_ordering() -> None:
     assert queue.list()[1] == second_action
 
 
+def test_action_queue_dequeues_in_fifo_order() -> None:
+    queue = ActionQueue()
+    first_action = Action(type="summarize_email", target="event-1")
+    second_action = Action(type="prepare_meeting", target="event-2")
+
+    queue.enqueue(first_action)
+    queue.enqueue(second_action)
+
+    assert queue.dequeue() == first_action
+    assert queue.list() == [second_action]
+
+
+def test_action_queue_dequeue_empty_queue_returns_none() -> None:
+    queue = ActionQueue()
+
+    assert queue.dequeue() is None
+
+
 def test_action_queue_clear_removes_actions() -> None:
     queue = ActionQueue()
     queue.enqueue(Action(type="summarize_email", target="event-1"))
