@@ -52,10 +52,11 @@ Sprint 1 - VELOX Core Platform
 - Permission Infrastructure Container Registration
 - Permission Engine Runtime
 - Worker Runtime Foundation
+- Worker Executor Contract
 
 ## Current Next Slice
 
-Worker Runtime Review and Validation
+Worker Executor Runtime Wiring
 
 ## Workflow
 
