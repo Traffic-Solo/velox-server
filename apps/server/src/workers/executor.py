@@ -24,6 +24,15 @@ class WorkerExecutionResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class WorkerExecutorResolution:
+    """Executor resolution details for a requested role."""
+
+    executor: "WorkerExecutor"
+    requested_role: str | None
+    registered: bool
+
+
 @runtime_checkable
 class WorkerExecutor(Protocol):
     """Contract for role-compatible action executors."""
@@ -59,13 +68,34 @@ class WorkerExecutorRegistry:
 
         self._executors[normalized_key] = executor
 
+    def register_role(self, role: ExecutorRole, executor: WorkerExecutor) -> None:
+        """Register an executor for an explicit vendor-neutral executor role."""
+        self.register(role, executor)
+
+    def registered_roles(self) -> tuple[str, ...]:
+        """Return currently registered executor role keys."""
+        return tuple(self._executors.keys())
+
     def resolve(self, action: Action) -> WorkerExecutor:
         """Resolve the best executor for an action, falling back to no-op."""
+        return self.resolve_with_registration(action).executor
+
+    def resolve_with_registration(self, action: Action) -> WorkerExecutorResolution:
+        """Resolve an executor and expose whether the requested role was registered."""
         role = self._normalize_role(action.executor_role)
         if not role:
-            return self._fallback_executor
+            return WorkerExecutorResolution(
+                executor=self._fallback_executor,
+                requested_role=None,
+                registered=False,
+            )
 
-        return self._executors.get(role, self._fallback_executor)
+        executor = self._executors.get(role)
+        return WorkerExecutorResolution(
+            executor=executor or self._fallback_executor,
+            requested_role=role,
+            registered=executor is not None,
+        )
 
     def _normalize_role(self, role: ExecutorRole | str | None) -> str:
         if isinstance(role, ExecutorRole):

@@ -27,7 +27,11 @@ from apps.server.src.workers.executor import (
     WorkerExecutor,
     WorkerExecutorRegistry,
 )
-from apps.server.src.workers.runtime import WorkerRuntime, WorkerRuntimeInvocationService
+from apps.server.src.workers.runtime import (
+    InMemoryWorkerExecutionObserver,
+    WorkerRuntime,
+    WorkerRuntimeInvocationService,
+)
 
 
 class ApplicationContainer:
@@ -49,11 +53,13 @@ class ApplicationContainer:
         self.worker_executor_registry = WorkerExecutorRegistry(
             fallback_executor=self.worker_executor,
         )
+        self.worker_execution_observer = InMemoryWorkerExecutionObserver()
         self.worker_runtime = WorkerRuntime(
             action_queue=self.action_queue,
             action_lifecycle_manager=self.action_lifecycle_manager,
             worker_executor=self.worker_executor,
             executor_registry=self.worker_executor_registry,
+            execution_observer=self.worker_execution_observer,
         )
         self.worker_runtime_invocation = WorkerRuntimeInvocationService(
             worker_runtime=self.worker_runtime,

@@ -60,13 +60,15 @@ Sprint 1 - VELOX Core Platform
 - Worker Runtime Executor Registry Resolution
 - NoOp Worker Executor Fallback
 - Worker Runtime Invocation API
+- Worker Executor Explicit Role Registration
+- Worker Runtime In-Memory Invocation Observability
 
 ## Current Next Slice
 
-Worker Executor Role Registration and Invocation Observability
+Worker Integration Adapter Planning
 
 Recommended next implementation step after Action Executor Role Model:
-make executor role registration and runtime invocation observability explicit without adding real integrations. The slice should keep roles vendor-neutral, preserve `NoOpWorkerExecutor` fallback behavior, and expose enough execution metadata to verify which role was requested and whether a role-specific executor was found.
+plan the first real worker integration adapter boundary without implementing vendor-specific execution yet. Keep integrations behind executor roles and preserve the existing no-op fallback and in-memory observability behavior.
 
 ## Current Implementation Notes
 
@@ -74,7 +76,9 @@ make executor role registration and runtime invocation observability explicit wi
 - `ExecutorRole` values are vendor-neutral and do not include Gmail, Google Calendar, Notion, Slack, or other integration-specific role names.
 - `BasePlanner` produces actions with executor roles.
 - `WorkerExecutorRegistry` resolves executors by explicit action role.
+- `WorkerExecutorRegistry` supports explicit `ExecutorRole` registration and exposes resolution metadata showing the requested role and whether a matching executor was registered.
 - Backward compatibility is preserved because actions with no role, or with an unknown role, fall back to `NoOpWorkerExecutor`.
+- `WorkerRuntime` records vendor-neutral in-memory execution observations and attaches structured execution metadata to processed actions, including status, start, finish, duration and role resolution details.
 - No real integrations or vendor-specific worker executors have been introduced.
 
 ## Workflow

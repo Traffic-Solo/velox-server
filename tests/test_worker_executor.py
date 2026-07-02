@@ -80,6 +80,53 @@ def test_worker_executor_registry_registers_executor() -> None:
     assert registry.resolve(action) is executor
 
 
+def test_worker_executor_registry_registers_executor_by_explicit_role() -> None:
+    registry = WorkerExecutorRegistry()
+    executor = SuccessfulExecutor()
+    action = Action(
+        type="summarize_email",
+        target="event-1",
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+
+    registry.register_role(ExecutorRole.CONTENT_SUMMARY, executor)
+
+    assert registry.resolve(action) is executor
+    assert registry.registered_roles() == (ExecutorRole.CONTENT_SUMMARY.value,)
+
+
+def test_worker_executor_registry_exposes_successful_role_resolution() -> None:
+    registry = WorkerExecutorRegistry()
+    executor = SuccessfulExecutor()
+    action = Action(
+        type="summarize_email",
+        target="event-1",
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+
+    registry.register_role(ExecutorRole.CONTENT_SUMMARY, executor)
+
+    resolution = registry.resolve_with_registration(action)
+    assert resolution.executor is executor
+    assert resolution.requested_role == ExecutorRole.CONTENT_SUMMARY.value
+    assert resolution.registered is True
+
+
+def test_worker_executor_registry_exposes_fallback_role_resolution() -> None:
+    fallback_executor = NoOpWorkerExecutor()
+    registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
+    action = Action(
+        type="generic_action",
+        target="event-1",
+        executor_role=ExecutorRole.CONTENT_REVIEW,
+    )
+
+    resolution = registry.resolve_with_registration(action)
+    assert resolution.executor is fallback_executor
+    assert resolution.requested_role == ExecutorRole.CONTENT_REVIEW.value
+    assert resolution.registered is False
+
+
 def test_worker_executor_registry_resolves_string_executor_role() -> None:
     registry = WorkerExecutorRegistry()
     executor = SuccessfulExecutor()

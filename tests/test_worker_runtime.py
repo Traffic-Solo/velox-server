@@ -95,6 +95,73 @@ def test_worker_runtime_uses_registry_resolved_executor() -> None:
     assert fallback_executor.called_actions == []
 
 
+def test_worker_runtime_records_execution_metadata_for_registered_role() -> None:
+    queue = ActionQueue()
+    action = Action(
+        type="prepare_meeting",
+        target="event-1",
+        executor_role=ExecutorRole.CONTEXT_PREPARATION,
+    )
+    queue.enqueue(action)
+    fallback_executor = RecordingExecutor(result_status=WorkerExecutionStatus.FAILED)
+    registered_executor = RecordingExecutor(result_status=WorkerExecutionStatus.SUCCEEDED)
+    executor_registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
+    executor_registry.register_role(ExecutorRole.CONTEXT_PREPARATION, registered_executor)
+    runtime = WorkerRuntime(
+        action_queue=queue,
+        action_lifecycle_manager=ActionLifecycleManager(),
+        worker_executor=fallback_executor,
+        executor_registry=executor_registry,
+    )
+
+    result = runtime.process_next()
+
+    assert result.action is not None
+    execution_metadata = result.action.metadata["worker_execution"]
+    assert execution_metadata["status"] == "succeeded"
+    assert execution_metadata["requested_role"] == ExecutorRole.CONTEXT_PREPARATION.value
+    assert execution_metadata["executor_registered"] is True
+    assert execution_metadata["started_at"] is not None
+    assert execution_metadata["finished_at"] is not None
+    assert execution_metadata["metadata"] == {"handled_by": "recording-executor"}
+    assert execution_metadata["observation"]["action_id"] == str(action.id)
+
+
+def test_worker_runtime_records_execution_timing() -> None:
+    queue = ActionQueue()
+    queue.enqueue(Action(type="summarize_email", target="event-1"))
+    runtime = create_runtime(queue)
+
+    result = runtime.process_next()
+
+    assert result.action is not None
+    duration_ms = result.action.metadata["worker_execution"]["duration_ms"]
+    assert isinstance(duration_ms, float)
+    assert duration_ms >= 0
+
+
+def test_worker_runtime_remains_backward_compatible_without_registry() -> None:
+    queue = ActionQueue()
+    action = Action(
+        type="summarize_email",
+        target="event-1",
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+    queue.enqueue(action)
+    executor = RecordingExecutor(result_status=WorkerExecutionStatus.SUCCEEDED)
+    runtime = create_runtime(queue, executor)
+
+    result = runtime.process_next()
+
+    assert result.processed is True
+    assert executor.called_actions == [action]
+    assert result.action is not None
+    assert result.action.metadata["worker_execution"]["requested_role"] == (
+        ExecutorRole.CONTENT_SUMMARY.value
+    )
+    assert result.action.metadata["worker_execution"]["executor_registered"] is False
+
+
 def test_worker_runtime_applies_lifecycle_transitions() -> None:
     queue = ActionQueue()
     queue.enqueue(Action(type="summarize_email", target="event-1"))

@@ -89,6 +89,12 @@ def test_container_exposes_worker_executor_registry() -> None:
     assert container.worker_executor_registry is not None
 
 
+def test_container_exposes_worker_execution_observer() -> None:
+    container = ApplicationContainer()
+
+    assert container.worker_execution_observer is not None
+
+
 def test_container_exposes_wired_worker_runtime() -> None:
     container = ApplicationContainer()
     action = Action(type="external.vendor.call", target="remote-system")
@@ -120,6 +126,31 @@ def test_container_wired_worker_runtime_uses_executor_registry() -> None:
 
     assert result.execution_status == WorkerExecutionStatus.SUCCEEDED
     assert executor.called_actions == [action]
+
+
+def test_container_wired_worker_runtime_records_execution_observation() -> None:
+    container = ApplicationContainer()
+    action = Action(
+        type="prepare_meeting",
+        target="event-1",
+        executor_role=ExecutorRole.CONTEXT_PREPARATION,
+    )
+    executor = ContainerRecordingExecutor()
+    container.worker_executor_registry.register_role(
+        ExecutorRole.CONTEXT_PREPARATION,
+        executor,
+    )
+    container.action_queue.enqueue(action)
+
+    result = container.worker_runtime.process_next()
+
+    observations = container.worker_execution_observer.list()
+    assert result.processed is True
+    assert len(observations) == 1
+    assert observations[0].action_id == action.id
+    assert observations[0].requested_role == ExecutorRole.CONTEXT_PREPARATION.value
+    assert observations[0].executor_registered is True
+    assert observations[0].status == "succeeded"
 
 
 def test_container_worker_runtime_invocation_processes_queue() -> None:

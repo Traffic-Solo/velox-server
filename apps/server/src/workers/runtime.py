@@ -1,6 +1,10 @@
 """Worker runtime foundation for processing queued actions."""
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from time import perf_counter
+from typing import Any
+from uuid import UUID, uuid4
 
 from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionStatus
 from apps.server.src.core.action_lifecycle_manager import ActionLifecycleManager
@@ -11,6 +15,91 @@ from apps.server.src.workers.executor import (
     WorkerExecutor,
     WorkerExecutorRegistry,
 )
+
+
+@dataclass
+class WorkerExecutionObservation:
+    """In-memory observation for one worker execution."""
+
+    execution_id: UUID
+    action_id: UUID
+    requested_role: str | None
+    executor_registered: bool
+    status: str
+    started_at: datetime
+    finished_at: datetime | None = None
+    duration_ms: float | None = None
+    reason: str | None = None
+    metadata: dict[str, Any] | None = None
+
+    def as_metadata(self) -> dict[str, Any]:
+        """Return JSON-compatible structured execution metadata."""
+        return {
+            "execution_id": str(self.execution_id),
+            "action_id": str(self.action_id),
+            "requested_role": self.requested_role,
+            "executor_registered": self.executor_registered,
+            "status": self.status,
+            "started_at": self.started_at.isoformat(),
+            "finished_at": self.finished_at.isoformat()
+            if self.finished_at is not None
+            else None,
+            "duration_ms": self.duration_ms,
+            "reason": self.reason,
+            "metadata": dict(self.metadata or {}),
+        }
+
+
+class InMemoryWorkerExecutionObserver:
+    """Vendor-neutral in-memory worker execution observer."""
+
+    def __init__(self) -> None:
+        self._observations: list[WorkerExecutionObservation] = []
+
+    def start(
+        self,
+        action: Action,
+        requested_role: str | None,
+        executor_registered: bool,
+    ) -> WorkerExecutionObservation:
+        """Record execution start."""
+        observation = WorkerExecutionObservation(
+            execution_id=uuid4(),
+            action_id=action.id,
+            requested_role=requested_role,
+            executor_registered=executor_registered,
+            status="started",
+            started_at=datetime.now(UTC),
+            metadata={
+                "action_type": action.type,
+                "action_target": action.target,
+            },
+        )
+        self._observations.append(observation)
+        return observation
+
+    def finish(
+        self,
+        observation: WorkerExecutionObservation,
+        status: WorkerExecutionStatus,
+        metadata: dict[str, Any],
+        reason: str | None = None,
+        duration_ms: float | None = None,
+    ) -> WorkerExecutionObservation:
+        """Record execution finish."""
+        observation.status = status.value
+        observation.finished_at = datetime.now(UTC)
+        observation.duration_ms = duration_ms
+        observation.reason = reason
+        observation.metadata = {
+            **dict(observation.metadata or {}),
+            **dict(metadata),
+        }
+        return observation
+
+    def list(self) -> list[WorkerExecutionObservation]:
+        """Return recorded execution observations."""
+        return list(self._observations)
 
 
 @dataclass(frozen=True)
@@ -44,11 +133,13 @@ class WorkerRuntime:
         action_lifecycle_manager: ActionLifecycleManager,
         worker_executor: WorkerExecutor,
         executor_registry: WorkerExecutorRegistry | None = None,
+        execution_observer: InMemoryWorkerExecutionObserver | None = None,
     ) -> None:
         self._action_queue = action_queue
         self._action_lifecycle_manager = action_lifecycle_manager
         self._worker_executor = worker_executor
         self._executor_registry = executor_registry
+        self._execution_observer = execution_observer or InMemoryWorkerExecutionObserver()
 
     def process_next(self) -> WorkerProcessingResult:
         """Process one queued action if available."""
@@ -73,12 +164,35 @@ class WorkerRuntime:
             ActionStatus.EXECUTING,
         )
 
-        executor = (
-            self._executor_registry.resolve(action)
-            if self._executor_registry is not None
-            else self._worker_executor
+        if self._executor_registry is not None:
+            resolution = self._executor_registry.resolve_with_registration(action)
+            executor = resolution.executor
+            requested_role = resolution.requested_role
+            executor_registered = resolution.registered
+        else:
+            executor = self._worker_executor
+            requested_role = (
+                action.executor_role.value
+                if hasattr(action.executor_role, "value")
+                else action.executor_role
+            )
+            executor_registered = False
+
+        observation = self._execution_observer.start(
+            action=action,
+            requested_role=requested_role,
+            executor_registered=executor_registered,
         )
+        started_monotonic = perf_counter()
         execution_result = executor.execute(action)
+        duration_ms = round((perf_counter() - started_monotonic) * 1000, 3)
+        observation = self._execution_observer.finish(
+            observation=observation,
+            status=execution_result.status,
+            metadata=execution_result.metadata,
+            reason=execution_result.reason,
+            duration_ms=duration_ms,
+        )
         if execution_result.status == WorkerExecutionStatus.SUCCEEDED:
             lifecycle_state = self._action_lifecycle_manager.transition(
                 lifecycle_state,
@@ -103,7 +217,15 @@ class WorkerRuntime:
             "worker_execution": {
                 "status": execution_result.status.value,
                 "reason": execution_result.reason,
+                "requested_role": requested_role,
+                "executor_registered": executor_registered,
+                "started_at": observation.started_at.isoformat(),
+                "finished_at": observation.finished_at.isoformat()
+                if observation.finished_at is not None
+                else None,
+                "duration_ms": observation.duration_ms,
                 "metadata": dict(execution_result.metadata),
+                "observation": observation.as_metadata(),
             },
             "external_execution_performed": external_execution_performed,
         }
