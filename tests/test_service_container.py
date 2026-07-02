@@ -1,6 +1,20 @@
 from apps.server.src.core.container import ApplicationContainer, get_container
 from apps.server.src.core.actions import Action
 from apps.server.src.core.permission import PermissionDecision, PermissionEngine
+from apps.server.src.workers.executor import WorkerExecutionResult, WorkerExecutionStatus
+
+
+class ContainerRecordingExecutor:
+    def __init__(self) -> None:
+        self.called_actions: list[Action] = []
+
+    def execute(self, action: Action) -> WorkerExecutionResult:
+        self.called_actions.append(action)
+        return WorkerExecutionResult(
+            action=action,
+            status=WorkerExecutionStatus.SUCCEEDED,
+            metadata={"handled_by": "container-recording-executor"},
+        )
 
 
 def test_container_exposes_event_repository() -> None:
@@ -63,6 +77,12 @@ def test_container_exposes_worker_executor() -> None:
     assert container.worker_executor is not None
 
 
+def test_container_exposes_worker_executor_registry() -> None:
+    container = ApplicationContainer()
+
+    assert container.worker_executor_registry is not None
+
+
 def test_container_exposes_wired_worker_runtime() -> None:
     container = ApplicationContainer()
     action = Action(type="external.vendor.call", target="remote-system")
@@ -74,6 +94,19 @@ def test_container_exposes_wired_worker_runtime() -> None:
     assert result.external_execution_performed is False
     assert result.action is not None
     assert result.action.metadata["external_execution_performed"] is False
+
+
+def test_container_wired_worker_runtime_uses_executor_registry() -> None:
+    container = ApplicationContainer()
+    action = Action(type="prepare_meeting", target="event-1")
+    executor = ContainerRecordingExecutor()
+    container.worker_executor_registry.register("prepare_meeting", executor)
+    container.action_queue.enqueue(action)
+
+    result = container.worker_runtime.process_next()
+
+    assert result.execution_status == WorkerExecutionStatus.SUCCEEDED
+    assert executor.called_actions == [action]
 
 
 def test_container_permission_engine_satisfies_contract() -> None:

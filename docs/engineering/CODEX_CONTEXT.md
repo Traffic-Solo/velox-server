@@ -54,10 +54,13 @@ Sprint 1 - VELOX Core Platform
 - Worker Runtime Foundation
 - Worker Executor Contract
 - Worker Executor Runtime Wiring
+- Executor Registry
+- Worker Runtime Executor Registry Resolution
+- NoOp Worker Executor Fallback
 
 ## Current Next Slice
 
-Pending ChatGPT Review
+Worker Runtime Invocation API
 
 ## Workflow
 
@@ -119,3 +122,5 @@ After every implementation slice, update this file in the same commit if the imp
 - Apple Ecosystem Strategy references ADRs that are not yet created.
 - Engineering Board in Notion may still need reconciliation with current repository state.
 - Permission Engine Runtime implementation needs validation in the project virtualenv.
+- Executor Registry & Role Resolution focused tests were added, but validation still needs to be run in an environment where `python` is available on PATH.
+- No vendor-specific worker executor has been added; executor resolution remains role/key based and falls back to `NoOpWorkerExecutor` when no registered executor matches.

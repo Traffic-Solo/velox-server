@@ -6,6 +6,7 @@ from apps.server.src.workers.executor import (
     WorkerExecutionResult,
     WorkerExecutionStatus,
     WorkerExecutor,
+    WorkerExecutorRegistry,
 )
 from apps.server.src.workers.runtime import WorkerRuntime
 
@@ -66,6 +67,28 @@ def test_worker_runtime_calls_executor() -> None:
 
     assert result.processed is True
     assert executor.called_actions == [action]
+
+
+def test_worker_runtime_uses_registry_resolved_executor() -> None:
+    queue = ActionQueue()
+    action = Action(type="prepare_meeting", target="event-1")
+    queue.enqueue(action)
+    fallback_executor = RecordingExecutor(result_status=WorkerExecutionStatus.FAILED)
+    registered_executor = RecordingExecutor(result_status=WorkerExecutionStatus.SUCCEEDED)
+    executor_registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
+    executor_registry.register("prepare_meeting", registered_executor)
+    runtime = WorkerRuntime(
+        action_queue=queue,
+        action_lifecycle_manager=ActionLifecycleManager(),
+        worker_executor=fallback_executor,
+        executor_registry=executor_registry,
+    )
+
+    result = runtime.process_next()
+
+    assert result.execution_status == WorkerExecutionStatus.SUCCEEDED
+    assert registered_executor.called_actions == [action]
+    assert fallback_executor.called_actions == []
 
 
 def test_worker_runtime_applies_lifecycle_transitions() -> None:

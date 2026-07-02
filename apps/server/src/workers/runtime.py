@@ -6,7 +6,11 @@ from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionSt
 from apps.server.src.core.action_lifecycle_manager import ActionLifecycleManager
 from apps.server.src.core.action_queue import ActionQueue
 from apps.server.src.core.actions import Action
-from apps.server.src.workers.executor import WorkerExecutionStatus, WorkerExecutor
+from apps.server.src.workers.executor import (
+    WorkerExecutionStatus,
+    WorkerExecutor,
+    WorkerExecutorRegistry,
+)
 
 
 @dataclass(frozen=True)
@@ -29,10 +33,12 @@ class WorkerRuntime:
         action_queue: ActionQueue,
         action_lifecycle_manager: ActionLifecycleManager,
         worker_executor: WorkerExecutor,
+        executor_registry: WorkerExecutorRegistry | None = None,
     ) -> None:
         self._action_queue = action_queue
         self._action_lifecycle_manager = action_lifecycle_manager
         self._worker_executor = worker_executor
+        self._executor_registry = executor_registry
 
     def process_next(self) -> WorkerProcessingResult:
         """Process one queued action if available."""
@@ -57,7 +63,12 @@ class WorkerRuntime:
             ActionStatus.EXECUTING,
         )
 
-        execution_result = self._worker_executor.execute(action)
+        executor = (
+            self._executor_registry.resolve(action)
+            if self._executor_registry is not None
+            else self._worker_executor
+        )
+        execution_result = executor.execute(action)
         if execution_result.status == WorkerExecutionStatus.SUCCEEDED:
             lifecycle_state = self._action_lifecycle_manager.transition(
                 lifecycle_state,

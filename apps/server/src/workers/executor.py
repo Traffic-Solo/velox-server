@@ -42,3 +42,48 @@ class NoOpWorkerExecutor:
             status=WorkerExecutionStatus.SUCCEEDED,
             metadata={"external_execution_performed": False},
         )
+
+
+class WorkerExecutorRegistry:
+    """Vendor-neutral registry for resolving action executors."""
+
+    def __init__(self, fallback_executor: WorkerExecutor | None = None) -> None:
+        self._executors: dict[str, WorkerExecutor] = {}
+        self._fallback_executor = fallback_executor or NoOpWorkerExecutor()
+
+    def register(self, key: str, executor: WorkerExecutor) -> None:
+        """Register an executor for a vendor-neutral action key."""
+        normalized_key = key.strip()
+        if not normalized_key:
+            raise ValueError("executor registry key must not be empty")
+
+        self._executors[normalized_key] = executor
+
+    def resolve(self, action: Action) -> WorkerExecutor:
+        """Resolve the best executor for an action, falling back to no-op."""
+        for key in self._candidate_keys(action):
+            executor = self._executors.get(key)
+            if executor is not None:
+                return executor
+
+        return self._fallback_executor
+
+    def _candidate_keys(self, action: Action) -> list[str]:
+        metadata = action.metadata
+        candidates = [
+            metadata.get("executor_key"),
+            metadata.get("worker_role"),
+            metadata.get("role"),
+            action.type,
+        ]
+
+        keys: list[str] = []
+        for candidate in candidates:
+            if not isinstance(candidate, str):
+                continue
+
+            key = candidate.strip()
+            if key and key not in keys:
+                keys.append(key)
+
+        return keys

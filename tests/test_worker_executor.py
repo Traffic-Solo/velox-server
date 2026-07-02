@@ -4,6 +4,7 @@ from apps.server.src.workers.executor import (
     WorkerExecutionResult,
     WorkerExecutionStatus,
     WorkerExecutor,
+    WorkerExecutorRegistry,
 )
 
 
@@ -61,5 +62,48 @@ def test_no_op_worker_executor_is_safe_default() -> None:
     result = executor.execute(action)
 
     assert result.action == action
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.metadata["external_execution_performed"] is False
+
+
+def test_worker_executor_registry_registers_executor() -> None:
+    registry = WorkerExecutorRegistry()
+    executor = SuccessfulExecutor()
+    action = Action(type="summarize_email", target="event-1")
+
+    registry.register("summarize_email", executor)
+
+    assert registry.resolve(action) is executor
+
+
+def test_worker_executor_registry_resolves_metadata_role_executor() -> None:
+    registry = WorkerExecutorRegistry()
+    executor = SuccessfulExecutor()
+    action = Action(
+        type="generic_action",
+        target="event-1",
+        metadata={"role": "summarizer"},
+    )
+
+    registry.register("summarizer", executor)
+
+    assert registry.resolve(action) is executor
+
+
+def test_worker_executor_registry_falls_back_to_no_op_executor() -> None:
+    fallback_executor = NoOpWorkerExecutor()
+    registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
+    action = Action(type="missing_executor", target="event-1")
+
+    assert registry.resolve(action) is fallback_executor
+
+
+def test_worker_executor_registry_does_not_introduce_vendor_specific_behavior() -> None:
+    registry = WorkerExecutorRegistry()
+    action = Action(type="external.vendor.call", target="remote-system")
+
+    executor = registry.resolve(action)
+    result = executor.execute(action)
+
     assert result.status == WorkerExecutionStatus.SUCCEEDED
     assert result.metadata["external_execution_performed"] is False
