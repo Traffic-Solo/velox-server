@@ -1,5 +1,6 @@
 from apps.server.src.core.container import ApplicationContainer, get_container
 from apps.server.src.core.actions import Action, ExecutorRole
+from apps.server.src.integrations.gmail import GMAIL_EXECUTOR_ROLE, GmailWorkerExecutor
 from apps.server.src.core.permission import PermissionDecision, PermissionEngine
 from apps.server.src.workers.executor import WorkerExecutionResult, WorkerExecutionStatus
 
@@ -95,6 +96,22 @@ def test_container_exposes_worker_execution_observer() -> None:
     assert container.worker_execution_observer is not None
 
 
+def test_container_registers_gmail_worker_executor() -> None:
+    container = ApplicationContainer()
+    action = Action(
+        type="summarize_email",
+        target="gmail-message-1",
+        executor_role=GMAIL_EXECUTOR_ROLE,
+    )
+
+    resolution = container.worker_executor_registry.resolve_with_registration(action)
+
+    assert resolution.registered is True
+    assert resolution.requested_role == ExecutorRole.CONTENT_SUMMARY.value
+    assert resolution.executor is container.gmail_worker_executor
+    assert isinstance(resolution.executor, GmailWorkerExecutor)
+
+
 def test_container_exposes_wired_worker_runtime() -> None:
     container = ApplicationContainer()
     action = Action(type="external.vendor.call", target="remote-system")
@@ -126,6 +143,31 @@ def test_container_wired_worker_runtime_uses_executor_registry() -> None:
 
     assert result.execution_status == WorkerExecutionStatus.SUCCEEDED
     assert executor.called_actions == [action]
+
+
+def test_container_worker_runtime_routes_matching_action_to_gmail_executor() -> None:
+    container = ApplicationContainer()
+    action = Action(
+        type="summarize_email",
+        target="gmail-message-1",
+        executor_role=GMAIL_EXECUTOR_ROLE,
+    )
+    container.action_queue.enqueue(action)
+
+    result = container.worker_runtime.process_next()
+
+    assert result.processed is True
+    assert result.execution_status == WorkerExecutionStatus.SUCCEEDED
+    assert result.external_execution_performed is False
+    assert result.action is not None
+    execution_metadata = result.action.metadata["worker_execution"]
+    assert execution_metadata["requested_role"] == ExecutorRole.CONTENT_SUMMARY.value
+    assert execution_metadata["executor_registered"] is True
+    assert execution_metadata["metadata"] == {
+        "external_execution_performed": False,
+        "integration": "gmail",
+        "placeholder": True,
+    }
 
 
 def test_container_wired_worker_runtime_records_execution_observation() -> None:

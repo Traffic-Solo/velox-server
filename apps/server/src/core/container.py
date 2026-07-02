@@ -22,6 +22,7 @@ from apps.server.src.core.permission import (
     PermissionEngineRuntime,
 )
 from apps.server.src.core.planner import BasePlanner, Planner
+from apps.server.src.integrations.gmail import GMAIL_EXECUTOR_ROLE, GmailWorkerExecutor
 from apps.server.src.workers.executor import (
     NoOpWorkerExecutor,
     WorkerExecutor,
@@ -52,6 +53,11 @@ class ApplicationContainer:
         self.worker_executor: WorkerExecutor = NoOpWorkerExecutor()
         self.worker_executor_registry = WorkerExecutorRegistry(
             fallback_executor=self.worker_executor,
+        )
+        self.gmail_worker_executor = GmailWorkerExecutor()
+        self.worker_executor_registry.register_role(
+            GMAIL_EXECUTOR_ROLE,
+            self.gmail_worker_executor,
         )
         self.worker_execution_observer = InMemoryWorkerExecutionObserver()
         self.worker_runtime = WorkerRuntime(

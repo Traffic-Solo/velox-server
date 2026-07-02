@@ -1,4 +1,7 @@
+import socket
+
 from apps.server.src.core.actions import Action, ExecutorRole
+from apps.server.src.integrations.gmail import GmailWorkerExecutor
 from apps.server.src.workers.executor import (
     NoOpWorkerExecutor,
     WorkerExecutionFailure,
@@ -34,6 +37,12 @@ class FailedExecutor:
 
 def test_worker_executor_contract_shape() -> None:
     executor = SuccessfulExecutor()
+
+    assert isinstance(executor, WorkerExecutor)
+
+
+def test_gmail_worker_executor_satisfies_worker_executor_contract() -> None:
+    executor = GmailWorkerExecutor()
 
     assert isinstance(executor, WorkerExecutor)
 
@@ -121,6 +130,45 @@ def test_no_op_worker_executor_is_safe_default() -> None:
     result = executor.execute(action)
 
     assert result.action == action
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.metadata["external_execution_performed"] is False
+
+
+def test_gmail_worker_executor_returns_safe_placeholder_result() -> None:
+    action = Action(
+        type="summarize_email",
+        target="gmail-message-1",
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+    executor: WorkerExecutor = GmailWorkerExecutor()
+
+    result = executor.execute(action)
+
+    assert result.action == action
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.reason == "gmail executor bootstrap placeholder"
+    assert result.metadata == {
+        "external_execution_performed": False,
+        "integration": "gmail",
+        "placeholder": True,
+    }
+
+
+def test_gmail_worker_executor_makes_no_external_api_calls(monkeypatch) -> None:
+    def fail_external_call(*args, **kwargs):
+        raise AssertionError("external API call attempted")
+
+    monkeypatch.setattr(socket, "create_connection", fail_external_call)
+    monkeypatch.setattr(socket, "socket", fail_external_call)
+    action = Action(
+        type="summarize_email",
+        target="gmail-message-1",
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+    executor = GmailWorkerExecutor()
+
+    result = executor.execute(action)
+
     assert result.status == WorkerExecutionStatus.SUCCEEDED
     assert result.metadata["external_execution_performed"] is False
 

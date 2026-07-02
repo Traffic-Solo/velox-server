@@ -64,13 +64,14 @@ Sprint 1 - VELOX Core Platform
 - Worker Runtime In-Memory Invocation Observability
 - Worker Runtime Exception Safety
 - Worker Executor Failure Contract
+- Gmail Worker Executor Bootstrap
 
 ## Current Next Slice
 
-Worker Integration Adapter Planning
+Gmail Integration Behavior Planning
 
-Recommended next implementation step after Worker Executor Failure Contract:
-plan the first real worker integration adapter boundary without implementing vendor-specific execution yet. Keep integrations behind executor roles and preserve the existing no-op fallback and in-memory observability behavior.
+Recommended next implementation step after Gmail Worker Executor Bootstrap:
+plan the first real Gmail behavior behind the existing worker executor boundary without adding credentials, OAuth or external API calls until the integration contract is explicitly reviewed.
 
 ## Current Implementation Notes
 
@@ -84,7 +85,8 @@ plan the first real worker integration adapter boundary without implementing ven
 - `WorkerRuntime` catches executor exceptions, converts them into explicit failed `WorkerExecutionResult` values, transitions lifecycle state to failed, and finishes execution observations with failure metadata. Dequeued actions are not silently lost and are not requeued by the in-memory queue.
 - Worker executors now have an explicit vendor-neutral failure contract via `WorkerExecutionFailure`, classified as transient, permanent or internal, with optional failure message and metadata.
 - `WorkerRuntime` consumes the failure contract without adding retries, backoff, durable queues, external logging or vendor-specific exception handling, and surfaces failure classification in execution metadata and in-memory observations.
-- No real integrations or vendor-specific worker executors have been introduced.
+- A Gmail worker executor bootstrap exists under the integrations package, is registered in `ApplicationContainer` through the existing executor registry using the vendor-neutral `CONTENT_SUMMARY` role, and returns a safe placeholder `WorkerExecutionResult` without credentials, OAuth, HTTP clients or Gmail API calls.
+- No real Gmail send, read or archive behavior has been introduced.
 
 ## Workflow
 
@@ -147,4 +149,4 @@ After every implementation slice, update this file in the same commit if the imp
 - Engineering Board in Notion may still need reconciliation with current repository state.
 - Permission Engine Runtime implementation needs validation in the project virtualenv.
 - Action Executor Role Model validation still needs to be run in an environment where `python` is available on PATH.
-- No vendor-specific worker executor has been added; executor resolution remains role-based and falls back to `NoOpWorkerExecutor` when no registered executor matches.
+- Gmail worker execution is currently a placeholder only; executor resolution remains role-based and falls back to `NoOpWorkerExecutor` when no registered executor matches.
