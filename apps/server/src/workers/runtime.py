@@ -11,6 +11,7 @@ from apps.server.src.core.action_lifecycle_manager import ActionLifecycleManager
 from apps.server.src.core.action_queue import ActionQueue
 from apps.server.src.core.actions import Action
 from apps.server.src.workers.executor import (
+    WorkerExecutionResult,
     WorkerExecutionStatus,
     WorkerExecutor,
     WorkerExecutorRegistry,
@@ -184,7 +185,19 @@ class WorkerRuntime:
             executor_registered=executor_registered,
         )
         started_monotonic = perf_counter()
-        execution_result = executor.execute(action)
+        try:
+            execution_result = executor.execute(action)
+        except Exception as exc:
+            execution_result = WorkerExecutionResult(
+                action=action,
+                status=WorkerExecutionStatus.FAILED,
+                reason=f"executor raised exception: {exc}",
+                metadata={
+                    "external_execution_performed": False,
+                    "exception_type": type(exc).__name__,
+                    "exception_message": str(exc),
+                },
+            )
         duration_ms = round((perf_counter() - started_monotonic) * 1000, 3)
         observation = self._execution_observer.finish(
             observation=observation,

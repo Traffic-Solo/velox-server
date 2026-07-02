@@ -62,12 +62,13 @@ Sprint 1 - VELOX Core Platform
 - Worker Runtime Invocation API
 - Worker Executor Explicit Role Registration
 - Worker Runtime In-Memory Invocation Observability
+- Worker Runtime Exception Safety
 
 ## Current Next Slice
 
 Worker Integration Adapter Planning
 
-Recommended next implementation step after Action Executor Role Model:
+Recommended next implementation step after Worker Runtime Exception Safety:
 plan the first real worker integration adapter boundary without implementing vendor-specific execution yet. Keep integrations behind executor roles and preserve the existing no-op fallback and in-memory observability behavior.
 
 ## Current Implementation Notes
@@ -79,6 +80,7 @@ plan the first real worker integration adapter boundary without implementing ven
 - `WorkerExecutorRegistry` supports explicit `ExecutorRole` registration and exposes resolution metadata showing the requested role and whether a matching executor was registered.
 - Backward compatibility is preserved because actions with no role, or with an unknown role, fall back to `NoOpWorkerExecutor`.
 - `WorkerRuntime` records vendor-neutral in-memory execution observations and attaches structured execution metadata to processed actions, including status, start, finish, duration and role resolution details.
+- `WorkerRuntime` catches executor exceptions, converts them into explicit failed `WorkerExecutionResult` values, transitions lifecycle state to failed, and finishes execution observations with failure metadata. Dequeued actions are not silently lost and are not requeued by the in-memory queue.
 - No real integrations or vendor-specific worker executors have been introduced.
 
 ## Workflow

@@ -28,6 +28,11 @@ class RecordingExecutor:
         )
 
 
+class RaisingExecutor:
+    def execute(self, action: Action) -> WorkerExecutionResult:
+        raise RuntimeError("executor boom")
+
+
 def create_runtime(
     queue: ActionQueue,
     executor: WorkerExecutor | None = None,
@@ -216,6 +221,40 @@ def test_worker_runtime_failed_executor_result_updates_processing_result() -> No
     assert result.action is not None
     assert result.action.status == action.status
     assert result.action.metadata["worker_execution"]["status"] == "failed"
+
+
+def test_worker_runtime_catches_executor_exception_as_failed_result() -> None:
+    queue = ActionQueue()
+    action = Action(type="summarize_email", target="event-1")
+    queue.enqueue(action)
+    runtime = create_runtime(queue, RaisingExecutor())
+
+    result = runtime.process_next()
+
+    assert result.processed is True
+    assert result.execution_status == WorkerExecutionStatus.FAILED
+    assert result.execution_reason == "executor raised exception: executor boom"
+    assert result.lifecycle_state is not None
+    assert result.lifecycle_state.status == ActionStatus.FAILED
+    assert result.lifecycle_state.reason == "executor raised exception: executor boom"
+    assert result.action is not None
+    assert result.action.id == action.id
+    assert result.action.metadata["worker_execution"]["status"] == "failed"
+    assert result.action.metadata["worker_execution"]["reason"] == (
+        "executor raised exception: executor boom"
+    )
+    assert result.action.metadata["worker_execution"]["metadata"] == {
+        "external_execution_performed": False,
+        "exception_type": "RuntimeError",
+        "exception_message": "executor boom",
+    }
+    assert result.action.metadata["worker_execution"]["finished_at"] is not None
+    assert result.action.metadata["worker_execution"]["observation"]["status"] == "failed"
+    assert result.action.metadata["worker_execution"]["observation"]["reason"] == (
+        "executor raised exception: executor boom"
+    )
+    assert result.external_execution_performed is False
+    assert queue.count() == 0
 
 
 def test_worker_runtime_handles_empty_queue_safely() -> None:
