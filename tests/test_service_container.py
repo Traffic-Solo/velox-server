@@ -71,6 +71,12 @@ def test_container_exposes_worker_runtime() -> None:
     assert container.worker_runtime is not None
 
 
+def test_container_exposes_worker_runtime_invocation() -> None:
+    container = ApplicationContainer()
+
+    assert container.worker_runtime_invocation is not None
+
+
 def test_container_exposes_worker_executor() -> None:
     container = ApplicationContainer()
 
@@ -107,6 +113,19 @@ def test_container_wired_worker_runtime_uses_executor_registry() -> None:
 
     assert result.execution_status == WorkerExecutionStatus.SUCCEEDED
     assert executor.called_actions == [action]
+
+
+def test_container_worker_runtime_invocation_processes_queue() -> None:
+    container = ApplicationContainer()
+    action = Action(type="prepare_meeting", target="event-1")
+    container.action_queue.enqueue(action)
+
+    result = container.worker_runtime_invocation.invoke()
+
+    assert result.processed_count == 1
+    assert result.results[0].processed is True
+    assert result.results[0].action is not None
+    assert result.results[0].action.id == action.id
 
 
 def test_container_permission_engine_satisfies_contract() -> None:
@@ -153,3 +172,9 @@ def test_get_container_exposes_registered_worker_runtime() -> None:
     container = get_container()
 
     assert container.worker_runtime is not None
+
+
+def test_get_container_exposes_registered_worker_runtime_invocation() -> None:
+    container = get_container()
+
+    assert container.worker_runtime_invocation is not None

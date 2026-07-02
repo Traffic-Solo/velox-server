@@ -27,7 +27,7 @@ from apps.server.src.workers.executor import (
     WorkerExecutor,
     WorkerExecutorRegistry,
 )
-from apps.server.src.workers.runtime import WorkerRuntime
+from apps.server.src.workers.runtime import WorkerRuntime, WorkerRuntimeInvocationService
 
 
 class ApplicationContainer:
@@ -54,6 +54,9 @@ class ApplicationContainer:
             action_lifecycle_manager=self.action_lifecycle_manager,
             worker_executor=self.worker_executor,
             executor_registry=self.worker_executor_registry,
+        )
+        self.worker_runtime_invocation = WorkerRuntimeInvocationService(
+            worker_runtime=self.worker_runtime,
         )
         self.event_classifier: EventClassifier = RuleBasedEventClassifier()
         self.context_resolver: ContextResolver = BaseContextResolver()

@@ -25,6 +25,16 @@ class WorkerProcessingResult:
     external_execution_performed: bool
 
 
+@dataclass(frozen=True)
+class WorkerInvocationResult:
+    """Explicit result returned by the public worker invocation entrypoint."""
+
+    requested_count: int
+    processed_count: int
+    queue_empty: bool
+    results: list[WorkerProcessingResult]
+
+
 class WorkerRuntime:
     """Processes queued actions through lifecycle transitions without integrations."""
 
@@ -112,4 +122,31 @@ class WorkerRuntime:
             execution_reason=execution_result.reason,
             processed=True,
             external_execution_performed=external_execution_performed,
+        )
+
+
+class WorkerRuntimeInvocationService:
+    """Vendor-neutral entrypoint for invoking worker runtime processing."""
+
+    def __init__(self, worker_runtime: WorkerRuntime) -> None:
+        self._worker_runtime = worker_runtime
+
+    def invoke(self, max_actions: int = 1) -> WorkerInvocationResult:
+        """Process one queued action or an explicit small batch."""
+        if max_actions < 1:
+            raise ValueError("max_actions must be at least 1")
+
+        results: list[WorkerProcessingResult] = []
+        for _ in range(max_actions):
+            result = self._worker_runtime.process_next()
+            results.append(result)
+            if not result.processed:
+                break
+
+        processed_count = sum(1 for result in results if result.processed)
+        return WorkerInvocationResult(
+            requested_count=max_actions,
+            processed_count=processed_count,
+            queue_empty=processed_count < max_actions,
+            results=results,
         )

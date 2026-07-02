@@ -57,10 +57,11 @@ Sprint 1 - VELOX Core Platform
 - Executor Registry
 - Worker Runtime Executor Registry Resolution
 - NoOp Worker Executor Fallback
+- Worker Runtime Invocation API
 
 ## Current Next Slice
 
-Worker Runtime Invocation API
+Pending ChatGPT review and next slice assignment
 
 ## Workflow
 
