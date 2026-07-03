@@ -17,7 +17,7 @@ GMAIL_EXECUTOR_ROLE = ExecutorRole.CONTENT_SUMMARY
 
 @dataclass(frozen=True)
 class GmailCapabilityResult:
-    """Shared safe result for Gmail capability placeholders."""
+    """Shared safe result for Gmail capabilities."""
 
     status: WorkerExecutionStatus
     reason: str | None = None
@@ -182,12 +182,27 @@ class InMemoryGmailSendCapability:
         )
 
 
-class PlaceholderGmailArchiveCapability:
-    """Safe Gmail archive placeholder with no external API behavior."""
+class InMemoryGmailArchiveCapability:
+    """Safe deterministic Gmail archive adapter with no external API behavior."""
 
     def archive(self, request: GmailArchiveRequest) -> GmailCapabilityResult:
-        """Return a placeholder archive result without contacting Gmail."""
-        return _placeholder_capability_result("archive", request.message_id)
+        """Return an in-memory archive result without contacting Gmail."""
+        message_id = request.message_id.strip()
+        archived = message_id == "gmail-message-1"
+
+        return GmailCapabilityResult(
+            status=WorkerExecutionStatus.SUCCEEDED,
+            reason="gmail archive capability in-memory result",
+            metadata={
+                "external_execution_performed": False,
+                "integration": "gmail",
+                "capability": "archive",
+                "adapter": "in_memory",
+                "message_id": message_id,
+                "archived": archived,
+                "found": archived,
+            },
+        )
 
 
 @dataclass(frozen=True)
@@ -206,7 +221,7 @@ class GmailWorkerExecutor:
         self.capabilities = capabilities or GmailCapabilities(
             read=InMemoryGmailReadCapability(),
             send=InMemoryGmailSendCapability(),
-            archive=PlaceholderGmailArchiveCapability(),
+            archive=InMemoryGmailArchiveCapability(),
         )
 
     def execute(self, action: Action) -> WorkerExecutionResult:
@@ -215,6 +230,11 @@ class GmailWorkerExecutor:
             return self._execute_read(action)
         if action.type == "gmail.send" or action.payload.get("capability") == "send":
             return self._execute_send(action)
+        if (
+            action.type == "gmail.archive"
+            or action.payload.get("capability") == "archive"
+        ):
+            return self._execute_archive(action)
 
         return WorkerExecutionResult(
             action=action,
@@ -248,6 +268,26 @@ class GmailWorkerExecutor:
 
         capability_result = self.capabilities.read.read(
             GmailReadRequest(message_id=message_id),
+        )
+        return WorkerExecutionResult(
+            action=action,
+            status=capability_result.status,
+            reason=capability_result.reason,
+            metadata=capability_result.metadata,
+        )
+
+    def _execute_archive(self, action: Action) -> WorkerExecutionResult:
+        message_id = str(action.payload.get("message_id") or action.target).strip()
+        if not message_id:
+            return _gmail_capability_failure_result(
+                action=action,
+                capability="archive",
+                reason="gmail archive request missing message_id",
+                field="message_id",
+            )
+
+        capability_result = self.capabilities.archive.archive(
+            GmailArchiveRequest(message_id=message_id),
         )
         return WorkerExecutionResult(
             action=action,
@@ -296,26 +336,6 @@ class GmailWorkerExecutor:
             reason=capability_result.reason,
             metadata=capability_result.metadata,
         )
-
-
-def _placeholder_capability_result(
-    capability: str,
-    message_id: str | None = None,
-) -> GmailCapabilityResult:
-    metadata: dict[str, Any] = {
-        "external_execution_performed": False,
-        "integration": "gmail",
-        "capability": capability,
-        "placeholder": True,
-    }
-    if message_id is not None:
-        metadata["message_id"] = message_id
-
-    return GmailCapabilityResult(
-        status=WorkerExecutionStatus.SUCCEEDED,
-        reason=f"gmail {capability} capability placeholder",
-        metadata=metadata,
-    )
 
 
 def _normalize_recipients(value: Any) -> tuple[str, ...]:

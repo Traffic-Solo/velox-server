@@ -68,13 +68,14 @@ Sprint 1 - VELOX Core Platform
 - Gmail Capability Contract
 - Gmail Read Capability Bootstrap
 - Gmail Send Capability Bootstrap
+- Gmail Archive Capability Bootstrap
 
 ## Current Next Slice
 
-Gmail Send Capability Review
+Gmail Archive Capability Review
 
-Recommended next implementation step after Gmail Send Capability Bootstrap:
-review the in-memory Gmail send capability behavior and decide the next Gmail capability slice without adding credentials, OAuth or external API calls until the integration contract is explicitly reviewed.
+Recommended next implementation step after Gmail Archive Capability Bootstrap:
+review the in-memory Gmail archive capability behavior and decide the next Gmail capability slice without adding credentials, OAuth or external API calls until the integration contract is explicitly reviewed.
 
 ## Current Implementation Notes
 
@@ -89,12 +90,13 @@ review the in-memory Gmail send capability behavior and decide the next Gmail ca
 - Worker executors now have an explicit vendor-neutral failure contract via `WorkerExecutionFailure`, classified as transient, permanent or internal, with optional failure message and metadata.
 - `WorkerRuntime` consumes the failure contract without adding retries, backoff, durable queues, external logging or vendor-specific exception handling, and surfaces failure classification in execution metadata and in-memory observations.
 - A Gmail worker executor bootstrap exists under the integrations package, is registered in `ApplicationContainer` through the existing executor registry using the vendor-neutral `CONTENT_SUMMARY` role, and returns a safe placeholder `WorkerExecutionResult` without credentials, OAuth, HTTP clients or Gmail API calls.
-- Gmail capability-level contracts now exist under the Gmail integration module for read, send and archive operations, with shared request/result dataclasses and placeholder implementations exposed by the existing Gmail worker executor.
+- Gmail capability-level contracts now exist under the Gmail integration module for read, send and archive operations, with shared request/result dataclasses and deterministic in-memory implementations exposed by the existing Gmail worker executor.
 - Gmail read capability now has a deterministic in-memory bootstrap behind the Gmail executor boundary. It accepts `GmailReadRequest`, returns fake in-memory message metadata, safely reports no-message cases, and performs no external Gmail, OAuth, credentials, HTTP or API behavior.
 - Gmail worker executor can route explicit read actions to the in-memory read capability and maps malformed read requests to the existing `WorkerExecutionFailure` contract.
 - Gmail send capability now has a deterministic in-memory bootstrap behind the Gmail executor boundary. It accepts `GmailSendRequest`, returns fake in-memory sent-message metadata, and performs no external Gmail, OAuth, credentials, HTTP or API behavior.
 - Gmail worker executor can route explicit send actions to the in-memory send capability and maps malformed send requests to the existing `WorkerExecutionFailure` contract.
-- Gmail archive capability remains placeholder only.
+- Gmail archive capability now has a deterministic in-memory bootstrap behind the Gmail executor boundary. It accepts `GmailArchiveRequest`, returns fake in-memory archive metadata, safely reports missing-message cases, and performs no external Gmail, OAuth, credentials, HTTP or API behavior.
+- Gmail worker executor can route explicit archive actions to the in-memory archive capability and maps malformed archive requests to the existing `WorkerExecutionFailure` contract.
 
 ## Workflow
 
@@ -157,4 +159,4 @@ After every implementation slice, update this file in the same commit if the imp
 - Engineering Board in Notion may still need reconciliation with current repository state.
 - Permission Engine Runtime implementation needs validation in the project virtualenv.
 - Action Executor Role Model validation still needs to be run in an environment where `python` is available on PATH.
-- Gmail archive capability is currently placeholder only; Gmail read and send use deterministic in-memory fake data only. Executor resolution remains role-based and falls back to `NoOpWorkerExecutor` when no registered executor matches.
+- Gmail read, send and archive capabilities use deterministic in-memory fake data only. Executor resolution remains role-based and falls back to `NoOpWorkerExecutor` when no registered executor matches.
