@@ -116,12 +116,69 @@ class GmailProviderResponse:
     failure: GmailProviderFailure | None = None
 
 
+class GmailCredentialsProviderError(Exception):
+    """Safe Gmail credentials provider failure with provider failure metadata."""
+
+    def __init__(self, failure: GmailProviderFailure) -> None:
+        super().__init__(failure.message)
+        self.failure = failure
+
+
 @runtime_checkable
 class GmailCredentialsProvider(Protocol):
     """Contract for resolving Gmail credentials behind the integration boundary."""
 
-    def get_credentials(self) -> GmailCredentials:
+    def get_credentials(
+        self,
+        principal: str | None = None,
+        account: str | None = None,
+    ) -> GmailCredentials:
         """Return Gmail credentials for a future provider adapter."""
+
+
+class FakeGmailCredentialsProvider:
+    """Deterministic fake Gmail credentials provider with no OAuth or storage."""
+
+    def __init__(
+        self,
+        failures: dict[str, GmailProviderFailure] | None = None,
+    ) -> None:
+        self._failures = failures or {}
+
+    def get_credentials(
+        self,
+        principal: str | None = "fake-principal",
+        account: str | None = "fake-account",
+    ) -> GmailCredentials:
+        """Return deterministic fake credentials for a normalized principal/account."""
+        normalized_principal = self._normalize_identifier(principal, "principal")
+        normalized_account = self._normalize_identifier(account, "account")
+        failure = (
+            self._failures.get(f"{normalized_principal}:{normalized_account}")
+            or self._failures.get(normalized_principal)
+            or self._failures.get(normalized_account)
+        )
+        if failure is not None:
+            raise GmailCredentialsProviderError(failure)
+
+        return GmailCredentials(
+            access_token=(
+                "fake-gmail-access-token:"
+                f"{normalized_principal}:{normalized_account}"
+            ),
+            expires_at="2099-01-01T00:00:00Z",
+        )
+
+    def _normalize_identifier(self, value: str | None, field_name: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise GmailCredentialsProviderError(
+                GmailProviderFailure(
+                    category=WorkerExecutionFailureCategory.PERMANENT,
+                    message=f"gmail credentials request missing {field_name}",
+                    metadata={"field": field_name},
+                ),
+            )
+        return value.strip()
 
 
 @runtime_checkable

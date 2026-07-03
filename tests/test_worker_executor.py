@@ -2,11 +2,13 @@ import socket
 
 from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.integrations.gmail import (
+    FakeGmailCredentialsProvider,
     FakeGmailTransportClient,
     GmailArchiveCapability,
     GmailArchiveRequest,
     GmailCredentials,
     GmailCredentialsProvider,
+    GmailCredentialsProviderError,
     GmailProviderFailure,
     GmailProviderRequest,
     GmailProviderResponse,
@@ -48,11 +50,6 @@ class FailedExecutor:
                 message="execution failed",
             ),
         )
-
-
-class FakeGmailCredentialsProvider:
-    def get_credentials(self) -> GmailCredentials:
-        return GmailCredentials(access_token="fake-token")
 
 
 GMAIL_MESSAGE_ID = "gmail-message-1"
@@ -138,7 +135,89 @@ def test_gmail_provider_boundary_exposes_credentials_contract() -> None:
     credentials = provider.get_credentials()
 
     assert isinstance(provider, GmailCredentialsProvider)
-    assert credentials == GmailCredentials(access_token="fake-token")
+    assert credentials == GmailCredentials(
+        access_token="fake-gmail-access-token:fake-principal:fake-account",
+        expires_at="2099-01-01T00:00:00Z",
+    )
+
+
+def test_gmail_fake_credentials_provider_returns_deterministic_credentials() -> None:
+    provider = FakeGmailCredentialsProvider()
+
+    credentials = provider.get_credentials(
+        principal="principal-1",
+        account="account-1",
+    )
+
+    assert credentials == GmailCredentials(
+        access_token="fake-gmail-access-token:principal-1:account-1",
+        expires_at="2099-01-01T00:00:00Z",
+    )
+
+
+def test_gmail_fake_credentials_provider_normalizes_principal_and_account() -> None:
+    provider = FakeGmailCredentialsProvider()
+
+    credentials = provider.get_credentials(
+        principal=" principal-1 ",
+        account=" account-1 ",
+    )
+
+    assert credentials.access_token == (
+        "fake-gmail-access-token:principal-1:account-1"
+    )
+
+
+def test_gmail_fake_credentials_provider_handles_missing_principal_safely() -> None:
+    provider = FakeGmailCredentialsProvider()
+
+    try:
+        provider.get_credentials(principal="", account="account-1")
+    except GmailCredentialsProviderError as error:
+        failure = error.failure
+    else:
+        raise AssertionError("expected GmailCredentialsProviderError")
+
+    assert failure.category == WorkerExecutionFailureCategory.PERMANENT
+    assert failure.message == "gmail credentials request missing principal"
+    assert failure.metadata == {"field": "principal"}
+
+
+def test_gmail_fake_credentials_provider_handles_missing_account_safely() -> None:
+    provider = FakeGmailCredentialsProvider()
+
+    try:
+        provider.get_credentials(principal="principal-1", account=None)
+    except GmailCredentialsProviderError as error:
+        failure = error.failure
+    else:
+        raise AssertionError("expected GmailCredentialsProviderError")
+
+    assert failure.category == WorkerExecutionFailureCategory.PERMANENT
+    assert failure.message == "gmail credentials request missing account"
+    assert failure.metadata == {"field": "account"}
+
+
+def test_gmail_fake_credentials_provider_can_simulate_provider_failure() -> None:
+    failure = GmailProviderFailure(
+        category=WorkerExecutionFailureCategory.TRANSIENT,
+        message="gmail credentials provider unavailable",
+        retryable=True,
+        provider_reason="temporarilyUnavailable",
+        metadata={"principal": "principal-1", "account": "account-1"},
+    )
+    provider = FakeGmailCredentialsProvider(
+        failures={"principal-1:account-1": failure},
+    )
+
+    try:
+        provider.get_credentials(principal="principal-1", account="account-1")
+    except GmailCredentialsProviderError as error:
+        raised_failure = error.failure
+    else:
+        raise AssertionError("expected GmailCredentialsProviderError")
+
+    assert raised_failure == failure
 
 
 def test_gmail_provider_boundary_exposes_transport_contract() -> None:
