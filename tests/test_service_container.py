@@ -1,5 +1,9 @@
 from apps.server.src.core.container import ApplicationContainer, get_container
 from apps.server.src.core.actions import Action, ExecutorRole
+from apps.server.src.integrations.calendar import (
+    CALENDAR_EXECUTOR_ROLE,
+    CalendarWorkerExecutor,
+)
 from apps.server.src.integrations.gmail import (
     GMAIL_EXECUTOR_ROLE,
     GmailArchiveCapability,
@@ -118,6 +122,22 @@ def test_container_registers_gmail_worker_executor() -> None:
     assert isinstance(resolution.executor, GmailWorkerExecutor)
 
 
+def test_container_registers_calendar_worker_executor() -> None:
+    container = ApplicationContainer()
+    action = Action(
+        type="prepare_calendar_context",
+        target="calendar-placeholder",
+        executor_role=CALENDAR_EXECUTOR_ROLE,
+    )
+
+    resolution = container.worker_executor_registry.resolve_with_registration(action)
+
+    assert resolution.registered is True
+    assert resolution.requested_role == ExecutorRole.CONTEXT_PREPARATION.value
+    assert resolution.executor is container.calendar_worker_executor
+    assert isinstance(resolution.executor, CalendarWorkerExecutor)
+
+
 def test_container_registered_gmail_executor_exposes_capability_contracts() -> None:
     container = ApplicationContainer()
 
@@ -189,6 +209,31 @@ def test_container_worker_runtime_routes_matching_action_to_gmail_executor() -> 
     assert execution_metadata["metadata"] == {
         "external_execution_performed": False,
         "integration": "gmail",
+        "placeholder": True,
+    }
+
+
+def test_container_worker_runtime_routes_matching_action_to_calendar_executor() -> None:
+    container = ApplicationContainer()
+    action = Action(
+        type="prepare_calendar_context",
+        target="calendar-placeholder",
+        executor_role=CALENDAR_EXECUTOR_ROLE,
+    )
+    container.action_queue.enqueue(action)
+
+    result = container.worker_runtime.process_next()
+
+    assert result.processed is True
+    assert result.execution_status == WorkerExecutionStatus.SUCCEEDED
+    assert result.external_execution_performed is False
+    assert result.action is not None
+    execution_metadata = result.action.metadata["worker_execution"]
+    assert execution_metadata["requested_role"] == ExecutorRole.CONTEXT_PREPARATION.value
+    assert execution_metadata["executor_registered"] is True
+    assert execution_metadata["metadata"] == {
+        "external_execution_performed": False,
+        "integration": "calendar",
         "placeholder": True,
     }
 

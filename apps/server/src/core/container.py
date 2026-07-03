@@ -22,6 +22,10 @@ from apps.server.src.core.permission import (
     PermissionEngineRuntime,
 )
 from apps.server.src.core.planner import BasePlanner, Planner
+from apps.server.src.integrations.calendar import (
+    CALENDAR_EXECUTOR_ROLE,
+    CalendarWorkerExecutor,
+)
 from apps.server.src.integrations.gmail import GMAIL_EXECUTOR_ROLE, GmailWorkerExecutor
 from apps.server.src.workers.executor import (
     NoOpWorkerExecutor,
@@ -58,6 +62,11 @@ class ApplicationContainer:
         self.worker_executor_registry.register_role(
             GMAIL_EXECUTOR_ROLE,
             self.gmail_worker_executor,
+        )
+        self.calendar_worker_executor = CalendarWorkerExecutor()
+        self.worker_executor_registry.register_role(
+            CALENDAR_EXECUTOR_ROLE,
+            self.calendar_worker_executor,
         )
         self.worker_execution_observer = InMemoryWorkerExecutionObserver()
         self.worker_runtime = WorkerRuntime(
