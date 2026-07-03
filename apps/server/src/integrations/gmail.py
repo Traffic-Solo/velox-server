@@ -95,15 +95,6 @@ class GmailProviderRequest:
 
 
 @dataclass(frozen=True)
-class GmailProviderResponse:
-    """Provider transport response behind the Gmail integration boundary."""
-
-    status_code: int
-    body: dict[str, Any] = field(default_factory=dict)
-    headers: dict[str, str] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
 class GmailProviderFailure:
     """Provider failure mapping shape for future Gmail adapters."""
 
@@ -113,6 +104,16 @@ class GmailProviderFailure:
     provider_status_code: int | None = None
     provider_reason: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class GmailProviderResponse:
+    """Provider transport response behind the Gmail integration boundary."""
+
+    status_code: int
+    body: dict[str, Any] = field(default_factory=dict)
+    headers: dict[str, str] = field(default_factory=dict)
+    failure: GmailProviderFailure | None = None
 
 
 @runtime_checkable
@@ -133,6 +134,59 @@ class GmailTransportClient(Protocol):
         credentials: GmailCredentials,
     ) -> GmailProviderResponse:
         """Execute a provider request for a future Gmail adapter."""
+
+
+class FakeGmailTransportClient:
+    """Deterministic Gmail transport with no HTTP or provider API behavior."""
+
+    def __init__(
+        self,
+        responses: dict[str, GmailProviderResponse] | None = None,
+        failures: dict[str, GmailProviderFailure] | None = None,
+    ) -> None:
+        self._responses = responses or {}
+        self._failures = failures or {}
+
+    def execute(
+        self,
+        request: GmailProviderRequest,
+        credentials: GmailCredentials,
+    ) -> GmailProviderResponse:
+        """Return a deterministic fake provider response."""
+        key = self._request_key(request)
+        failure = self._failures.get(key) or self._failures.get(request.operation)
+        if failure is not None:
+            return GmailProviderResponse(
+                status_code=failure.provider_status_code or 500,
+                body={
+                    "external_execution_performed": False,
+                    "integration": "gmail",
+                    "adapter": "fake_transport",
+                    "operation": request.operation,
+                    "failed": True,
+                },
+                failure=failure,
+            )
+
+        response = self._responses.get(key) or self._responses.get(request.operation)
+        if response is not None:
+            return response
+
+        return GmailProviderResponse(
+            status_code=200,
+            body={
+                "external_execution_performed": False,
+                "integration": "gmail",
+                "adapter": "fake_transport",
+                "operation": request.operation,
+                "path": request.path,
+                "method": request.method,
+                "token_type": credentials.token_type,
+            },
+        )
+
+    def _request_key(self, request: GmailProviderRequest) -> str:
+        return f"{request.method}:{request.path}:{request.operation}"
 
 
 @runtime_checkable

@@ -2,6 +2,7 @@ import socket
 
 from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.integrations.gmail import (
+    FakeGmailTransportClient,
     GmailArchiveCapability,
     GmailArchiveRequest,
     GmailCredentials,
@@ -52,21 +53,6 @@ class FailedExecutor:
 class FakeGmailCredentialsProvider:
     def get_credentials(self) -> GmailCredentials:
         return GmailCredentials(access_token="fake-token")
-
-
-class FakeGmailTransportClient:
-    def execute(
-        self,
-        request: GmailProviderRequest,
-        credentials: GmailCredentials,
-    ) -> GmailProviderResponse:
-        return GmailProviderResponse(
-            status_code=200,
-            body={
-                "operation": request.operation,
-                "token_type": credentials.token_type,
-            },
-        )
 
 
 GMAIL_MESSAGE_ID = "gmail-message-1"
@@ -158,7 +144,14 @@ def test_gmail_provider_boundary_exposes_credentials_contract() -> None:
 def test_gmail_provider_boundary_exposes_transport_contract() -> None:
     credentials = GmailCredentials(access_token="fake-token")
     request = GmailProviderRequest(operation="read", path="/gmail/v1/users/me/messages/1")
-    client = FakeGmailTransportClient()
+    client = FakeGmailTransportClient(
+        responses={
+            "read": GmailProviderResponse(
+                status_code=200,
+                body={"operation": "read", "token_type": "Bearer"},
+            ),
+        },
+    )
 
     response = client.execute(request, credentials)
 
@@ -167,6 +160,69 @@ def test_gmail_provider_boundary_exposes_transport_contract() -> None:
         status_code=200,
         body={"operation": "read", "token_type": "Bearer"},
     )
+
+
+def test_gmail_fake_transport_returns_deterministic_response() -> None:
+    credentials = GmailCredentials(access_token="fake-token")
+    request = GmailProviderRequest(
+        operation="read",
+        path="/gmail/v1/users/me/messages/gmail-message-1",
+    )
+    client = FakeGmailTransportClient()
+
+    response = client.execute(request, credentials)
+
+    assert isinstance(client, GmailTransportClient)
+    assert response == GmailProviderResponse(
+        status_code=200,
+        body={
+            "external_execution_performed": False,
+            "integration": "gmail",
+            "adapter": "fake_transport",
+            "operation": "read",
+            "path": "/gmail/v1/users/me/messages/gmail-message-1",
+            "method": "GET",
+            "token_type": "Bearer",
+        },
+    )
+
+
+def test_gmail_fake_transport_can_simulate_provider_failure() -> None:
+    credentials = GmailCredentials(access_token="fake-token")
+    request = GmailProviderRequest(operation="read", path="/gmail/v1/users/me/messages/1")
+    failure = GmailProviderFailure(
+        category=WorkerExecutionFailureCategory.TRANSIENT,
+        message="gmail provider unavailable",
+        retryable=True,
+        provider_status_code=503,
+        provider_reason="backendError",
+        metadata={"operation": "read"},
+    )
+    client = FakeGmailTransportClient(failures={"read": failure})
+
+    response = client.execute(request, credentials)
+
+    assert response.status_code == 503
+    assert response.body == {
+        "external_execution_performed": False,
+        "integration": "gmail",
+        "adapter": "fake_transport",
+        "operation": "read",
+        "failed": True,
+    }
+    assert response.failure == failure
+
+
+def test_gmail_fake_transport_makes_no_external_api_calls(monkeypatch) -> None:
+    block_external_socket_calls(monkeypatch)
+    credentials = GmailCredentials(access_token="fake-token")
+    request = GmailProviderRequest(operation="send", path="/gmail/v1/users/me/messages/send")
+    client = FakeGmailTransportClient()
+
+    response = client.execute(request, credentials)
+
+    assert response.status_code == 200
+    assert response.body["external_execution_performed"] is False
 
 
 def test_gmail_provider_failure_mapping_shape() -> None:
