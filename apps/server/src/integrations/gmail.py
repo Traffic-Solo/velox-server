@@ -36,6 +36,19 @@ class GmailReadMessage:
 
 
 @dataclass(frozen=True)
+class GmailSentMessage:
+    """Deterministic in-memory Gmail send payload."""
+
+    sent_message_id: str
+    to: tuple[str, ...]
+    subject: str
+    body: str
+    cc: tuple[str, ...] = ()
+    bcc: tuple[str, ...] = ()
+    thread_id: str | None = None
+
+
+@dataclass(frozen=True)
 class GmailReadRequest:
     """Request contract for future Gmail message reads."""
 
@@ -129,12 +142,44 @@ class InMemoryGmailReadCapability:
         )
 
 
-class PlaceholderGmailSendCapability:
-    """Safe Gmail send placeholder with no external API behavior."""
+class InMemoryGmailSendCapability:
+    """Safe deterministic Gmail send adapter with no external API behavior."""
+
+    def __init__(self) -> None:
+        self._sent_messages: list[GmailSentMessage] = []
 
     def send(self, request: GmailSendRequest) -> GmailCapabilityResult:
-        """Return a placeholder send result without contacting Gmail."""
-        return _placeholder_capability_result("send")
+        """Return an in-memory send result without contacting Gmail."""
+        sent_message = GmailSentMessage(
+            sent_message_id="gmail-fake-sent-message-1",
+            to=request.to,
+            subject=request.subject,
+            body=request.body,
+            cc=request.cc,
+            bcc=request.bcc,
+            thread_id=request.thread_id,
+        )
+        self._sent_messages.append(sent_message)
+
+        return GmailCapabilityResult(
+            status=WorkerExecutionStatus.SUCCEEDED,
+            reason="gmail send capability in-memory result",
+            metadata={
+                "external_execution_performed": False,
+                "integration": "gmail",
+                "capability": "send",
+                "adapter": "in_memory",
+                "sent_message": {
+                    "sent_message_id": sent_message.sent_message_id,
+                    "to": sent_message.to,
+                    "subject": sent_message.subject,
+                    "body": sent_message.body,
+                    "cc": sent_message.cc,
+                    "bcc": sent_message.bcc,
+                    "thread_id": sent_message.thread_id,
+                },
+            },
+        )
 
 
 class PlaceholderGmailArchiveCapability:
@@ -160,7 +205,7 @@ class GmailWorkerExecutor:
     def __init__(self, capabilities: GmailCapabilities | None = None) -> None:
         self.capabilities = capabilities or GmailCapabilities(
             read=InMemoryGmailReadCapability(),
-            send=PlaceholderGmailSendCapability(),
+            send=InMemoryGmailSendCapability(),
             archive=PlaceholderGmailArchiveCapability(),
         )
 
@@ -168,6 +213,8 @@ class GmailWorkerExecutor:
         """Execute supported Gmail capabilities without contacting Gmail."""
         if action.type == "gmail.read" or action.payload.get("capability") == "read":
             return self._execute_read(action)
+        if action.type == "gmail.send" or action.payload.get("capability") == "send":
+            return self._execute_send(action)
 
         return WorkerExecutionResult(
             action=action,
@@ -209,6 +256,47 @@ class GmailWorkerExecutor:
             metadata=capability_result.metadata,
         )
 
+    def _execute_send(self, action: Action) -> WorkerExecutionResult:
+        to = _normalize_recipients(action.payload.get("to"))
+        subject = str(action.payload.get("subject") or "").strip()
+        body = str(action.payload.get("body") or "").strip()
+        cc = _normalize_recipients(action.payload.get("cc"))
+        bcc = _normalize_recipients(action.payload.get("bcc"))
+        thread_id_value = action.payload.get("thread_id")
+        thread_id = str(thread_id_value).strip() if thread_id_value is not None else None
+
+        missing_fields = []
+        if not to:
+            missing_fields.append("to")
+        if not subject:
+            missing_fields.append("subject")
+        if not body:
+            missing_fields.append("body")
+        if missing_fields:
+            return _gmail_capability_failure_result(
+                action=action,
+                capability="send",
+                reason="gmail send request missing required fields",
+                field=",".join(missing_fields),
+            )
+
+        capability_result = self.capabilities.send.send(
+            GmailSendRequest(
+                to=to,
+                subject=subject,
+                body=body,
+                cc=cc,
+                bcc=bcc,
+                thread_id=thread_id,
+            ),
+        )
+        return WorkerExecutionResult(
+            action=action,
+            status=capability_result.status,
+            reason=capability_result.reason,
+            metadata=capability_result.metadata,
+        )
+
 
 def _placeholder_capability_result(
     capability: str,
@@ -227,4 +315,38 @@ def _placeholder_capability_result(
         status=WorkerExecutionStatus.SUCCEEDED,
         reason=f"gmail {capability} capability placeholder",
         metadata=metadata,
+    )
+
+
+def _normalize_recipients(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        stripped = value.strip()
+        return (stripped,) if stripped else ()
+    if isinstance(value, tuple | list):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    return ()
+
+
+def _gmail_capability_failure_result(
+    action: Action,
+    capability: str,
+    reason: str,
+    field: str,
+) -> WorkerExecutionResult:
+    return WorkerExecutionResult(
+        action=action,
+        status=WorkerExecutionStatus.FAILED,
+        reason=reason,
+        metadata={
+            "external_execution_performed": False,
+            "integration": "gmail",
+            "capability": capability,
+        },
+        failure=WorkerExecutionFailure(
+            category=WorkerExecutionFailureCategory.PERMANENT,
+            message=reason,
+            metadata={"field": field},
+        ),
     )
