@@ -70,13 +70,14 @@ Sprint 1 - VELOX Core Platform
 - Gmail Send Capability Bootstrap
 - Gmail Archive Capability Bootstrap
 - Gmail Capability Test Consolidation and Fixture Cleanup
+- Gmail Provider Boundary Interfaces
 
 ## Current Next Slice
 
-Gmail Real Adapter Boundary Scaffolding
+Gmail Provider Boundary Interfaces
 
-Recommended next implementation step after Gmail Real Adapter and OAuth Boundary ADR:
-define provider-facing Gmail boundary interfaces for credentials and transport without implementing OAuth, credentials, HTTP clients or real Gmail API calls.
+Recommended next implementation step after Gmail Provider Boundary Interfaces:
+continue the post-harvest Gmail provider design without moving directly into OAuth, credentials storage, HTTP clients or real Gmail API calls.
 
 ## Current Implementation Notes
 
@@ -100,6 +101,7 @@ define provider-facing Gmail boundary interfaces for credentials and transport w
 - Gmail worker executor can route explicit archive actions to the in-memory archive capability and maps malformed archive requests to the existing `WorkerExecutionFailure` contract.
 - Gmail executor and capability tests now use small local helpers for repeated content-summary action setup, no-external-execution assertions, socket-call blocking and Gmail failure-contract assertions. This consolidation is test-structure-only and preserves existing behavior.
 - ADR-0001 documents the Gmail real adapter and OAuth boundary. Real Gmail API behavior must remain behind the Gmail executor/integration boundary, VELOX core must depend only on roles/contracts, OAuth and credentials must remain separate provider concerns, HTTP transport must be adapter-owned or injected behind the boundary, and real Gmail behavior belongs in opt-in integration tests only.
+- Gmail provider-facing boundary interfaces now exist under the Gmail integration module for future real adapter work: `GmailCredentialsProvider`, `GmailTransportClient`, `GmailCredentials`, `GmailProviderRequest`, `GmailProviderResponse` and `GmailProviderFailure`. These are contracts and data shapes only; they do not implement OAuth, credentials storage, HTTP clients or real Gmail API calls, and VELOX core remains independent of Gmail provider details.
 
 ## Workflow
 
@@ -165,3 +167,4 @@ After every implementation slice, update this file in the same commit if the imp
 - Gmail read, send and archive capabilities use deterministic in-memory fake data only. Executor resolution remains role-based and falls back to `NoOpWorkerExecutor` when no registered executor matches.
 - Gmail capability tests are consolidated locally in `tests/test_worker_executor.py`; no shared `tests/conftest.py` fixture has been introduced yet.
 - Real Gmail adapter, OAuth, credential providers, HTTP transport and real Gmail API calls are not implemented yet.
+- Gmail provider boundary interfaces are present, but only as contracts behind the Gmail integration boundary. No concrete real provider implementation exists yet.

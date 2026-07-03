@@ -4,10 +4,16 @@ from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.integrations.gmail import (
     GmailArchiveCapability,
     GmailArchiveRequest,
+    GmailCredentials,
+    GmailCredentialsProvider,
+    GmailProviderFailure,
+    GmailProviderRequest,
+    GmailProviderResponse,
     GmailReadCapability,
     GmailReadRequest,
     GmailSendCapability,
     GmailSendRequest,
+    GmailTransportClient,
     GmailWorkerExecutor,
 )
 from apps.server.src.workers.executor import (
@@ -40,6 +46,26 @@ class FailedExecutor:
                 category=WorkerExecutionFailureCategory.INTERNAL,
                 message="execution failed",
             ),
+        )
+
+
+class FakeGmailCredentialsProvider:
+    def get_credentials(self) -> GmailCredentials:
+        return GmailCredentials(access_token="fake-token")
+
+
+class FakeGmailTransportClient:
+    def execute(
+        self,
+        request: GmailProviderRequest,
+        credentials: GmailCredentials,
+    ) -> GmailProviderResponse:
+        return GmailProviderResponse(
+            status_code=200,
+            body={
+                "operation": request.operation,
+                "token_type": credentials.token_type,
+            },
         )
 
 
@@ -118,6 +144,47 @@ def test_gmail_worker_executor_exposes_capability_contracts() -> None:
     assert isinstance(executor.capabilities.read, GmailReadCapability)
     assert isinstance(executor.capabilities.send, GmailSendCapability)
     assert isinstance(executor.capabilities.archive, GmailArchiveCapability)
+
+
+def test_gmail_provider_boundary_exposes_credentials_contract() -> None:
+    provider = FakeGmailCredentialsProvider()
+
+    credentials = provider.get_credentials()
+
+    assert isinstance(provider, GmailCredentialsProvider)
+    assert credentials == GmailCredentials(access_token="fake-token")
+
+
+def test_gmail_provider_boundary_exposes_transport_contract() -> None:
+    credentials = GmailCredentials(access_token="fake-token")
+    request = GmailProviderRequest(operation="read", path="/gmail/v1/users/me/messages/1")
+    client = FakeGmailTransportClient()
+
+    response = client.execute(request, credentials)
+
+    assert isinstance(client, GmailTransportClient)
+    assert response == GmailProviderResponse(
+        status_code=200,
+        body={"operation": "read", "token_type": "Bearer"},
+    )
+
+
+def test_gmail_provider_failure_mapping_shape() -> None:
+    failure = GmailProviderFailure(
+        category=WorkerExecutionFailureCategory.TRANSIENT,
+        message="gmail provider unavailable",
+        retryable=True,
+        provider_status_code=503,
+        provider_reason="backendError",
+        metadata={"operation": "read"},
+    )
+
+    assert failure.category == WorkerExecutionFailureCategory.TRANSIENT
+    assert failure.message == "gmail provider unavailable"
+    assert failure.retryable is True
+    assert failure.provider_status_code == 503
+    assert failure.provider_reason == "backendError"
+    assert failure.metadata == {"operation": "read"}
 
 
 def test_worker_executor_successful_execution_result() -> None:

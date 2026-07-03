@@ -74,6 +74,67 @@ class GmailArchiveRequest:
     message_id: str
 
 
+@dataclass(frozen=True)
+class GmailCredentials:
+    """Provider-facing Gmail credential material placeholder."""
+
+    access_token: str
+    token_type: str = "Bearer"
+    expires_at: str | None = None
+
+
+@dataclass(frozen=True)
+class GmailProviderRequest:
+    """Provider transport request behind the Gmail integration boundary."""
+
+    operation: str
+    path: str
+    method: str = "GET"
+    body: dict[str, Any] | None = None
+    query: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class GmailProviderResponse:
+    """Provider transport response behind the Gmail integration boundary."""
+
+    status_code: int
+    body: dict[str, Any] = field(default_factory=dict)
+    headers: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class GmailProviderFailure:
+    """Provider failure mapping shape for future Gmail adapters."""
+
+    category: WorkerExecutionFailureCategory
+    message: str
+    retryable: bool = False
+    provider_status_code: int | None = None
+    provider_reason: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@runtime_checkable
+class GmailCredentialsProvider(Protocol):
+    """Contract for resolving Gmail credentials behind the integration boundary."""
+
+    def get_credentials(self) -> GmailCredentials:
+        """Return Gmail credentials for a future provider adapter."""
+
+
+@runtime_checkable
+class GmailTransportClient(Protocol):
+    """Contract for Gmail provider transport behind the integration boundary."""
+
+    def execute(
+        self,
+        request: GmailProviderRequest,
+        credentials: GmailCredentials,
+    ) -> GmailProviderResponse:
+        """Execute a provider request for a future Gmail adapter."""
+
+
 @runtime_checkable
 class GmailReadCapability(Protocol):
     """Contract for reading Gmail messages behind the executor boundary."""
