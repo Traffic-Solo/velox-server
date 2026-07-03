@@ -222,6 +222,100 @@ def test_gmail_capability_placeholders_make_no_external_api_calls(monkeypatch) -
     assert archive_result.metadata["capability"] == "archive"
 
 
+def test_gmail_read_capability_returns_deterministic_in_memory_message() -> None:
+    executor = GmailWorkerExecutor()
+
+    result = executor.capabilities.read.read(
+        GmailReadRequest(message_id="gmail-message-1"),
+    )
+
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.reason == "gmail read capability in-memory result"
+    assert result.metadata["external_execution_performed"] is False
+    assert result.metadata["integration"] == "gmail"
+    assert result.metadata["capability"] == "read"
+    assert result.metadata["adapter"] == "in_memory"
+    assert result.metadata["message_id"] == "gmail-message-1"
+    assert result.metadata["found"] is True
+    assert result.metadata["message"] == {
+        "message_id": "gmail-message-1",
+        "subject": "Sprint 1 status",
+        "sender": "sender@example.com",
+        "body": "Deterministic in-memory Gmail read result.",
+        "labels": ("INBOX",),
+    }
+
+
+def test_gmail_read_capability_handles_missing_message_safely() -> None:
+    executor = GmailWorkerExecutor()
+
+    result = executor.capabilities.read.read(
+        GmailReadRequest(message_id="missing-message"),
+    )
+
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.metadata["external_execution_performed"] is False
+    assert result.metadata["found"] is False
+    assert "message" not in result.metadata
+
+
+def test_gmail_worker_executor_executes_read_capability() -> None:
+    action = Action(
+        type="gmail.read",
+        target="gmail-message-1",
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+    executor = GmailWorkerExecutor()
+
+    result = executor.execute(action)
+
+    assert result.action == action
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.metadata["external_execution_performed"] is False
+    assert result.metadata["adapter"] == "in_memory"
+    assert result.metadata["message"]["message_id"] == "gmail-message-1"
+
+
+def test_gmail_worker_executor_read_accepts_payload_message_id() -> None:
+    action = Action(
+        type="summarize_email",
+        target="",
+        payload={"capability": "read", "message_id": "gmail-message-1"},
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+    executor = GmailWorkerExecutor()
+
+    result = executor.execute(action)
+
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.metadata["message_id"] == "gmail-message-1"
+    assert result.metadata["found"] is True
+
+
+def test_gmail_worker_executor_read_failure_follows_failure_contract() -> None:
+    action = Action(
+        type="gmail.read",
+        target="",
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+    executor = GmailWorkerExecutor()
+
+    result = executor.execute(action)
+
+    assert result.action == action
+    assert result.status == WorkerExecutionStatus.FAILED
+    assert result.reason == "gmail read request missing message_id"
+    assert result.metadata == {
+        "external_execution_performed": False,
+        "integration": "gmail",
+        "capability": "read",
+    }
+    assert result.failure is not None
+    assert result.failure.category == WorkerExecutionFailureCategory.PERMANENT
+    assert result.failure.message == "gmail read request missing message_id"
+    assert result.failure.metadata == {"field": "message_id"}
+
+
 def test_worker_executor_registry_registers_executor() -> None:
     registry = WorkerExecutorRegistry()
     executor = SuccessfulExecutor()

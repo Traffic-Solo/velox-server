@@ -5,6 +5,8 @@ from typing import Any, Protocol, runtime_checkable
 
 from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.workers.executor import (
+    WorkerExecutionFailure,
+    WorkerExecutionFailureCategory,
     WorkerExecutionResult,
     WorkerExecutionStatus,
 )
@@ -20,6 +22,17 @@ class GmailCapabilityResult:
     status: WorkerExecutionStatus
     reason: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class GmailReadMessage:
+    """Deterministic in-memory Gmail read payload."""
+
+    message_id: str
+    subject: str
+    sender: str
+    body: str
+    labels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -72,12 +85,48 @@ class GmailArchiveCapability(Protocol):
         """Archive a Gmail message."""
 
 
-class PlaceholderGmailReadCapability:
-    """Safe Gmail read placeholder with no external API behavior."""
+class InMemoryGmailReadCapability:
+    """Safe deterministic Gmail read adapter with no external API behavior."""
+
+    def __init__(
+        self,
+        messages: dict[str, GmailReadMessage] | None = None,
+    ) -> None:
+        self._messages = messages or {
+            "gmail-message-1": GmailReadMessage(
+                message_id="gmail-message-1",
+                subject="Sprint 1 status",
+                sender="sender@example.com",
+                body="Deterministic in-memory Gmail read result.",
+                labels=("INBOX",),
+            ),
+        }
 
     def read(self, request: GmailReadRequest) -> GmailCapabilityResult:
-        """Return a placeholder read result without contacting Gmail."""
-        return _placeholder_capability_result("read", request.message_id)
+        """Return an in-memory read result without contacting Gmail."""
+        message = self._messages.get(request.message_id)
+        metadata: dict[str, Any] = {
+            "external_execution_performed": False,
+            "integration": "gmail",
+            "capability": "read",
+            "adapter": "in_memory",
+            "message_id": request.message_id,
+            "found": message is not None,
+        }
+        if message is not None:
+            metadata["message"] = {
+                "message_id": message.message_id,
+                "subject": message.subject,
+                "sender": message.sender,
+                "body": message.body,
+                "labels": message.labels,
+            }
+
+        return GmailCapabilityResult(
+            status=WorkerExecutionStatus.SUCCEEDED,
+            reason="gmail read capability in-memory result",
+            metadata=metadata,
+        )
 
 
 class PlaceholderGmailSendCapability:
@@ -110,13 +159,16 @@ class GmailWorkerExecutor:
 
     def __init__(self, capabilities: GmailCapabilities | None = None) -> None:
         self.capabilities = capabilities or GmailCapabilities(
-            read=PlaceholderGmailReadCapability(),
+            read=InMemoryGmailReadCapability(),
             send=PlaceholderGmailSendCapability(),
             archive=PlaceholderGmailArchiveCapability(),
         )
 
     def execute(self, action: Action) -> WorkerExecutionResult:
-        """Return a placeholder result without contacting Gmail."""
+        """Execute supported Gmail capabilities without contacting Gmail."""
+        if action.type == "gmail.read" or action.payload.get("capability") == "read":
+            return self._execute_read(action)
+
         return WorkerExecutionResult(
             action=action,
             status=WorkerExecutionStatus.SUCCEEDED,
@@ -126,6 +178,35 @@ class GmailWorkerExecutor:
                 "integration": "gmail",
                 "placeholder": True,
             },
+        )
+
+    def _execute_read(self, action: Action) -> WorkerExecutionResult:
+        message_id = str(action.payload.get("message_id") or action.target).strip()
+        if not message_id:
+            return WorkerExecutionResult(
+                action=action,
+                status=WorkerExecutionStatus.FAILED,
+                reason="gmail read request missing message_id",
+                metadata={
+                    "external_execution_performed": False,
+                    "integration": "gmail",
+                    "capability": "read",
+                },
+                failure=WorkerExecutionFailure(
+                    category=WorkerExecutionFailureCategory.PERMANENT,
+                    message="gmail read request missing message_id",
+                    metadata={"field": "message_id"},
+                ),
+            )
+
+        capability_result = self.capabilities.read.read(
+            GmailReadRequest(message_id=message_id),
+        )
+        return WorkerExecutionResult(
+            action=action,
+            status=capability_result.status,
+            reason=capability_result.reason,
+            metadata=capability_result.metadata,
         )
 
 

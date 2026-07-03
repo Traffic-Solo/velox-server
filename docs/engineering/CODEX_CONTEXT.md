@@ -66,13 +66,14 @@ Sprint 1 - VELOX Core Platform
 - Worker Executor Failure Contract
 - Gmail Worker Executor Bootstrap
 - Gmail Capability Contract
+- Gmail Read Capability Bootstrap
 
 ## Current Next Slice
 
-Gmail Capability Implementation Planning
+Gmail Read Capability Review
 
-Recommended next implementation step after Gmail Capability Contract:
-plan the first real Gmail capability implementation behind the existing worker executor boundary without adding credentials, OAuth or external API calls until the integration contract is explicitly reviewed.
+Recommended next implementation step after Gmail Read Capability Bootstrap:
+review the in-memory Gmail read capability behavior and decide the next Gmail capability slice without adding credentials, OAuth or external API calls until the integration contract is explicitly reviewed.
 
 ## Current Implementation Notes
 
@@ -88,7 +89,9 @@ plan the first real Gmail capability implementation behind the existing worker e
 - `WorkerRuntime` consumes the failure contract without adding retries, backoff, durable queues, external logging or vendor-specific exception handling, and surfaces failure classification in execution metadata and in-memory observations.
 - A Gmail worker executor bootstrap exists under the integrations package, is registered in `ApplicationContainer` through the existing executor registry using the vendor-neutral `CONTENT_SUMMARY` role, and returns a safe placeholder `WorkerExecutionResult` without credentials, OAuth, HTTP clients or Gmail API calls.
 - Gmail capability-level contracts now exist under the Gmail integration module for read, send and archive operations, with shared request/result dataclasses and placeholder implementations exposed by the existing Gmail worker executor.
-- No real Gmail send, read or archive behavior has been introduced.
+- Gmail read capability now has a deterministic in-memory bootstrap behind the Gmail executor boundary. It accepts `GmailReadRequest`, returns fake in-memory message metadata, safely reports no-message cases, and performs no external Gmail, OAuth, credentials, HTTP or API behavior.
+- Gmail worker executor can route explicit read actions to the in-memory read capability and maps malformed read requests to the existing `WorkerExecutionFailure` contract.
+- Gmail send and archive capabilities remain placeholders only.
 
 ## Workflow
 
@@ -151,4 +154,4 @@ After every implementation slice, update this file in the same commit if the imp
 - Engineering Board in Notion may still need reconciliation with current repository state.
 - Permission Engine Runtime implementation needs validation in the project virtualenv.
 - Action Executor Role Model validation still needs to be run in an environment where `python` is available on PATH.
-- Gmail worker execution and Gmail read/send/archive capabilities are currently placeholders only; executor resolution remains role-based and falls back to `NoOpWorkerExecutor` when no registered executor matches.
+- Gmail send/archive capabilities are currently placeholders only; Gmail read uses deterministic in-memory fake data only. Executor resolution remains role-based and falls back to `NoOpWorkerExecutor` when no registered executor matches.
