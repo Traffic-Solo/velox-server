@@ -1,6 +1,12 @@
 from apps.server.src.core.container import ApplicationContainer, get_container
 from apps.server.src.core.actions import Action, ExecutorRole
-from apps.server.src.integrations.gmail import GMAIL_EXECUTOR_ROLE, GmailWorkerExecutor
+from apps.server.src.integrations.gmail import (
+    GMAIL_EXECUTOR_ROLE,
+    GmailArchiveCapability,
+    GmailReadCapability,
+    GmailSendCapability,
+    GmailWorkerExecutor,
+)
 from apps.server.src.core.permission import PermissionDecision, PermissionEngine
 from apps.server.src.workers.executor import WorkerExecutionResult, WorkerExecutionStatus
 
@@ -110,6 +116,23 @@ def test_container_registers_gmail_worker_executor() -> None:
     assert resolution.requested_role == ExecutorRole.CONTENT_SUMMARY.value
     assert resolution.executor is container.gmail_worker_executor
     assert isinstance(resolution.executor, GmailWorkerExecutor)
+
+
+def test_container_registered_gmail_executor_exposes_capability_contracts() -> None:
+    container = ApplicationContainer()
+
+    assert isinstance(
+        container.gmail_worker_executor.capabilities.read,
+        GmailReadCapability,
+    )
+    assert isinstance(
+        container.gmail_worker_executor.capabilities.send,
+        GmailSendCapability,
+    )
+    assert isinstance(
+        container.gmail_worker_executor.capabilities.archive,
+        GmailArchiveCapability,
+    )
 
 
 def test_container_exposes_wired_worker_runtime() -> None:

@@ -65,13 +65,14 @@ Sprint 1 - VELOX Core Platform
 - Worker Runtime Exception Safety
 - Worker Executor Failure Contract
 - Gmail Worker Executor Bootstrap
+- Gmail Capability Contract
 
 ## Current Next Slice
 
-Gmail Integration Behavior Planning
+Gmail Capability Implementation Planning
 
-Recommended next implementation step after Gmail Worker Executor Bootstrap:
-plan the first real Gmail behavior behind the existing worker executor boundary without adding credentials, OAuth or external API calls until the integration contract is explicitly reviewed.
+Recommended next implementation step after Gmail Capability Contract:
+plan the first real Gmail capability implementation behind the existing worker executor boundary without adding credentials, OAuth or external API calls until the integration contract is explicitly reviewed.
 
 ## Current Implementation Notes
 
@@ -86,6 +87,7 @@ plan the first real Gmail behavior behind the existing worker executor boundary 
 - Worker executors now have an explicit vendor-neutral failure contract via `WorkerExecutionFailure`, classified as transient, permanent or internal, with optional failure message and metadata.
 - `WorkerRuntime` consumes the failure contract without adding retries, backoff, durable queues, external logging or vendor-specific exception handling, and surfaces failure classification in execution metadata and in-memory observations.
 - A Gmail worker executor bootstrap exists under the integrations package, is registered in `ApplicationContainer` through the existing executor registry using the vendor-neutral `CONTENT_SUMMARY` role, and returns a safe placeholder `WorkerExecutionResult` without credentials, OAuth, HTTP clients or Gmail API calls.
+- Gmail capability-level contracts now exist under the Gmail integration module for read, send and archive operations, with shared request/result dataclasses and placeholder implementations exposed by the existing Gmail worker executor.
 - No real Gmail send, read or archive behavior has been introduced.
 
 ## Workflow
@@ -149,4 +151,4 @@ After every implementation slice, update this file in the same commit if the imp
 - Engineering Board in Notion may still need reconciliation with current repository state.
 - Permission Engine Runtime implementation needs validation in the project virtualenv.
 - Action Executor Role Model validation still needs to be run in an environment where `python` is available on PATH.
-- Gmail worker execution is currently a placeholder only; executor resolution remains role-based and falls back to `NoOpWorkerExecutor` when no registered executor matches.
+- Gmail worker execution and Gmail read/send/archive capabilities are currently placeholders only; executor resolution remains role-based and falls back to `NoOpWorkerExecutor` when no registered executor matches.

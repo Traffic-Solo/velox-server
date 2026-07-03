@@ -1,7 +1,15 @@
 import socket
 
 from apps.server.src.core.actions import Action, ExecutorRole
-from apps.server.src.integrations.gmail import GmailWorkerExecutor
+from apps.server.src.integrations.gmail import (
+    GmailArchiveCapability,
+    GmailArchiveRequest,
+    GmailReadCapability,
+    GmailReadRequest,
+    GmailSendCapability,
+    GmailSendRequest,
+    GmailWorkerExecutor,
+)
 from apps.server.src.workers.executor import (
     NoOpWorkerExecutor,
     WorkerExecutionFailure,
@@ -45,6 +53,14 @@ def test_gmail_worker_executor_satisfies_worker_executor_contract() -> None:
     executor = GmailWorkerExecutor()
 
     assert isinstance(executor, WorkerExecutor)
+
+
+def test_gmail_worker_executor_exposes_capability_contracts() -> None:
+    executor = GmailWorkerExecutor()
+
+    assert isinstance(executor.capabilities.read, GmailReadCapability)
+    assert isinstance(executor.capabilities.send, GmailSendCapability)
+    assert isinstance(executor.capabilities.archive, GmailArchiveCapability)
 
 
 def test_worker_executor_successful_execution_result() -> None:
@@ -171,6 +187,39 @@ def test_gmail_worker_executor_makes_no_external_api_calls(monkeypatch) -> None:
 
     assert result.status == WorkerExecutionStatus.SUCCEEDED
     assert result.metadata["external_execution_performed"] is False
+
+
+def test_gmail_capability_placeholders_make_no_external_api_calls(monkeypatch) -> None:
+    def fail_external_call(*args, **kwargs):
+        raise AssertionError("external API call attempted")
+
+    monkeypatch.setattr(socket, "create_connection", fail_external_call)
+    monkeypatch.setattr(socket, "socket", fail_external_call)
+    executor = GmailWorkerExecutor()
+
+    read_result = executor.capabilities.read.read(
+        GmailReadRequest(message_id="gmail-message-1"),
+    )
+    send_result = executor.capabilities.send.send(
+        GmailSendRequest(
+            to=("recipient@example.com",),
+            subject="Subject",
+            body="Body",
+        ),
+    )
+    archive_result = executor.capabilities.archive.archive(
+        GmailArchiveRequest(message_id="gmail-message-1"),
+    )
+
+    assert read_result.status == WorkerExecutionStatus.SUCCEEDED
+    assert send_result.status == WorkerExecutionStatus.SUCCEEDED
+    assert archive_result.status == WorkerExecutionStatus.SUCCEEDED
+    assert read_result.metadata["external_execution_performed"] is False
+    assert send_result.metadata["external_execution_performed"] is False
+    assert archive_result.metadata["external_execution_performed"] is False
+    assert read_result.metadata["capability"] == "read"
+    assert send_result.metadata["capability"] == "send"
+    assert archive_result.metadata["capability"] == "archive"
 
 
 def test_worker_executor_registry_registers_executor() -> None:
