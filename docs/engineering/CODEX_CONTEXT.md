@@ -69,13 +69,14 @@ Sprint 1 - VELOX Core Platform
 - Gmail Read Capability Bootstrap
 - Gmail Send Capability Bootstrap
 - Gmail Archive Capability Bootstrap
+- Gmail Capability Test Consolidation and Fixture Cleanup
 
 ## Current Next Slice
 
-Gmail Archive Capability Review
+Gmail Real Adapter/OAuth Design Review
 
-Recommended next implementation step after Gmail Archive Capability Bootstrap:
-review the in-memory Gmail archive capability behavior and decide the next Gmail capability slice without adding credentials, OAuth or external API calls until the integration contract is explicitly reviewed.
+Recommended next implementation step after Gmail Capability Test Consolidation and Fixture Cleanup:
+review the Gmail integration contract before implementing any real adapter, credentials, OAuth, HTTP client or external Gmail API behavior.
 
 ## Current Implementation Notes
 
@@ -97,6 +98,7 @@ review the in-memory Gmail archive capability behavior and decide the next Gmail
 - Gmail worker executor can route explicit send actions to the in-memory send capability and maps malformed send requests to the existing `WorkerExecutionFailure` contract.
 - Gmail archive capability now has a deterministic in-memory bootstrap behind the Gmail executor boundary. It accepts `GmailArchiveRequest`, returns fake in-memory archive metadata, safely reports missing-message cases, and performs no external Gmail, OAuth, credentials, HTTP or API behavior.
 - Gmail worker executor can route explicit archive actions to the in-memory archive capability and maps malformed archive requests to the existing `WorkerExecutionFailure` contract.
+- Gmail executor and capability tests now use small local helpers for repeated content-summary action setup, no-external-execution assertions, socket-call blocking and Gmail failure-contract assertions. This consolidation is test-structure-only and preserves existing behavior.
 
 ## Workflow
 
@@ -160,3 +162,4 @@ After every implementation slice, update this file in the same commit if the imp
 - Permission Engine Runtime implementation needs validation in the project virtualenv.
 - Action Executor Role Model validation still needs to be run in an environment where `python` is available on PATH.
 - Gmail read, send and archive capabilities use deterministic in-memory fake data only. Executor resolution remains role-based and falls back to `NoOpWorkerExecutor` when no registered executor matches.
+- Gmail capability tests are consolidated locally in `tests/test_worker_executor.py`; no shared `tests/conftest.py` fixture has been introduced yet.

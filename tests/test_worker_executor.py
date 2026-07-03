@@ -43,6 +43,63 @@ class FailedExecutor:
         )
 
 
+GMAIL_MESSAGE_ID = "gmail-message-1"
+
+
+def gmail_content_action(
+    action_type: str,
+    target: str = GMAIL_MESSAGE_ID,
+    payload: dict | None = None,
+) -> Action:
+    return Action(
+        type=action_type,
+        target=target,
+        payload=payload or {},
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+
+
+def block_external_socket_calls(monkeypatch) -> None:
+    def fail_external_call(*args, **kwargs):
+        raise AssertionError("external API call attempted")
+
+    monkeypatch.setattr(socket, "create_connection", fail_external_call)
+    monkeypatch.setattr(socket, "socket", fail_external_call)
+
+
+def assert_succeeded_without_external_execution(result) -> None:
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.metadata["external_execution_performed"] is False
+
+
+def assert_gmail_in_memory_metadata(result, capability: str) -> None:
+    assert result.metadata["integration"] == "gmail"
+    assert result.metadata["capability"] == capability
+    assert result.metadata["adapter"] == "in_memory"
+
+
+def assert_gmail_failure_contract(
+    result: WorkerExecutionResult,
+    action: Action,
+    *,
+    capability: str,
+    reason: str,
+    field: str,
+) -> None:
+    assert result.action == action
+    assert result.status == WorkerExecutionStatus.FAILED
+    assert result.reason == reason
+    assert result.metadata == {
+        "external_execution_performed": False,
+        "integration": "gmail",
+        "capability": capability,
+    }
+    assert result.failure is not None
+    assert result.failure.category == WorkerExecutionFailureCategory.PERMANENT
+    assert result.failure.message == reason
+    assert result.failure.metadata == {"field": field}
+
+
 def test_worker_executor_contract_shape() -> None:
     executor = SuccessfulExecutor()
 
@@ -151,11 +208,7 @@ def test_no_op_worker_executor_is_safe_default() -> None:
 
 
 def test_gmail_worker_executor_returns_safe_placeholder_result() -> None:
-    action = Action(
-        type="summarize_email",
-        target="gmail-message-1",
-        executor_role=ExecutorRole.CONTENT_SUMMARY,
-    )
+    action = gmail_content_action("summarize_email")
     executor: WorkerExecutor = GmailWorkerExecutor()
 
     result = executor.execute(action)
@@ -171,34 +224,21 @@ def test_gmail_worker_executor_returns_safe_placeholder_result() -> None:
 
 
 def test_gmail_worker_executor_makes_no_external_api_calls(monkeypatch) -> None:
-    def fail_external_call(*args, **kwargs):
-        raise AssertionError("external API call attempted")
-
-    monkeypatch.setattr(socket, "create_connection", fail_external_call)
-    monkeypatch.setattr(socket, "socket", fail_external_call)
-    action = Action(
-        type="summarize_email",
-        target="gmail-message-1",
-        executor_role=ExecutorRole.CONTENT_SUMMARY,
-    )
+    block_external_socket_calls(monkeypatch)
+    action = gmail_content_action("summarize_email")
     executor = GmailWorkerExecutor()
 
     result = executor.execute(action)
 
-    assert result.status == WorkerExecutionStatus.SUCCEEDED
-    assert result.metadata["external_execution_performed"] is False
+    assert_succeeded_without_external_execution(result)
 
 
 def test_gmail_capabilities_make_no_external_api_calls(monkeypatch) -> None:
-    def fail_external_call(*args, **kwargs):
-        raise AssertionError("external API call attempted")
-
-    monkeypatch.setattr(socket, "create_connection", fail_external_call)
-    monkeypatch.setattr(socket, "socket", fail_external_call)
+    block_external_socket_calls(monkeypatch)
     executor = GmailWorkerExecutor()
 
     read_result = executor.capabilities.read.read(
-        GmailReadRequest(message_id="gmail-message-1"),
+        GmailReadRequest(message_id=GMAIL_MESSAGE_ID),
     )
     send_result = executor.capabilities.send.send(
         GmailSendRequest(
@@ -208,15 +248,12 @@ def test_gmail_capabilities_make_no_external_api_calls(monkeypatch) -> None:
         ),
     )
     archive_result = executor.capabilities.archive.archive(
-        GmailArchiveRequest(message_id="gmail-message-1"),
+        GmailArchiveRequest(message_id=GMAIL_MESSAGE_ID),
     )
 
-    assert read_result.status == WorkerExecutionStatus.SUCCEEDED
-    assert send_result.status == WorkerExecutionStatus.SUCCEEDED
-    assert archive_result.status == WorkerExecutionStatus.SUCCEEDED
-    assert read_result.metadata["external_execution_performed"] is False
-    assert send_result.metadata["external_execution_performed"] is False
-    assert archive_result.metadata["external_execution_performed"] is False
+    assert_succeeded_without_external_execution(read_result)
+    assert_succeeded_without_external_execution(send_result)
+    assert_succeeded_without_external_execution(archive_result)
     assert read_result.metadata["capability"] == "read"
     assert send_result.metadata["capability"] == "send"
     assert archive_result.metadata["capability"] == "archive"
@@ -226,19 +263,16 @@ def test_gmail_read_capability_returns_deterministic_in_memory_message() -> None
     executor = GmailWorkerExecutor()
 
     result = executor.capabilities.read.read(
-        GmailReadRequest(message_id="gmail-message-1"),
+        GmailReadRequest(message_id=GMAIL_MESSAGE_ID),
     )
 
-    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert_succeeded_without_external_execution(result)
     assert result.reason == "gmail read capability in-memory result"
-    assert result.metadata["external_execution_performed"] is False
-    assert result.metadata["integration"] == "gmail"
-    assert result.metadata["capability"] == "read"
-    assert result.metadata["adapter"] == "in_memory"
-    assert result.metadata["message_id"] == "gmail-message-1"
+    assert_gmail_in_memory_metadata(result, "read")
+    assert result.metadata["message_id"] == GMAIL_MESSAGE_ID
     assert result.metadata["found"] is True
     assert result.metadata["message"] == {
-        "message_id": "gmail-message-1",
+        "message_id": GMAIL_MESSAGE_ID,
         "subject": "Sprint 1 status",
         "sender": "sender@example.com",
         "body": "Deterministic in-memory Gmail read result.",
@@ -253,8 +287,7 @@ def test_gmail_read_capability_handles_missing_message_safely() -> None:
         GmailReadRequest(message_id="missing-message"),
     )
 
-    assert result.status == WorkerExecutionStatus.SUCCEEDED
-    assert result.metadata["external_execution_performed"] is False
+    assert_succeeded_without_external_execution(result)
     assert result.metadata["found"] is False
     assert "message" not in result.metadata
 
@@ -273,12 +306,9 @@ def test_gmail_send_capability_returns_deterministic_in_memory_result() -> None:
         ),
     )
 
-    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert_succeeded_without_external_execution(result)
     assert result.reason == "gmail send capability in-memory result"
-    assert result.metadata["external_execution_performed"] is False
-    assert result.metadata["integration"] == "gmail"
-    assert result.metadata["capability"] == "send"
-    assert result.metadata["adapter"] == "in_memory"
+    assert_gmail_in_memory_metadata(result, "send")
     assert result.metadata["sent_message"] == {
         "sent_message_id": "gmail-fake-sent-message-1",
         "to": ("recipient@example.com",),
@@ -291,72 +321,56 @@ def test_gmail_send_capability_returns_deterministic_in_memory_result() -> None:
 
 
 def test_gmail_worker_executor_executes_read_capability() -> None:
-    action = Action(
-        type="gmail.read",
-        target="gmail-message-1",
-        executor_role=ExecutorRole.CONTENT_SUMMARY,
-    )
+    action = gmail_content_action("gmail.read")
     executor = GmailWorkerExecutor()
 
     result = executor.execute(action)
 
     assert result.action == action
-    assert result.status == WorkerExecutionStatus.SUCCEEDED
-    assert result.metadata["external_execution_performed"] is False
+    assert_succeeded_without_external_execution(result)
     assert result.metadata["adapter"] == "in_memory"
-    assert result.metadata["message"]["message_id"] == "gmail-message-1"
+    assert result.metadata["message"]["message_id"] == GMAIL_MESSAGE_ID
 
 
 def test_gmail_worker_executor_read_accepts_payload_message_id() -> None:
-    action = Action(
-        type="summarize_email",
+    action = gmail_content_action(
+        "summarize_email",
         target="",
-        payload={"capability": "read", "message_id": "gmail-message-1"},
-        executor_role=ExecutorRole.CONTENT_SUMMARY,
+        payload={"capability": "read", "message_id": GMAIL_MESSAGE_ID},
     )
     executor = GmailWorkerExecutor()
 
     result = executor.execute(action)
 
     assert result.status == WorkerExecutionStatus.SUCCEEDED
-    assert result.metadata["message_id"] == "gmail-message-1"
+    assert result.metadata["message_id"] == GMAIL_MESSAGE_ID
     assert result.metadata["found"] is True
 
 
 def test_gmail_worker_executor_read_failure_follows_failure_contract() -> None:
-    action = Action(
-        type="gmail.read",
-        target="",
-        executor_role=ExecutorRole.CONTENT_SUMMARY,
-    )
+    action = gmail_content_action("gmail.read", target="")
     executor = GmailWorkerExecutor()
 
     result = executor.execute(action)
 
-    assert result.action == action
-    assert result.status == WorkerExecutionStatus.FAILED
-    assert result.reason == "gmail read request missing message_id"
-    assert result.metadata == {
-        "external_execution_performed": False,
-        "integration": "gmail",
-        "capability": "read",
-    }
-    assert result.failure is not None
-    assert result.failure.category == WorkerExecutionFailureCategory.PERMANENT
-    assert result.failure.message == "gmail read request missing message_id"
-    assert result.failure.metadata == {"field": "message_id"}
+    assert_gmail_failure_contract(
+        result,
+        action,
+        capability="read",
+        reason="gmail read request missing message_id",
+        field="message_id",
+    )
 
 
 def test_gmail_worker_executor_executes_send_capability() -> None:
-    action = Action(
-        type="gmail.send",
+    action = gmail_content_action(
+        "gmail.send",
         target="draft-1",
         payload={
             "to": ("recipient@example.com",),
             "subject": "Subject",
             "body": "Body",
         },
-        executor_role=ExecutorRole.CONTENT_SUMMARY,
     )
     executor = GmailWorkerExecutor()
 
@@ -374,8 +388,8 @@ def test_gmail_worker_executor_executes_send_capability() -> None:
 
 
 def test_gmail_worker_executor_send_accepts_payload_capability() -> None:
-    action = Action(
-        type="summarize_email",
+    action = gmail_content_action(
+        "summarize_email",
         target="draft-1",
         payload={
             "capability": "send",
@@ -383,7 +397,6 @@ def test_gmail_worker_executor_send_accepts_payload_capability() -> None:
             "subject": "Subject",
             "body": "Body",
         },
-        executor_role=ExecutorRole.CONTENT_SUMMARY,
     )
     executor = GmailWorkerExecutor()
 
@@ -396,35 +409,29 @@ def test_gmail_worker_executor_send_accepts_payload_capability() -> None:
 
 
 def test_gmail_worker_executor_send_failure_follows_failure_contract() -> None:
-    action = Action(
-        type="gmail.send",
+    action = gmail_content_action(
+        "gmail.send",
         target="draft-1",
         payload={"to": (), "subject": "", "body": ""},
-        executor_role=ExecutorRole.CONTENT_SUMMARY,
     )
     executor = GmailWorkerExecutor()
 
     result = executor.execute(action)
 
-    assert result.action == action
-    assert result.status == WorkerExecutionStatus.FAILED
-    assert result.reason == "gmail send request missing required fields"
-    assert result.metadata == {
-        "external_execution_performed": False,
-        "integration": "gmail",
-        "capability": "send",
-    }
-    assert result.failure is not None
-    assert result.failure.category == WorkerExecutionFailureCategory.PERMANENT
-    assert result.failure.message == "gmail send request missing required fields"
-    assert result.failure.metadata == {"field": "to,subject,body"}
+    assert_gmail_failure_contract(
+        result,
+        action,
+        capability="send",
+        reason="gmail send request missing required fields",
+        field="to,subject,body",
+    )
 
 
 def test_gmail_archive_capability_returns_deterministic_in_memory_result() -> None:
     executor = GmailWorkerExecutor()
 
     result = executor.capabilities.archive.archive(
-        GmailArchiveRequest(message_id="gmail-message-1"),
+        GmailArchiveRequest(message_id=GMAIL_MESSAGE_ID),
     )
 
     assert result.status == WorkerExecutionStatus.SUCCEEDED
@@ -434,7 +441,7 @@ def test_gmail_archive_capability_returns_deterministic_in_memory_result() -> No
         "integration": "gmail",
         "capability": "archive",
         "adapter": "in_memory",
-        "message_id": "gmail-message-1",
+        "message_id": GMAIL_MESSAGE_ID,
         "archived": True,
         "found": True,
     }
@@ -447,20 +454,15 @@ def test_gmail_archive_capability_handles_missing_message_safely() -> None:
         GmailArchiveRequest(message_id="missing-message"),
     )
 
-    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert_succeeded_without_external_execution(result)
     assert result.reason == "gmail archive capability in-memory result"
-    assert result.metadata["external_execution_performed"] is False
     assert result.metadata["message_id"] == "missing-message"
     assert result.metadata["archived"] is False
     assert result.metadata["found"] is False
 
 
 def test_gmail_worker_executor_executes_archive_capability() -> None:
-    action = Action(
-        type="gmail.archive",
-        target="gmail-message-1",
-        executor_role=ExecutorRole.CONTENT_SUMMARY,
-    )
+    action = gmail_content_action("gmail.archive")
     executor = GmailWorkerExecutor()
 
     result = executor.execute(action)
@@ -470,48 +472,38 @@ def test_gmail_worker_executor_executes_archive_capability() -> None:
     assert result.reason == "gmail archive capability in-memory result"
     assert result.metadata["external_execution_performed"] is False
     assert result.metadata["adapter"] == "in_memory"
-    assert result.metadata["message_id"] == "gmail-message-1"
+    assert result.metadata["message_id"] == GMAIL_MESSAGE_ID
     assert result.metadata["archived"] is True
 
 
 def test_gmail_worker_executor_archive_accepts_payload_message_id() -> None:
-    action = Action(
-        type="summarize_email",
+    action = gmail_content_action(
+        "summarize_email",
         target="",
-        payload={"capability": "archive", "message_id": "gmail-message-1"},
-        executor_role=ExecutorRole.CONTENT_SUMMARY,
+        payload={"capability": "archive", "message_id": GMAIL_MESSAGE_ID},
     )
     executor = GmailWorkerExecutor()
 
     result = executor.execute(action)
 
     assert result.status == WorkerExecutionStatus.SUCCEEDED
-    assert result.metadata["message_id"] == "gmail-message-1"
+    assert result.metadata["message_id"] == GMAIL_MESSAGE_ID
     assert result.metadata["archived"] is True
 
 
 def test_gmail_worker_executor_archive_failure_follows_failure_contract() -> None:
-    action = Action(
-        type="gmail.archive",
-        target="",
-        executor_role=ExecutorRole.CONTENT_SUMMARY,
-    )
+    action = gmail_content_action("gmail.archive", target="")
     executor = GmailWorkerExecutor()
 
     result = executor.execute(action)
 
-    assert result.action == action
-    assert result.status == WorkerExecutionStatus.FAILED
-    assert result.reason == "gmail archive request missing message_id"
-    assert result.metadata == {
-        "external_execution_performed": False,
-        "integration": "gmail",
-        "capability": "archive",
-    }
-    assert result.failure is not None
-    assert result.failure.category == WorkerExecutionFailureCategory.PERMANENT
-    assert result.failure.message == "gmail archive request missing message_id"
-    assert result.failure.metadata == {"field": "message_id"}
+    assert_gmail_failure_contract(
+        result,
+        action,
+        capability="archive",
+        reason="gmail archive request missing message_id",
+        field="message_id",
+    )
 
 
 def test_worker_executor_registry_registers_executor() -> None:
