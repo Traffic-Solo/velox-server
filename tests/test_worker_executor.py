@@ -10,6 +10,7 @@ from apps.server.src.integrations.gmail import (
     GmailCredentialsProvider,
     GmailCredentialsProviderError,
     GmailProviderFailure,
+    GmailProviderComposition,
     GmailProviderRequest,
     GmailProviderResponse,
     GmailReadCapability,
@@ -320,6 +321,112 @@ def test_gmail_provider_failure_mapping_shape() -> None:
     assert failure.provider_status_code == 503
     assert failure.provider_reason == "backendError"
     assert failure.metadata == {"operation": "read"}
+
+
+def test_gmail_provider_composition_executes_fake_credentials_and_transport() -> None:
+    request = GmailProviderRequest(
+        operation="read",
+        path="/gmail/v1/users/me/messages/gmail-message-1",
+    )
+    composition = GmailProviderComposition()
+
+    response = composition.execute(
+        request,
+        principal="principal-1",
+        account="account-1",
+    )
+
+    assert response == GmailProviderResponse(
+        status_code=200,
+        body={
+            "external_execution_performed": False,
+            "integration": "gmail",
+            "adapter": "fake_transport",
+            "operation": "read",
+            "path": "/gmail/v1/users/me/messages/gmail-message-1",
+            "method": "GET",
+            "token_type": "Bearer",
+        },
+    )
+
+
+def test_gmail_provider_composition_returns_credentials_failure_safely() -> None:
+    failure = GmailProviderFailure(
+        category=WorkerExecutionFailureCategory.PERMANENT,
+        message="gmail credentials unavailable",
+        provider_status_code=401,
+        provider_reason="invalidCredentials",
+        metadata={"principal": "principal-1"},
+    )
+    composition = GmailProviderComposition(
+        credentials_provider=FakeGmailCredentialsProvider(
+            failures={"principal-1": failure},
+        ),
+    )
+    request = GmailProviderRequest(
+        operation="read",
+        path="/gmail/v1/users/me/messages/gmail-message-1",
+    )
+
+    response = composition.execute(
+        request,
+        principal="principal-1",
+        account="account-1",
+    )
+
+    assert response.status_code == 401
+    assert response.body == {
+        "external_execution_performed": False,
+        "integration": "gmail",
+        "adapter": "fake_provider_composition",
+        "operation": "read",
+        "failed": True,
+    }
+    assert response.failure == failure
+
+
+def test_gmail_provider_composition_returns_transport_failure_safely() -> None:
+    failure = GmailProviderFailure(
+        category=WorkerExecutionFailureCategory.TRANSIENT,
+        message="gmail provider unavailable",
+        retryable=True,
+        provider_status_code=503,
+        provider_reason="backendError",
+        metadata={"operation": "read"},
+    )
+    composition = GmailProviderComposition(
+        transport_client=FakeGmailTransportClient(failures={"read": failure}),
+    )
+    request = GmailProviderRequest(
+        operation="read",
+        path="/gmail/v1/users/me/messages/gmail-message-1",
+    )
+
+    response = composition.execute(request)
+
+    assert response.status_code == 503
+    assert response.body == {
+        "external_execution_performed": False,
+        "integration": "gmail",
+        "adapter": "fake_transport",
+        "operation": "read",
+        "failed": True,
+    }
+    assert response.failure == failure
+
+
+def test_gmail_provider_composition_makes_no_external_api_calls(monkeypatch) -> None:
+    block_external_socket_calls(monkeypatch)
+    composition = GmailProviderComposition()
+    request = GmailProviderRequest(
+        operation="send",
+        path="/gmail/v1/users/me/messages/send",
+    )
+
+    response = composition.execute(request)
+
+    assert response.status_code == 200
+    assert response.body["external_execution_performed"] is False
 
 
 def test_worker_executor_successful_execution_result() -> None:

@@ -73,12 +73,13 @@ Sprint 1 - VELOX Core Platform
 - Gmail Provider Boundary Interfaces
 - Gmail Fake Transport Bootstrap
 - Gmail Fake Credentials Provider Bootstrap
+- Gmail Provider Composition Bootstrap
 
 ## Current Next Slice
 
-Gmail Fake Credentials Provider Bootstrap
+Gmail Provider Composition Bootstrap
 
-Recommended next implementation step after Gmail Fake Credentials Provider Bootstrap:
+Recommended next implementation step after Gmail Provider Composition Bootstrap:
 continue post-harvest Gmail provider design without moving directly into OAuth, credentials storage, real HTTP clients or real Gmail API calls.
 
 ## Current Implementation Notes
@@ -106,6 +107,7 @@ continue post-harvest Gmail provider design without moving directly into OAuth, 
 - Gmail provider-facing boundary interfaces now exist under the Gmail integration module for future real adapter work: `GmailCredentialsProvider`, `GmailTransportClient`, `GmailCredentials`, `GmailProviderRequest`, `GmailProviderResponse` and `GmailProviderFailure`. These are contracts and data shapes only; they do not implement OAuth, credentials storage, HTTP clients or real Gmail API calls, and VELOX core remains independent of Gmail provider details.
 - A deterministic `FakeGmailTransportClient` now exists behind the existing Gmail transport boundary. It accepts `GmailProviderRequest`, returns deterministic `GmailProviderResponse` values, can simulate provider failures using `GmailProviderFailure`, and performs no OAuth, credential storage, HTTP client behavior or real Gmail API calls.
 - A deterministic `FakeGmailCredentialsProvider` now exists behind the existing Gmail credentials provider boundary. It returns fake `GmailCredentials` for normalized fake principal/account inputs, handles missing principal/account input with `GmailProviderFailure` metadata via `GmailCredentialsProviderError`, can simulate configured provider failures, and performs no OAuth, credential storage, real secret handling, HTTP client behavior or real Gmail API calls.
+- A deterministic `GmailProviderComposition` now exists behind the Gmail integration boundary. It obtains fake credentials from `FakeGmailCredentialsProvider`, sends `GmailProviderRequest` through `FakeGmailTransportClient`, returns credential and transport failures safely as `GmailProviderResponse` values, and performs no OAuth, credential storage, real secret handling, HTTP client behavior or real Gmail API calls. Existing in-memory read/send/archive behavior, fake transport behavior and fake credentials provider behavior remain unchanged.
 
 ## Workflow
 
@@ -171,4 +173,4 @@ After every implementation slice, update this file in the same commit if the imp
 - Gmail read, send and archive capabilities use deterministic in-memory fake data only. Executor resolution remains role-based and falls back to `NoOpWorkerExecutor` when no registered executor matches.
 - Gmail capability tests are consolidated locally in `tests/test_worker_executor.py`; no shared `tests/conftest.py` fixture has been introduced yet.
 - Real Gmail adapter, OAuth, credential storage, HTTP transport and real Gmail API calls are not implemented yet.
-- Gmail provider boundary interfaces, fake transport bootstrap and fake credentials provider bootstrap are present behind the Gmail integration boundary. No concrete real provider implementation exists yet.
+- Gmail provider boundary interfaces, fake transport bootstrap, fake credentials provider bootstrap and fake provider composition bootstrap are present behind the Gmail integration boundary. No concrete real provider implementation exists yet.

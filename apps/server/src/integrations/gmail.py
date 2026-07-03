@@ -246,6 +246,46 @@ class FakeGmailTransportClient:
         return f"{request.method}:{request.path}:{request.operation}"
 
 
+@dataclass(frozen=True)
+class GmailProviderComposition:
+    """Compose fake Gmail provider dependencies behind the integration boundary."""
+
+    credentials_provider: GmailCredentialsProvider = field(
+        default_factory=FakeGmailCredentialsProvider,
+    )
+    transport_client: GmailTransportClient = field(
+        default_factory=FakeGmailTransportClient,
+    )
+
+    def execute(
+        self,
+        request: GmailProviderRequest,
+        principal: str | None = "fake-principal",
+        account: str | None = "fake-account",
+    ) -> GmailProviderResponse:
+        """Resolve fake credentials and execute the fake Gmail transport safely."""
+        try:
+            credentials = self.credentials_provider.get_credentials(
+                principal=principal,
+                account=account,
+            )
+        except GmailCredentialsProviderError as error:
+            failure = error.failure
+            return GmailProviderResponse(
+                status_code=failure.provider_status_code or 500,
+                body={
+                    "external_execution_performed": False,
+                    "integration": "gmail",
+                    "adapter": "fake_provider_composition",
+                    "operation": request.operation,
+                    "failed": True,
+                },
+                failure=failure,
+            )
+
+        return self.transport_client.execute(request, credentials)
+
+
 @runtime_checkable
 class GmailReadCapability(Protocol):
     """Contract for reading Gmail messages behind the executor boundary."""
