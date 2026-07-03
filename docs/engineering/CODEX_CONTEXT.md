@@ -73,10 +73,10 @@ Sprint 1 - VELOX Core Platform
 
 ## Current Next Slice
 
-Gmail Real Adapter/OAuth Design Review
+Gmail Real Adapter Boundary Scaffolding
 
-Recommended next implementation step after Gmail Capability Test Consolidation and Fixture Cleanup:
-review the Gmail integration contract before implementing any real adapter, credentials, OAuth, HTTP client or external Gmail API behavior.
+Recommended next implementation step after Gmail Real Adapter and OAuth Boundary ADR:
+define provider-facing Gmail boundary interfaces for credentials and transport without implementing OAuth, credentials, HTTP clients or real Gmail API calls.
 
 ## Current Implementation Notes
 
@@ -99,6 +99,7 @@ review the Gmail integration contract before implementing any real adapter, cred
 - Gmail archive capability now has a deterministic in-memory bootstrap behind the Gmail executor boundary. It accepts `GmailArchiveRequest`, returns fake in-memory archive metadata, safely reports missing-message cases, and performs no external Gmail, OAuth, credentials, HTTP or API behavior.
 - Gmail worker executor can route explicit archive actions to the in-memory archive capability and maps malformed archive requests to the existing `WorkerExecutionFailure` contract.
 - Gmail executor and capability tests now use small local helpers for repeated content-summary action setup, no-external-execution assertions, socket-call blocking and Gmail failure-contract assertions. This consolidation is test-structure-only and preserves existing behavior.
+- ADR-0001 documents the Gmail real adapter and OAuth boundary. Real Gmail API behavior must remain behind the Gmail executor/integration boundary, VELOX core must depend only on roles/contracts, OAuth and credentials must remain separate provider concerns, HTTP transport must be adapter-owned or injected behind the boundary, and real Gmail behavior belongs in opt-in integration tests only.
 
 ## Workflow
 
@@ -151,7 +152,7 @@ After every implementation slice, update this file in the same commit if the imp
 - Source code lives under apps/server/src/.
 - Tests live under tests/.
 - Documentation lives under docs/.
-- ADRs live under docs/adr/.
+- Engineering ADRs live under docs/engineering/adr/.
 - Docker config lives under docker-compose.yml and infrastructure/docker/server.Dockerfile.
 
 ## Technical Debt
@@ -163,3 +164,4 @@ After every implementation slice, update this file in the same commit if the imp
 - Action Executor Role Model validation still needs to be run in an environment where `python` is available on PATH.
 - Gmail read, send and archive capabilities use deterministic in-memory fake data only. Executor resolution remains role-based and falls back to `NoOpWorkerExecutor` when no registered executor matches.
 - Gmail capability tests are consolidated locally in `tests/test_worker_executor.py`; no shared `tests/conftest.py` fixture has been introduced yet.
+- Real Gmail adapter, OAuth, credential providers, HTTP transport and real Gmail API calls are not implemented yet.
