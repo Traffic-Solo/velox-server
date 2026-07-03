@@ -15,6 +15,10 @@ from apps.server.src.integrations.calendar import (
     FakeCalendarCredentialsProvider,
     FakeCalendarTransportClient,
 )
+from apps.server.src.integrations.gmail import (
+    GmailProviderComposition,
+    GmailProviderRequest,
+)
 from apps.server.src.workers.executor import (
     WorkerExecutionFailureCategory,
     WorkerExecutionStatus,
@@ -71,8 +75,42 @@ def test_calendar_fake_credentials_provider_returns_deterministic_credentials() 
     assert isinstance(provider, CalendarCredentialsProvider)
     assert credentials == CalendarCredentials(
         access_token="fake-calendar-access-token:principal-1:account-1",
+        principal="principal-1",
+        account="account-1",
         expires_at="2099-01-01T00:00:00Z",
     )
+
+
+def test_calendar_fake_credentials_provider_handles_missing_account_safely() -> None:
+    provider = FakeCalendarCredentialsProvider()
+
+    try:
+        provider.get_credentials(principal="principal-1", account=None)
+    except CalendarCredentialsProviderError as error:
+        failure = error.failure
+    else:
+        raise AssertionError("expected CalendarCredentialsProviderError")
+
+    assert failure.category == WorkerExecutionFailureCategory.PERMANENT
+    assert failure.message == "calendar credentials request missing account"
+    assert failure.metadata == {"field": "account"}
+
+
+def test_calendar_fake_credentials_provider_distinguishes_account_contexts() -> None:
+    provider = FakeCalendarCredentialsProvider()
+
+    account_1_credentials = provider.get_credentials(
+        principal="principal-1",
+        account="calendar-account-1",
+    )
+    account_2_credentials = provider.get_credentials(
+        principal="principal-1",
+        account="calendar-account-2",
+    )
+
+    assert account_1_credentials.access_token != account_2_credentials.access_token
+    assert account_1_credentials.account == "calendar-account-1"
+    assert account_2_credentials.account == "calendar-account-2"
 
 
 def test_calendar_fake_credentials_provider_handles_missing_principal_safely() -> None:
@@ -91,7 +129,11 @@ def test_calendar_fake_credentials_provider_handles_missing_principal_safely() -
 
 
 def test_calendar_fake_transport_returns_deterministic_response() -> None:
-    credentials = CalendarCredentials(access_token="fake-token")
+    credentials = CalendarCredentials(
+        access_token="fake-token",
+        principal="principal-1",
+        account="calendar-account-1",
+    )
     request = CalendarProviderRequest(
         operation="bootstrap",
         path="/calendar/v3/users/me/calendarList",
@@ -111,6 +153,8 @@ def test_calendar_fake_transport_returns_deterministic_response() -> None:
             "path": "/calendar/v3/users/me/calendarList",
             "method": "GET",
             "token_type": "Bearer",
+            "principal": "principal-1",
+            "account": "calendar-account-1",
         },
     )
 
@@ -134,6 +178,86 @@ def test_calendar_provider_composition_executes_fake_credentials_and_transport()
     assert response.body["adapter"] == "fake_transport"
     assert response.body["operation"] == "bootstrap"
     assert response.body["token_type"] == "Bearer"
+    assert response.body["principal"] == "principal-1"
+    assert response.body["account"] == "account-1"
+
+
+def test_calendar_provider_composition_requires_account_context_safely() -> None:
+    request = CalendarProviderRequest(
+        operation="bootstrap",
+        path="/calendar/v3/users/me/calendarList",
+    )
+    composition = CalendarProviderComposition()
+
+    response = composition.execute(
+        request,
+        principal="principal-1",
+        account=None,
+    )
+
+    assert response.status_code == 500
+    assert response.body == {
+        "external_execution_performed": False,
+        "integration": "calendar",
+        "adapter": "fake_provider_composition",
+        "operation": "bootstrap",
+        "failed": True,
+    }
+    assert response.failure is not None
+    assert response.failure.category == WorkerExecutionFailureCategory.PERMANENT
+    assert response.failure.message == "calendar credentials request missing account"
+    assert response.failure.metadata == {"field": "account"}
+
+
+def test_calendar_provider_composition_distinguishes_account_contexts() -> None:
+    request = CalendarProviderRequest(
+        operation="bootstrap",
+        path="/calendar/v3/users/me/calendarList",
+    )
+    composition = CalendarProviderComposition()
+
+    account_1_response = composition.execute(
+        request,
+        principal="principal-1",
+        account="calendar-account-1",
+    )
+    account_2_response = composition.execute(
+        request,
+        principal="principal-1",
+        account="calendar-account-2",
+    )
+
+    assert account_1_response.body["account"] == "calendar-account-1"
+    assert account_2_response.body["account"] == "calendar-account-2"
+    assert account_1_response.body != account_2_response.body
+
+
+def test_gmail_and_calendar_can_use_separate_account_contexts() -> None:
+    principal = "principal-1"
+    gmail_request = GmailProviderRequest(
+        operation="read",
+        path="/gmail/v1/users/me/messages/gmail-message-1",
+    )
+    calendar_request = CalendarProviderRequest(
+        operation="bootstrap",
+        path="/calendar/v3/users/me/calendarList",
+    )
+
+    gmail_response = GmailProviderComposition().execute(
+        gmail_request,
+        principal=principal,
+        account="gmail-account-1",
+    )
+    calendar_response = CalendarProviderComposition().execute(
+        calendar_request,
+        principal=principal,
+        account="calendar-account-1",
+    )
+
+    assert gmail_response.body["principal"] == principal
+    assert calendar_response.body["principal"] == principal
+    assert gmail_response.body["account"] == "gmail-account-1"
+    assert calendar_response.body["account"] == "calendar-account-1"
 
 
 def test_calendar_provider_composition_returns_credentials_failure_safely() -> None:
@@ -188,7 +312,11 @@ def test_calendar_provider_composition_returns_transport_failure_safely() -> Non
         path="/calendar/v3/users/me/calendarList",
     )
 
-    response = composition.execute(request)
+    response = composition.execute(
+        request,
+        principal="principal-1",
+        account="account-1",
+    )
 
     assert response.status_code == 503
     assert response.body == {
@@ -215,7 +343,11 @@ def test_calendar_bootstrap_makes_no_external_api_calls(monkeypatch) -> None:
     )
 
     execution_result = executor.execute(action)
-    provider_response = executor.provider_composition.execute(request)
+    provider_response = executor.provider_composition.execute(
+        request,
+        principal="principal-1",
+        account="account-1",
+    )
 
     assert execution_result.status == WorkerExecutionStatus.SUCCEEDED
     assert execution_result.metadata["external_execution_performed"] is False

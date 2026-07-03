@@ -133,11 +133,16 @@ def test_gmail_worker_executor_exposes_capability_contracts() -> None:
 def test_gmail_provider_boundary_exposes_credentials_contract() -> None:
     provider = FakeGmailCredentialsProvider()
 
-    credentials = provider.get_credentials()
+    credentials = provider.get_credentials(
+        principal="fake-principal",
+        account="fake-account",
+    )
 
     assert isinstance(provider, GmailCredentialsProvider)
     assert credentials == GmailCredentials(
         access_token="fake-gmail-access-token:fake-principal:fake-account",
+        principal="fake-principal",
+        account="fake-account",
         expires_at="2099-01-01T00:00:00Z",
     )
 
@@ -152,6 +157,8 @@ def test_gmail_fake_credentials_provider_returns_deterministic_credentials() -> 
 
     assert credentials == GmailCredentials(
         access_token="fake-gmail-access-token:principal-1:account-1",
+        principal="principal-1",
+        account="account-1",
         expires_at="2099-01-01T00:00:00Z",
     )
 
@@ -167,6 +174,25 @@ def test_gmail_fake_credentials_provider_normalizes_principal_and_account() -> N
     assert credentials.access_token == (
         "fake-gmail-access-token:principal-1:account-1"
     )
+    assert credentials.principal == "principal-1"
+    assert credentials.account == "account-1"
+
+
+def test_gmail_fake_credentials_provider_distinguishes_account_contexts() -> None:
+    provider = FakeGmailCredentialsProvider()
+
+    account_1_credentials = provider.get_credentials(
+        principal="principal-1",
+        account="account-1",
+    )
+    account_2_credentials = provider.get_credentials(
+        principal="principal-1",
+        account="account-2",
+    )
+
+    assert account_1_credentials.access_token != account_2_credentials.access_token
+    assert account_1_credentials.account == "account-1"
+    assert account_2_credentials.account == "account-2"
 
 
 def test_gmail_fake_credentials_provider_handles_missing_principal_safely() -> None:
@@ -222,7 +248,11 @@ def test_gmail_fake_credentials_provider_can_simulate_provider_failure() -> None
 
 
 def test_gmail_provider_boundary_exposes_transport_contract() -> None:
-    credentials = GmailCredentials(access_token="fake-token")
+    credentials = GmailCredentials(
+        access_token="fake-token",
+        principal="principal-1",
+        account="account-1",
+    )
     request = GmailProviderRequest(operation="read", path="/gmail/v1/users/me/messages/1")
     client = FakeGmailTransportClient(
         responses={
@@ -243,7 +273,11 @@ def test_gmail_provider_boundary_exposes_transport_contract() -> None:
 
 
 def test_gmail_fake_transport_returns_deterministic_response() -> None:
-    credentials = GmailCredentials(access_token="fake-token")
+    credentials = GmailCredentials(
+        access_token="fake-token",
+        principal="principal-1",
+        account="account-1",
+    )
     request = GmailProviderRequest(
         operation="read",
         path="/gmail/v1/users/me/messages/gmail-message-1",
@@ -263,12 +297,18 @@ def test_gmail_fake_transport_returns_deterministic_response() -> None:
             "path": "/gmail/v1/users/me/messages/gmail-message-1",
             "method": "GET",
             "token_type": "Bearer",
+            "principal": "principal-1",
+            "account": "account-1",
         },
     )
 
 
 def test_gmail_fake_transport_can_simulate_provider_failure() -> None:
-    credentials = GmailCredentials(access_token="fake-token")
+    credentials = GmailCredentials(
+        access_token="fake-token",
+        principal="principal-1",
+        account="account-1",
+    )
     request = GmailProviderRequest(operation="read", path="/gmail/v1/users/me/messages/1")
     failure = GmailProviderFailure(
         category=WorkerExecutionFailureCategory.TRANSIENT,
@@ -295,7 +335,11 @@ def test_gmail_fake_transport_can_simulate_provider_failure() -> None:
 
 def test_gmail_fake_transport_makes_no_external_api_calls(monkeypatch) -> None:
     block_external_socket_calls(monkeypatch)
-    credentials = GmailCredentials(access_token="fake-token")
+    credentials = GmailCredentials(
+        access_token="fake-token",
+        principal="principal-1",
+        account="account-1",
+    )
     request = GmailProviderRequest(operation="send", path="/gmail/v1/users/me/messages/send")
     client = FakeGmailTransportClient()
 
@@ -346,8 +390,60 @@ def test_gmail_provider_composition_executes_fake_credentials_and_transport() ->
             "path": "/gmail/v1/users/me/messages/gmail-message-1",
             "method": "GET",
             "token_type": "Bearer",
+            "principal": "principal-1",
+            "account": "account-1",
         },
     )
+
+
+def test_gmail_provider_composition_requires_account_context_safely() -> None:
+    request = GmailProviderRequest(
+        operation="read",
+        path="/gmail/v1/users/me/messages/gmail-message-1",
+    )
+    composition = GmailProviderComposition()
+
+    response = composition.execute(
+        request,
+        principal="principal-1",
+        account=None,
+    )
+
+    assert response.status_code == 500
+    assert response.body == {
+        "external_execution_performed": False,
+        "integration": "gmail",
+        "adapter": "fake_provider_composition",
+        "operation": "read",
+        "failed": True,
+    }
+    assert response.failure is not None
+    assert response.failure.category == WorkerExecutionFailureCategory.PERMANENT
+    assert response.failure.message == "gmail credentials request missing account"
+    assert response.failure.metadata == {"field": "account"}
+
+
+def test_gmail_provider_composition_distinguishes_account_contexts() -> None:
+    request = GmailProviderRequest(
+        operation="read",
+        path="/gmail/v1/users/me/messages/gmail-message-1",
+    )
+    composition = GmailProviderComposition()
+
+    account_1_response = composition.execute(
+        request,
+        principal="principal-1",
+        account="account-1",
+    )
+    account_2_response = composition.execute(
+        request,
+        principal="principal-1",
+        account="account-2",
+    )
+
+    assert account_1_response.body["account"] == "account-1"
+    assert account_2_response.body["account"] == "account-2"
+    assert account_1_response.body != account_2_response.body
 
 
 def test_gmail_provider_composition_returns_credentials_failure_safely() -> None:
@@ -402,7 +498,11 @@ def test_gmail_provider_composition_returns_transport_failure_safely() -> None:
         path="/gmail/v1/users/me/messages/gmail-message-1",
     )
 
-    response = composition.execute(request)
+    response = composition.execute(
+        request,
+        principal="principal-1",
+        account="account-1",
+    )
 
     assert response.status_code == 503
     assert response.body == {
@@ -423,7 +523,11 @@ def test_gmail_provider_composition_makes_no_external_api_calls(monkeypatch) -> 
         path="/gmail/v1/users/me/messages/send",
     )
 
-    response = composition.execute(request)
+    response = composition.execute(
+        request,
+        principal="principal-1",
+        account="account-1",
+    )
 
     assert response.status_code == 200
     assert response.body["external_execution_performed"] is False

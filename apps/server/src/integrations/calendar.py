@@ -19,6 +19,8 @@ class CalendarCredentials:
     """Provider-facing Calendar credential material placeholder."""
 
     access_token: str
+    principal: str
+    account: str
     token_type: str = "Bearer"
     expires_at: str | None = None
 
@@ -70,8 +72,8 @@ class CalendarCredentialsProvider(Protocol):
 
     def get_credentials(
         self,
-        principal: str | None = None,
-        account: str | None = None,
+        principal: str | None,
+        account: str | None,
     ) -> CalendarCredentials:
         """Return Calendar credentials for a future provider adapter."""
 
@@ -87,8 +89,8 @@ class FakeCalendarCredentialsProvider:
 
     def get_credentials(
         self,
-        principal: str | None = "fake-principal",
-        account: str | None = "fake-account",
+        principal: str | None,
+        account: str | None,
     ) -> CalendarCredentials:
         """Return deterministic fake credentials for a normalized principal/account."""
         normalized_principal = self._normalize_identifier(principal, "principal")
@@ -106,6 +108,8 @@ class FakeCalendarCredentialsProvider:
                 "fake-calendar-access-token:"
                 f"{normalized_principal}:{normalized_account}"
             ),
+            principal=normalized_principal,
+            account=normalized_account,
             expires_at="2099-01-01T00:00:00Z",
         )
 
@@ -179,6 +183,8 @@ class FakeCalendarTransportClient:
                 "path": request.path,
                 "method": request.method,
                 "token_type": credentials.token_type,
+                "principal": credentials.principal,
+                "account": credentials.account,
             },
         )
 
@@ -200,8 +206,8 @@ class CalendarProviderComposition:
     def execute(
         self,
         request: CalendarProviderRequest,
-        principal: str | None = "fake-principal",
-        account: str | None = "fake-account",
+        principal: str | None,
+        account: str | None,
     ) -> CalendarProviderResponse:
         """Resolve fake credentials and execute the fake Calendar transport safely."""
         try:

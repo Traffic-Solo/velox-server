@@ -75,13 +75,14 @@ Sprint 1 - VELOX Core Platform
 - Gmail Fake Credentials Provider Bootstrap
 - Gmail Provider Composition Bootstrap
 - Google Calendar Integration Bootstrap
+- Google Account Context Contract Hardening
 
 ## Current Next Slice
 
-Google Calendar Integration Bootstrap
+Google Account Context Contract Hardening
 
-Recommended next implementation step after Google Calendar Integration Bootstrap:
-continue post-harvest Google integration design without moving directly into OAuth, credentials storage, real HTTP clients or real Google API calls.
+Recommended next implementation step after Google Account Context Contract Hardening:
+sync the completed Google Calendar Integration Bootstrap and Google Account Context Contract Hardening repository state back to Notion, then continue post-harvest Google integration design without moving directly into OAuth, credentials storage, real HTTP clients or real Google API calls.
 
 ## Current Implementation Notes
 
@@ -111,6 +112,7 @@ continue post-harvest Google integration design without moving directly into OAu
 - A deterministic `GmailProviderComposition` now exists behind the Gmail integration boundary. It obtains fake credentials from `FakeGmailCredentialsProvider`, sends `GmailProviderRequest` through `FakeGmailTransportClient`, returns credential and transport failures safely as `GmailProviderResponse` values, and performs no OAuth, credential storage, real secret handling, HTTP client behavior or real Gmail API calls. Existing in-memory read/send/archive behavior, fake transport behavior and fake credentials provider behavior remain unchanged.
 - A Google Calendar integration bootstrap now exists under the integrations package, is registered in `ApplicationContainer` through the existing executor registry using the vendor-neutral `CONTEXT_PREPARATION` role, and returns a safe placeholder `WorkerExecutionResult` without calendar events, OAuth, credential storage, HTTP clients or Google Calendar API calls.
 - Google Calendar provider-facing boundary placeholders now exist under the Calendar integration module for future adapter work: `CalendarCredentialsProvider`, `CalendarTransportClient`, `CalendarCredentials`, `CalendarProviderRequest`, `CalendarProviderResponse`, `CalendarProviderFailure` and `CalendarProviderComposition`. These deterministic fake boundaries validate that the Gmail provider composition pattern can be reused for another Google service without implementing OAuth, credential storage, real secrets, HTTP transport or real Google Calendar API calls.
+- Gmail and Calendar provider boundary contracts now require explicit principal/account context when resolving fake Google credentials or executing provider composition. Fake credentials carry normalized principal/account fields, fake transport responses echo that context deterministically, missing account context fails safely through provider failure responses, and Gmail and Calendar can execute with separate account identifiers without introducing a hidden global/default Google account.
 
 ## Workflow
 
@@ -178,3 +180,4 @@ After every implementation slice, update this file in the same commit if the imp
 - Real Gmail adapter, OAuth, credential storage, HTTP transport and real Gmail API calls are not implemented yet.
 - Gmail provider boundary interfaces, fake transport bootstrap, fake credentials provider bootstrap and fake provider composition bootstrap are present behind the Gmail integration boundary. No concrete real provider implementation exists yet.
 - Google Calendar integration is bootstrap-only with deterministic fake provider composition and a placeholder executor. Calendar events, OAuth, credential storage, HTTP transport and real Google Calendar API calls are not implemented yet.
+- Notion sync may still need reconciliation for the latest completed Google integration slices; do not claim Notion is updated unless the sync is explicitly performed.
