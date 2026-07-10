@@ -38,6 +38,7 @@ from apps.server.src.integrations.calendar import (
 from apps.server.src.integrations.gmail import GMAIL_EXECUTOR_ROLE, GmailWorkerExecutor
 from apps.server.src.workers.executor import (
     NoOpWorkerExecutor,
+    WorkerCapabilityRoute,
     WorkerExecutor,
     WorkerExecutorRegistry,
 )
@@ -76,15 +77,33 @@ class ApplicationContainer:
             fallback_executor=self.worker_executor,
         )
         self.gmail_worker_executor = GmailWorkerExecutor()
-        self.worker_executor_registry.register_role(
-            GMAIL_EXECUTOR_ROLE,
-            self.gmail_worker_executor,
+        self.worker_executor_registry.register_capability_provider(
+            WorkerCapabilityRoute(
+                role=GMAIL_EXECUTOR_ROLE,
+                capability="summarize_email",
+                provider="gmail",
+            ),
+            executor=self.gmail_worker_executor,
         )
+        for capability in ("gmail.read", "gmail.send", "gmail.archive"):
+            self.worker_executor_registry.register_capability_provider(
+                WorkerCapabilityRoute(
+                    role=GMAIL_EXECUTOR_ROLE,
+                    capability=capability,
+                    provider="gmail",
+                ),
+                executor=self.gmail_worker_executor,
+            )
         self.calendar_worker_executor = CalendarWorkerExecutor()
-        self.worker_executor_registry.register_role(
-            CALENDAR_EXECUTOR_ROLE,
-            self.calendar_worker_executor,
-        )
+        for capability in ("prepare_meeting", "prepare_calendar_context"):
+            self.worker_executor_registry.register_capability_provider(
+                WorkerCapabilityRoute(
+                    role=CALENDAR_EXECUTOR_ROLE,
+                    capability=capability,
+                    provider="calendar",
+                ),
+                executor=self.calendar_worker_executor,
+            )
         self.worker_execution_observer = InMemoryWorkerExecutionObserver()
         self.worker_runtime = WorkerRuntime(
             action_queue=self.action_queue,

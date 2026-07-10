@@ -12,7 +12,11 @@ from apps.server.src.integrations.gmail import (
     GmailSendCapability,
     GmailWorkerExecutor,
 )
-from apps.server.src.workers.executor import WorkerExecutionResult, WorkerExecutionStatus
+from apps.server.src.workers.executor import (
+    WorkerCapabilityRoute,
+    WorkerExecutionResult,
+    WorkerExecutionStatus,
+)
 
 
 class ContainerRecordingExecutor:
@@ -171,14 +175,18 @@ def test_container_exposes_wired_worker_runtime() -> None:
 def test_container_wired_worker_runtime_uses_executor_registry() -> None:
     container = ApplicationContainer()
     action = Action(
-        type="prepare_meeting",
+        type="prepare_meeting_test",
         target="event-1",
         executor_role=ExecutorRole.CONTEXT_PREPARATION,
     )
     executor = ContainerRecordingExecutor()
-    container.worker_executor_registry.register(
-        ExecutorRole.CONTEXT_PREPARATION,
-        executor,
+    container.worker_executor_registry.register_capability_provider(
+        WorkerCapabilityRoute(
+            role=ExecutorRole.CONTEXT_PREPARATION,
+            capability="prepare_meeting_test",
+            provider="calendar",
+        ),
+        executor=executor,
     )
     container.action_queue.enqueue(action)
 
@@ -206,6 +214,8 @@ def test_container_worker_runtime_routes_matching_action_to_gmail_executor() -> 
     execution_metadata = result.action.metadata["worker_execution"]
     assert execution_metadata["requested_role"] == ExecutorRole.CONTENT_SUMMARY.value
     assert execution_metadata["executor_registered"] is True
+    assert execution_metadata["requested_capability"] == "summarize_email"
+    assert execution_metadata["matched_provider"] == "gmail"
     assert execution_metadata["metadata"] == {
         "external_execution_performed": False,
         "integration": "gmail",
@@ -232,6 +242,8 @@ def test_container_worker_runtime_routes_matching_action_to_calendar_executor() 
     execution_metadata = result.action.metadata["worker_execution"]
     assert execution_metadata["requested_role"] == ExecutorRole.CONTEXT_PREPARATION.value
     assert execution_metadata["executor_registered"] is True
+    assert execution_metadata["requested_capability"] == "prepare_calendar_context"
+    assert execution_metadata["matched_provider"] == "calendar"
     assert execution_metadata["metadata"] == {
         "external_execution_performed": False,
         "integration": "calendar",
@@ -243,14 +255,18 @@ def test_container_worker_runtime_routes_matching_action_to_calendar_executor() 
 def test_container_wired_worker_runtime_records_execution_observation() -> None:
     container = ApplicationContainer()
     action = Action(
-        type="prepare_meeting",
+        type="prepare_meeting_test",
         target="event-1",
         executor_role=ExecutorRole.CONTEXT_PREPARATION,
     )
     executor = ContainerRecordingExecutor()
-    container.worker_executor_registry.register_role(
-        ExecutorRole.CONTEXT_PREPARATION,
-        executor,
+    container.worker_executor_registry.register_capability_provider(
+        WorkerCapabilityRoute(
+            role=ExecutorRole.CONTEXT_PREPARATION,
+            capability="prepare_meeting_test",
+            provider="calendar",
+        ),
+        executor=executor,
     )
     container.action_queue.enqueue(action)
 

@@ -22,6 +22,7 @@ from apps.server.src.integrations.gmail import (
 )
 from apps.server.src.workers.executor import (
     NoOpWorkerExecutor,
+    WorkerCapabilityRoute,
     WorkerExecutionFailure,
     WorkerExecutionFailureCategory,
     WorkerExecutionResult,
@@ -623,6 +624,7 @@ def test_no_op_worker_executor_is_safe_default() -> None:
     assert result.status == WorkerExecutionStatus.SKIPPED
     assert result.reason == "no registered executor handled this action"
     assert result.metadata["external_execution_performed"] is False
+    assert result.metadata["skipped"] is True
 
 
 def test_gmail_worker_executor_returns_safe_placeholder_result() -> None:
@@ -1056,3 +1058,389 @@ def test_worker_executor_registry_does_not_introduce_vendor_specific_behavior() 
 
     assert result.status == WorkerExecutionStatus.SKIPPED
     assert result.metadata["external_execution_performed"] is False
+    assert result.metadata["skipped"] is True
+
+
+def test_worker_executor_registry_routes_one_role_to_multiple_capability_providers() -> None:
+    registry = WorkerExecutorRegistry()
+    gmail_executor = SuccessfulExecutor()
+    calendar_executor = SuccessfulExecutor()
+    registry.register_capability_provider(
+        WorkerCapabilityRoute(
+            role=ExecutorRole.CONTENT_SUMMARY,
+            capability="summarize",
+            provider="gmail",
+        ),
+        gmail_executor,
+    )
+    registry.register_capability_provider(
+        WorkerCapabilityRoute(
+            role=ExecutorRole.CONTENT_SUMMARY,
+            capability="summarize",
+            provider="calendar",
+        ),
+        calendar_executor,
+    )
+    gmail_action = Action(
+        type="summarize",
+        target="gmail-message-1",
+        payload={"capability_provider": "gmail"},
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+    calendar_action = Action(
+        type="summarize",
+        target="calendar-event-1",
+        payload={"capability_provider": "calendar"},
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+
+    gmail_resolution = registry.resolve_with_registration(gmail_action)
+    calendar_resolution = registry.resolve_with_registration(calendar_action)
+
+    assert gmail_resolution.executor is gmail_executor
+    assert gmail_resolution.registered is True
+    assert gmail_resolution.requested_role == ExecutorRole.CONTENT_SUMMARY.value
+    assert gmail_resolution.requested_capability == "summarize"
+    assert gmail_resolution.requested_provider == "gmail"
+    assert gmail_resolution.matched_provider == "gmail"
+    assert calendar_resolution.executor is calendar_executor
+    assert calendar_resolution.registered is True
+    assert calendar_resolution.requested_role == ExecutorRole.CONTENT_SUMMARY.value
+    assert calendar_resolution.requested_capability == "summarize"
+    assert calendar_resolution.requested_provider == "calendar"
+    assert calendar_resolution.matched_provider == "calendar"
+
+
+def test_worker_executor_registry_routes_payload_capability_provider_explicitly() -> None:
+    registry = WorkerExecutorRegistry()
+    executor = SuccessfulExecutor()
+    registry.register_capability_provider(
+        WorkerCapabilityRoute(
+            role=ExecutorRole.CONTENT_SUMMARY,
+            capability="summarize",
+            provider="gmail",
+        ),
+        executor,
+    )
+    action = Action(
+        type="summarize",
+        target="gmail-message-1",
+        payload={"capability_provider": "gmail"},
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+
+    resolution = registry.resolve_with_registration(action)
+
+    assert resolution.executor is executor
+    assert resolution.registered is True
+    assert resolution.requested_provider == "gmail"
+    assert resolution.routing_reason == "capability_route"
+
+
+def test_worker_executor_registry_routes_single_provider_deterministically() -> None:
+    registry = WorkerExecutorRegistry()
+    executor = SuccessfulExecutor()
+    registry.register_capability_provider(
+        WorkerCapabilityRoute(
+            role=ExecutorRole.CONTENT_SUMMARY,
+            capability="summarize_email",
+            provider="gmail",
+        ),
+        executor,
+    )
+    action = Action(
+        type="summarize_email",
+        target="gmail-message-1",
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+
+    resolution = registry.resolve_with_registration(action)
+
+    assert resolution.executor is executor
+    assert resolution.registered is True
+    assert resolution.requested_provider is None
+    assert resolution.matched_provider == "gmail"
+    assert resolution.routing_reason == "capability_route"
+
+
+def test_worker_executor_registry_explicit_unknown_capability_does_not_use_legacy_role() -> None:
+    fallback_executor = NoOpWorkerExecutor()
+    registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
+    legacy_executor = SuccessfulExecutor()
+    registry.register_role(ExecutorRole.CONTENT_SUMMARY, legacy_executor)
+    action = Action(
+        type="summarize_email",
+        target="gmail-message-1",
+        payload={"capability": "unknown_capability"},
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+
+    resolution = registry.resolve_with_registration(action)
+    result = resolution.executor.execute(action)
+
+    assert resolution.executor is fallback_executor
+    assert resolution.registered is False
+    assert resolution.requested_capability == "unknown_capability"
+    assert resolution.routing_reason == "no_handler"
+    assert result.status == WorkerExecutionStatus.SKIPPED
+
+
+def test_worker_executor_registry_blank_payload_capability_fails_closed() -> None:
+    fallback_executor = NoOpWorkerExecutor()
+    registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
+    registry.register_role(ExecutorRole.CONTENT_SUMMARY, SuccessfulExecutor())
+    action = Action(
+        type="summarize_email",
+        target="gmail-message-1",
+        payload={"capability": "   "},
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+
+    resolution = registry.resolve_with_registration(action)
+
+    assert resolution.executor is fallback_executor
+    assert resolution.registered is False
+    assert resolution.requested_capability is None
+    assert resolution.routing_reason == "invalid_capability"
+
+
+def test_worker_executor_registry_non_string_payload_capability_fails_closed() -> None:
+    fallback_executor = NoOpWorkerExecutor()
+    registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
+    registry.register_role(ExecutorRole.CONTENT_SUMMARY, SuccessfulExecutor())
+    action = Action(
+        type="summarize_email",
+        target="gmail-message-1",
+        payload={"capability": 123},
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+
+    resolution = registry.resolve_with_registration(action)
+
+    assert resolution.executor is fallback_executor
+    assert resolution.registered is False
+    assert resolution.requested_capability is None
+    assert resolution.routing_reason == "invalid_capability"
+
+
+def test_worker_executor_registry_invalid_metadata_capability_fails_closed() -> None:
+    fallback_executor = NoOpWorkerExecutor()
+    registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
+    registry.register_role(ExecutorRole.CONTENT_SUMMARY, SuccessfulExecutor())
+    action = Action(
+        type="summarize_email",
+        target="gmail-message-1",
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+        metadata={"capability": None},
+    )
+
+    resolution = registry.resolve_with_registration(action)
+
+    assert resolution.executor is fallback_executor
+    assert resolution.registered is False
+    assert resolution.requested_capability is None
+    assert resolution.routing_reason == "invalid_capability"
+
+
+def test_worker_executor_registry_invalid_explicit_capability_does_not_use_legacy_role() -> None:
+    fallback_executor = NoOpWorkerExecutor()
+    legacy_executor = SuccessfulExecutor()
+    registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
+    registry.register_role(ExecutorRole.CONTENT_SUMMARY, legacy_executor)
+    action = Action(
+        type="summarize_email",
+        target="gmail-message-1",
+        payload={"capability": ""},
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+
+    resolution = registry.resolve_with_registration(action)
+
+    assert resolution.executor is fallback_executor
+    assert resolution.executor is not legacy_executor
+    assert resolution.routing_reason == "invalid_capability"
+
+
+def test_worker_executor_registry_inferred_action_type_can_use_legacy_role() -> None:
+    registry = WorkerExecutorRegistry()
+    legacy_executor = SuccessfulExecutor()
+    action = Action(
+        type="summarize_email",
+        target="gmail-message-1",
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+    registry.register_role(ExecutorRole.CONTENT_SUMMARY, legacy_executor)
+
+    resolution = registry.resolve_with_registration(action)
+
+    assert resolution.executor is legacy_executor
+    assert resolution.registered is True
+    assert resolution.requested_capability == "summarize_email"
+    assert resolution.routing_reason == "legacy_role_route"
+
+
+def test_worker_executor_registry_blank_capability_provider_fails_closed() -> None:
+    fallback_executor = NoOpWorkerExecutor()
+    registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
+    registry.register_capability_provider(
+        WorkerCapabilityRoute(
+            role=ExecutorRole.CONTENT_SUMMARY,
+            capability="summarize_email",
+            provider="gmail",
+        ),
+        SuccessfulExecutor(),
+    )
+    action = Action(
+        type="summarize_email",
+        target="gmail-message-1",
+        payload={"capability_provider": ""},
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+
+    resolution = registry.resolve_with_registration(action)
+
+    assert resolution.executor is fallback_executor
+    assert resolution.registered is False
+    assert resolution.requested_provider is None
+    assert resolution.routing_reason == "invalid_capability_provider"
+
+
+def test_worker_executor_registry_non_string_capability_provider_fails_closed() -> None:
+    fallback_executor = NoOpWorkerExecutor()
+    registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
+    registry.register_capability_provider(
+        WorkerCapabilityRoute(
+            role=ExecutorRole.CONTENT_SUMMARY,
+            capability="summarize_email",
+            provider="gmail",
+        ),
+        SuccessfulExecutor(),
+    )
+    action = Action(
+        type="summarize_email",
+        target="gmail-message-1",
+        payload={"capability_provider": 123},
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+
+    resolution = registry.resolve_with_registration(action)
+
+    assert resolution.executor is fallback_executor
+    assert resolution.registered is False
+    assert resolution.requested_provider is None
+    assert resolution.routing_reason == "invalid_capability_provider"
+
+
+def test_worker_executor_registry_invalid_provider_does_not_auto_select_provider() -> None:
+    fallback_executor = NoOpWorkerExecutor()
+    route_executor = SuccessfulExecutor()
+    registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
+    registry.register_capability_provider(
+        WorkerCapabilityRoute(
+            role=ExecutorRole.CONTENT_SUMMARY,
+            capability="summarize_email",
+            provider="gmail",
+        ),
+        route_executor,
+    )
+    action = Action(
+        type="summarize_email",
+        target="gmail-message-1",
+        payload={"capability_provider": ""},
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+
+    resolution = registry.resolve_with_registration(action)
+
+    assert resolution.executor is fallback_executor
+    assert resolution.executor is not route_executor
+    assert resolution.matched_provider is None
+    assert resolution.routing_reason == "invalid_capability_provider"
+
+
+def test_worker_executor_registry_generic_provider_payload_does_not_affect_routing() -> None:
+    registry = WorkerExecutorRegistry()
+    legacy_executor = SuccessfulExecutor()
+    action = Action(
+        type="summarize_email",
+        target="gmail-message-1",
+        payload={"provider": "gmail"},
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+    registry.register_role(ExecutorRole.CONTENT_SUMMARY, legacy_executor)
+
+    resolution = registry.resolve_with_registration(action)
+
+    assert resolution.executor is legacy_executor
+    assert resolution.registered is True
+    assert resolution.requested_provider is None
+    assert resolution.routing_reason == "legacy_role_route"
+
+
+def test_worker_executor_registry_duplicate_capability_route_raises() -> None:
+    registry = WorkerExecutorRegistry()
+    route = WorkerCapabilityRoute(
+        role=ExecutorRole.CONTENT_SUMMARY,
+        capability="summarize_email",
+        provider="gmail",
+    )
+    registry.register_capability_provider(route, SuccessfulExecutor())
+
+    try:
+        registry.register_capability_provider(route, SuccessfulExecutor())
+    except ValueError as error:
+        assert str(error) == "capability route is already registered"
+    else:
+        raise AssertionError("expected duplicate capability route to fail")
+
+
+def test_worker_executor_registry_does_not_silently_route_ambiguous_provider() -> None:
+    fallback_executor = NoOpWorkerExecutor()
+    registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
+    registry.register_capability_provider(
+        WorkerCapabilityRoute(
+            role=ExecutorRole.CONTENT_SUMMARY,
+            capability="summarize",
+            provider="gmail",
+        ),
+        SuccessfulExecutor(),
+    )
+    registry.register_capability_provider(
+        WorkerCapabilityRoute(
+            role=ExecutorRole.CONTENT_SUMMARY,
+            capability="summarize",
+            provider="calendar",
+        ),
+        SuccessfulExecutor(),
+    )
+    action = Action(
+        type="summarize",
+        target="shared-target",
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+
+    resolution = registry.resolve_with_registration(action)
+    result = resolution.executor.execute(action)
+
+    assert resolution.executor is fallback_executor
+    assert resolution.registered is False
+    assert resolution.routing_reason == "ambiguous_capability_route"
+    assert result.status == WorkerExecutionStatus.SKIPPED
+
+
+def test_worker_executor_registry_missing_capability_handler_never_succeeds() -> None:
+    registry = WorkerExecutorRegistry()
+    action = Action(
+        type="unknown_capability",
+        target="target-1",
+        payload={"capability_provider": "gmail"},
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+
+    resolution = registry.resolve_with_registration(action)
+    result = resolution.executor.execute(action)
+
+    assert resolution.registered is False
+    assert resolution.routing_reason == "no_handler"
+    assert result.status == WorkerExecutionStatus.SKIPPED
+    assert result.status != WorkerExecutionStatus.SUCCEEDED

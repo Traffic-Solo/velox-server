@@ -35,6 +35,10 @@ class WorkerExecutionObservation:
     action_id: UUID
     requested_role: str | None
     executor_registered: bool
+    requested_capability: str | None
+    requested_provider: str | None
+    matched_provider: str | None
+    routing_reason: str | None
     status: str
     started_at: datetime
     finished_at: datetime | None = None
@@ -51,6 +55,10 @@ class WorkerExecutionObservation:
             "action_id": str(self.action_id),
             "requested_role": self.requested_role,
             "executor_registered": self.executor_registered,
+            "requested_capability": self.requested_capability,
+            "requested_provider": self.requested_provider,
+            "matched_provider": self.matched_provider,
+            "routing_reason": self.routing_reason,
             "status": self.status,
             "started_at": self.started_at.isoformat(),
             "finished_at": self.finished_at.isoformat()
@@ -75,6 +83,10 @@ class InMemoryWorkerExecutionObserver:
         action: Action,
         requested_role: str | None,
         executor_registered: bool,
+        requested_capability: str | None = None,
+        requested_provider: str | None = None,
+        matched_provider: str | None = None,
+        routing_reason: str | None = None,
     ) -> WorkerExecutionObservation:
         """Record execution start."""
         observation = WorkerExecutionObservation(
@@ -82,6 +94,10 @@ class InMemoryWorkerExecutionObserver:
             action_id=action.id,
             requested_role=requested_role,
             executor_registered=executor_registered,
+            requested_capability=requested_capability,
+            requested_provider=requested_provider,
+            matched_provider=matched_provider,
+            routing_reason=routing_reason,
             status="started",
             started_at=datetime.now(UTC),
             metadata={
@@ -230,6 +246,10 @@ class WorkerRuntime:
             executor = resolution.executor
             requested_role = resolution.requested_role
             executor_registered = resolution.registered
+            requested_capability = resolution.requested_capability
+            requested_provider = resolution.requested_provider
+            matched_provider = resolution.matched_provider
+            routing_reason = resolution.routing_reason
         else:
             executor = self._worker_executor
             requested_role = (
@@ -238,6 +258,10 @@ class WorkerRuntime:
                 else action.executor_role
             )
             executor_registered = False
+            requested_capability = None
+            requested_provider = None
+            matched_provider = None
+            routing_reason = "runtime_direct_executor"
 
         if requested_role is not None and not executor_registered:
             logger.warning(
@@ -252,6 +276,10 @@ class WorkerRuntime:
             action=action,
             requested_role=requested_role,
             executor_registered=executor_registered,
+            requested_capability=requested_capability,
+            requested_provider=requested_provider,
+            matched_provider=matched_provider,
+            routing_reason=routing_reason,
         )
         started_monotonic = perf_counter()
         try:
@@ -358,6 +386,10 @@ class WorkerRuntime:
                 "failure": self._failure_metadata(failure),
                 "requested_role": requested_role,
                 "executor_registered": executor_registered,
+                "requested_capability": requested_capability,
+                "requested_provider": requested_provider,
+                "matched_provider": matched_provider,
+                "routing_reason": routing_reason,
                 "started_at": observation.started_at.isoformat(),
                 "finished_at": observation.finished_at.isoformat()
                 if observation.finished_at is not None
