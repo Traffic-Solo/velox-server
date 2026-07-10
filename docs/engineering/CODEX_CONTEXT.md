@@ -91,6 +91,7 @@ Sprint 1 - VELOX Core Platform
 - Shared Google Provider Boundary (google_provider.py deduplicates Gmail/Calendar fakes)
 - Settings Layer and Operational Logging (pydantic-settings, VELOX_ env prefix, structured stdlib logging)
 - API Hardening (bearer auth, duplicate event rejection, pagination, event/lifecycle GET endpoints, no internal error leaks)
+- Infrastructure Polish (Docker healthcheck, .env.example, README rewrite)
 
 ## Current Next Slice
 
@@ -105,7 +106,7 @@ Audit Remediation Sprint (2026-07-10) is in progress. Slices in order:
 7. Shared Google provider boundary (done).
 8. Settings layer + operational logging (done).
 9. API hardening (done).
-10. Infra polish: Docker healthcheck, .env.example, README.
+10. Infra polish (done). Audit Remediation Sprint complete.
 
 After the remediation sprint, continue post-harvest Google integration design without moving directly into OAuth, credentials storage, real HTTP clients or real Google API calls.
 
