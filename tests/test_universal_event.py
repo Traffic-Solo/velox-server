@@ -2,9 +2,8 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
-from pydantic import ValidationError
-
 from apps.server.src.core.events import UniversalEvent
+from pydantic import ValidationError
 
 
 def test_universal_event_can_be_created_with_minimal_required_fields() -> None:

@@ -8,8 +8,14 @@ dependencies = [
     "fastapi",
     "httpx",
     "pydantic>=2",
-    "pytest",
     "uvicorn[standard]",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "ruff",
+    "mypy",
 ]
 
 [tool.setuptools]
@@ -17,3 +23,35 @@ packages = []
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["apps", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "UP",     # pyupgrade
+    "SIM",    # flake8-simplify
+    "RUF",    # ruff-specific
+]
+ignore = [
+    "SIM108", # ternary instead of if/else is not always clearer
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+files = ["apps/server/src"]
+explicit_package_bases = true
+mypy_path = "."
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false

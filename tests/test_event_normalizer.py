@@ -1,7 +1,6 @@
 from typing import Any
 
 import pytest
-
 from apps.server.src.core.events import (
     BaseEventNormalizer,
     NormalizationError,

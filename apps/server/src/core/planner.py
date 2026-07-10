@@ -1,6 +1,6 @@
 """Planner contract for turning processed events into actions."""
 
-from typing import Protocol
+from typing import ClassVar, Protocol
 
 from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.core.events import ProcessedEvent
@@ -17,12 +17,12 @@ class Planner(Protocol):
 class BasePlanner:
     """Deterministic rule-based planner for known event categories."""
 
-    _action_types_by_category = {
+    _action_types_by_category: ClassVar[dict[str, str]] = {
         "github": "review_pull_request",
         "gmail": "summarize_email",
         "calendar": "prepare_meeting",
     }
-    _executor_roles_by_category = {
+    _executor_roles_by_category: ClassVar[dict[str, ExecutorRole]] = {
         "github": ExecutorRole.CONTENT_REVIEW,
         "gmail": ExecutorRole.CONTENT_SUMMARY,
         "calendar": ExecutorRole.CONTEXT_PREPARATION,

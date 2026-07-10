@@ -10,7 +10,6 @@ from apps.server.src.workers.executor import (
     WorkerExecutionStatus,
 )
 
-
 CALENDAR_EXECUTOR_ROLE = ExecutorRole.CONTEXT_PREPARATION
 
 

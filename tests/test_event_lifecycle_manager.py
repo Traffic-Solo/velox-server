@@ -1,7 +1,6 @@
 from uuid import uuid4
 
 import pytest
-
 from apps.server.src.core.events import EventLifecycleManager, EventLifecycleState
 
 

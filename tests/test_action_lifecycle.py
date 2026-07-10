@@ -1,9 +1,8 @@
 from datetime import UTC, datetime
 
 import pytest
-from pydantic import ValidationError
-
 from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionStatus
+from pydantic import ValidationError
 
 
 def test_action_lifecycle_default_planned_state() -> None:

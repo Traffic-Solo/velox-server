@@ -2,10 +2,9 @@
 
 from typing import Any, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
-
 from apps.server.src.core.events.classifier import EventClassification
 from apps.server.src.core.events.models import UniversalEvent
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ResolvedContext(BaseModel):

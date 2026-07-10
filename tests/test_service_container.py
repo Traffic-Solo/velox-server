@@ -1,5 +1,6 @@
-from apps.server.src.core.container import ApplicationContainer, get_container
 from apps.server.src.core.actions import Action, ExecutorRole
+from apps.server.src.core.container import ApplicationContainer, get_container
+from apps.server.src.core.permission import PermissionDecision, PermissionEngine
 from apps.server.src.integrations.calendar import (
     CALENDAR_EXECUTOR_ROLE,
     CalendarWorkerExecutor,
@@ -11,7 +12,6 @@ from apps.server.src.integrations.gmail import (
     GmailSendCapability,
     GmailWorkerExecutor,
 )
-from apps.server.src.core.permission import PermissionDecision, PermissionEngine
 from apps.server.src.workers.executor import WorkerExecutionResult, WorkerExecutionStatus
 
 

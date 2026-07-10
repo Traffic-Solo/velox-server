@@ -5,7 +5,6 @@ pure data structures and intentionally contain no persistence, routing, or
 business workflow logic.
 """
 
-from apps.server.src.core.events.models import UniversalEvent
 from apps.server.src.core.events.classifier import (
     EventClassification,
     EventClassifier,
@@ -19,6 +18,7 @@ from apps.server.src.core.events.context import (
 from apps.server.src.core.events.inbox import EventInbox
 from apps.server.src.core.events.lifecycle import EventLifecycleState, EventStatus
 from apps.server.src.core.events.lifecycle_manager import EventLifecycleManager
+from apps.server.src.core.events.models import UniversalEvent
 from apps.server.src.core.events.normalizer import (
     BaseEventNormalizer,
     EventNormalizer,

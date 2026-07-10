@@ -1,5 +1,4 @@
 import pytest
-
 from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionStatus
 from apps.server.src.core.action_lifecycle_manager import ActionLifecycleManager
 

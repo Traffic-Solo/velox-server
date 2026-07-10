@@ -2,9 +2,8 @@ from datetime import UTC
 from uuid import UUID
 
 import pytest
-from pydantic import ValidationError
-
 from apps.server.src.core.actions import Action, ExecutorRole
+from pydantic import ValidationError
 
 
 def test_action_creation() -> None:

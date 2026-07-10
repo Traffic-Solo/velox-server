@@ -9,9 +9,8 @@ future workers to share.
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-
 from apps.server.src.core.events.types import EventMetadata, EventPayload
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class UniversalEvent(BaseModel):

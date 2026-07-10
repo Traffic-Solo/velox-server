@@ -3,10 +3,9 @@
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status
-
 from apps.server.src.core.container import get_container
 from apps.server.src.core.events import EventLifecycleState, UniversalEvent
+from fastapi import APIRouter, HTTPException, status
 
 router = APIRouter(tags=["events"])
 

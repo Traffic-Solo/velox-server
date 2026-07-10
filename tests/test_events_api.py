@@ -2,18 +2,16 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
-from fastapi.testclient import TestClient
-
 from apps.server.src.core.action_lifecycle_manager import ActionLifecycleManager
 from apps.server.src.core.actions import Action
 from apps.server.src.core.container import get_container
-from apps.server.src.main import app
 from apps.server.src.core.permission import (
     PermissionDecision,
     PermissionEngineRuntime,
     PermissionStatus,
 )
-
+from apps.server.src.main import app
+from fastapi.testclient import TestClient
 
 client = TestClient(app)
 

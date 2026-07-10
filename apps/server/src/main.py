@@ -1,7 +1,5 @@
-from fastapi import FastAPI
-
 from apps.server.src.api.events import router as events_router
-
+from fastapi import FastAPI
 
 SERVICE_NAME = "VELOX Server"
 SERVICE_VERSION = "0.0.1"

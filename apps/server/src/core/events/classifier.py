@@ -2,9 +2,8 @@
 
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict
-
 from apps.server.src.core.events.models import UniversalEvent
+from pydantic import BaseModel, ConfigDict
 
 
 class EventClassification(BaseModel):

@@ -15,6 +15,12 @@ This file is the canonical repository handoff for Codex engineering sessions.
 
 Sprint 1 - VELOX Core Platform
 
+## Quality Gates
+
+- CI runs on every push and pull request to main: `uv run ruff check apps tests`, `uv run mypy` (strict), `uv run pytest -q`.
+- All three gates must pass before any commit is pushed. Run them locally before committing.
+- Dev tooling is installed with `uv sync --group dev`.
+
 ## Approved Architecture Rules
 
 - Implementation over discussion.
@@ -79,10 +85,20 @@ Sprint 1 - VELOX Core Platform
 
 ## Current Next Slice
 
-Google Account Context Contract Hardening
+Audit Remediation Sprint (2026-07-10) is in progress. Slices in order:
 
-Recommended next implementation step after Google Account Context Contract Hardening:
-sync the completed Google Calendar Integration Bootstrap and Google Account Context Contract Hardening repository state back to Notion, then continue post-harvest Google integration design without moving directly into OAuth, credentials storage, real HTTP clients or real Google API calls.
+1. Tooling baseline: ruff + mypy strict + GitHub Actions CI (done in this slice).
+2. Unify action status: remove duplicated `Action.status`, lifecycle becomes single source of truth via a lifecycle repository.
+3. Approval gate: remove automatic QUEUED -> APPROVED in WorkerRuntime; external-execution roles require explicit approval.
+4. Honest execution statuses: SKIPPED for no-op fallback and unhandled placeholder paths instead of SUCCEEDED.
+5. Event retry: allow failed -> pending replay transition; fix queue_empty semantics.
+6. Gmail: remove message_id fallback to action.target.
+7. Generic Google provider boundary shared by Gmail and Calendar.
+8. Config layer (pydantic-settings) + structured logging.
+9. API hardening: bearer auth, GET /events/{id}, lifecycle endpoint, pagination, duplicate event id rejection.
+10. Infra polish: Docker healthcheck, .env.example, README.
+
+After the remediation sprint, continue post-harvest Google integration design without moving directly into OAuth, credentials storage, real HTTP clients or real Google API calls.
 
 ## Current Implementation Notes
 

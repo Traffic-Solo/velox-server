@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionStatus
 from apps.server.src.core.action_lifecycle_manager import ActionLifecycleManager
 from apps.server.src.core.action_queue import ActionQueue
-from apps.server.src.core.actions import Action
+from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.workers.executor import (
     WorkerExecutionFailure,
     WorkerExecutionFailureCategory,
@@ -183,7 +183,7 @@ class WorkerRuntime:
             executor = self._worker_executor
             requested_role = (
                 action.executor_role.value
-                if hasattr(action.executor_role, "value")
+                if isinstance(action.executor_role, ExecutorRole)
                 else action.executor_role
             )
             executor_registered = False

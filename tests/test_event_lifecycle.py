@@ -2,9 +2,8 @@ from datetime import UTC
 from uuid import uuid4
 
 import pytest
-from pydantic import ValidationError
-
 from apps.server.src.core.events import EventLifecycleState
+from pydantic import ValidationError
 
 
 def create_lifecycle_state(status: str = "accepted") -> EventLifecycleState:

@@ -11,7 +11,6 @@ from apps.server.src.workers.executor import (
     WorkerExecutionStatus,
 )
 
-
 GMAIL_EXECUTOR_ROLE = ExecutorRole.CONTENT_SUMMARY
 
 

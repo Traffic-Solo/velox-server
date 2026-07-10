@@ -1,6 +1,7 @@
 """Action lifecycle transition manager."""
 
 from datetime import UTC, datetime
+from typing import ClassVar
 
 from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionStatus
 
@@ -8,7 +9,7 @@ from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionSt
 class ActionLifecycleManager:
     """Manages valid immutable ActionLifecycleState transitions."""
 
-    _valid_transitions: set[tuple[ActionStatus, ActionStatus]] = {
+    _valid_transitions: ClassVar[set[tuple[ActionStatus, ActionStatus]]] = {
         (ActionStatus.PLANNED, ActionStatus.QUEUED),
         (ActionStatus.QUEUED, ActionStatus.APPROVED),
         (ActionStatus.QUEUED, ActionStatus.REJECTED),

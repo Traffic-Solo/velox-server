@@ -1,9 +1,8 @@
 from datetime import UTC, datetime
 
 import pytest
-from pydantic import ValidationError
-
 from apps.server.src.core.permission import PermissionDecision, PermissionStatus
+from pydantic import ValidationError
 
 
 def test_permission_decision_defaults_to_allowed() -> None:

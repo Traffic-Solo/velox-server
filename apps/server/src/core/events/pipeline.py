@@ -1,13 +1,12 @@
 """Event processing pipeline primitives."""
 
-from pydantic import BaseModel, ConfigDict
-
 from apps.server.src.core.events.classifier import (
     EventClassification,
     EventClassifier,
 )
 from apps.server.src.core.events.context import ContextResolver, ResolvedContext
 from apps.server.src.core.events.models import UniversalEvent
+from pydantic import BaseModel, ConfigDict
 
 
 class ProcessedEvent(BaseModel):

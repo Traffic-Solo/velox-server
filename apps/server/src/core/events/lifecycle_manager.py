@@ -1,6 +1,7 @@
 """Event lifecycle transition manager."""
 
 from datetime import UTC, datetime
+from typing import ClassVar
 
 from apps.server.src.core.events.lifecycle import EventLifecycleState, EventStatus
 
@@ -8,7 +9,7 @@ from apps.server.src.core.events.lifecycle import EventLifecycleState, EventStat
 class EventLifecycleManager:
     """Manages valid EventLifecycleState transitions."""
 
-    _valid_transitions: set[tuple[EventStatus, EventStatus]] = {
+    _valid_transitions: ClassVar[set[tuple[EventStatus, EventStatus]]] = {
         ("accepted", "pending"),
         ("pending", "processing"),
         ("processing", "processed"),
