@@ -73,7 +73,8 @@ def test_worker_runtime_processes_queued_action() -> None:
     assert result.processed is True
     assert result.action is not None
     assert result.action.id == action.id
-    assert result.action.status == "completed"
+    assert result.lifecycle_state is not None
+    assert result.lifecycle_state.status == ActionStatus.COMPLETED
     assert result.execution_status == WorkerExecutionStatus.SUCCEEDED
     assert queue.count() == 0
 
@@ -214,7 +215,6 @@ def test_worker_runtime_successful_executor_result_updates_processing_result() -
     assert result.lifecycle_state is not None
     assert result.lifecycle_state.status == ActionStatus.COMPLETED
     assert result.action is not None
-    assert result.action.status == "completed"
     assert result.action.metadata["worker_execution"]["status"] == "succeeded"
     assert result.action.metadata["worker_execution"]["failure"] is None
 
@@ -237,7 +237,6 @@ def test_worker_runtime_failed_executor_result_updates_processing_result() -> No
     assert result.lifecycle_state.status == ActionStatus.FAILED
     assert result.lifecycle_state.reason == "execution failed"
     assert result.action is not None
-    assert result.action.status == action.status
     assert result.action.metadata["worker_execution"]["status"] == "failed"
 
 

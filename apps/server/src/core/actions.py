@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -17,7 +17,12 @@ class ExecutorRole(StrEnum):
 
 
 class Action(BaseModel):
-    """Immutable representation of an action proposed or tracked by VELOX."""
+    """Immutable representation of an action proposed or tracked by VELOX.
+
+    Lifecycle status is intentionally not part of this model. The single
+    source of truth for action status is ActionLifecycleState stored in the
+    ActionLifecycleRepository, keyed by action id.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -26,7 +31,6 @@ class Action(BaseModel):
     target: str
     payload: dict[str, Any] = Field(default_factory=dict)
     executor_role: ExecutorRole | str | None = None
-    status: Literal["pending", "approved", "rejected", "completed"] = "pending"
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     metadata: dict[str, Any] = Field(default_factory=dict)
 

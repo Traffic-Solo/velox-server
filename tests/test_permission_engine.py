@@ -1,4 +1,8 @@
+from apps.server.src.core.action_lifecycle import ActionStatus
 from apps.server.src.core.action_lifecycle_manager import ActionLifecycleManager
+from apps.server.src.core.action_lifecycle_repository import (
+    InMemoryActionLifecycleRepository,
+)
 from apps.server.src.core.actions import Action
 from apps.server.src.core.permission import (
     BasePermissionEngine,
@@ -57,16 +61,20 @@ def test_permission_engine_protocol_is_compatible_with_base_permission_engine() 
 
 
 def test_permission_runtime_returns_allowed_action_evaluation() -> None:
+    lifecycle_repository = InMemoryActionLifecycleRepository()
     runtime = PermissionEngineRuntime(
         permission_engine=BasePermissionEngine(),
         action_lifecycle_manager=ActionLifecycleManager(),
+        lifecycle_repository=lifecycle_repository,
     )
 
     evaluations = runtime.evaluate([create_action()])
 
     assert evaluations[0].decision.status == PermissionStatus.ALLOWED
     assert evaluations[0].action.metadata["permission_decision"]["status"] == "allowed"
-    assert evaluations[0].action.metadata["action_lifecycle"]["status"] == "queued"
+    lifecycle_state = lifecycle_repository.get(evaluations[0].action.id)
+    assert lifecycle_state is not None
+    assert lifecycle_state.status == ActionStatus.QUEUED
 
 
 def test_permission_runtime_returns_denied_action_evaluation() -> None:
@@ -77,17 +85,20 @@ def test_permission_runtime_returns_denied_action_evaluation() -> None:
                 reason="blocked",
             )
 
+    lifecycle_repository = InMemoryActionLifecycleRepository()
     runtime = PermissionEngineRuntime(
         permission_engine=DenyingPermissionEngine(),
         action_lifecycle_manager=ActionLifecycleManager(),
+        lifecycle_repository=lifecycle_repository,
     )
 
     evaluations = runtime.evaluate([create_action()])
 
     assert evaluations[0].decision.status == PermissionStatus.DENIED
-    assert evaluations[0].action.status == "rejected"
     assert evaluations[0].action.metadata["permission_decision"]["reason"] == "blocked"
-    assert evaluations[0].action.metadata["action_lifecycle"]["status"] == "rejected"
+    lifecycle_state = lifecycle_repository.get(evaluations[0].action.id)
+    assert lifecycle_state is not None
+    assert lifecycle_state.status == ActionStatus.REJECTED
 
 
 def test_permission_runtime_defaults_to_deny_when_decision_cannot_be_resolved() -> None:
@@ -95,15 +106,19 @@ def test_permission_runtime_defaults_to_deny_when_decision_cannot_be_resolved() 
         def evaluate(self, action: Action) -> None:
             return None
 
+    lifecycle_repository = InMemoryActionLifecycleRepository()
     runtime = PermissionEngineRuntime(
         permission_engine=MissingDecisionPermissionEngine(),
         action_lifecycle_manager=ActionLifecycleManager(),
+        lifecycle_repository=lifecycle_repository,
     )
 
     evaluations = runtime.evaluate([create_action()])
 
     assert evaluations[0].decision.status == PermissionStatus.DENIED
-    assert evaluations[0].action.status == "rejected"
+    rejected_state = lifecycle_repository.get(evaluations[0].action.id)
+    assert rejected_state is not None
+    assert rejected_state.status == ActionStatus.REJECTED
     assert (
         evaluations[0].decision.reason
         == "permission decision could not be resolved"
@@ -119,12 +134,16 @@ def test_permission_runtime_filters_queueable_actions() -> None:
 
     allowed_action = Action(type="summarize_email", target="event-1")
     denied_action = Action(type="prepare_meeting", target="event-2")
+    lifecycle_repository = InMemoryActionLifecycleRepository()
     runtime = PermissionEngineRuntime(
         permission_engine=MixedPermissionEngine(),
         action_lifecycle_manager=ActionLifecycleManager(),
+        lifecycle_repository=lifecycle_repository,
     )
 
     evaluations = runtime.evaluate([allowed_action, denied_action])
 
     assert runtime.queueable_actions(evaluations) == [evaluations[0].action]
-    assert evaluations[1].action.status == "rejected"
+    denied_state = lifecycle_repository.get(evaluations[1].action.id)
+    assert denied_state is not None
+    assert denied_state.status == ActionStatus.REJECTED

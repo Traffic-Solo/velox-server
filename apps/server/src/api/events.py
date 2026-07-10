@@ -112,6 +112,16 @@ def process_event(event_id: UUID) -> dict[str, Any]:
         {
             "action_id": str(evaluation.action.id),
             "decision": evaluation.decision.model_dump(mode="json"),
+            "lifecycle": (
+                action_lifecycle.model_dump(mode="json")
+                if (
+                    action_lifecycle := container.action_lifecycle_repository.get(
+                        evaluation.action.id
+                    )
+                )
+                is not None
+                else None
+            ),
         }
         for evaluation in permission_evaluations
     ]

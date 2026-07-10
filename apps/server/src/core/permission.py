@@ -7,6 +7,10 @@ from typing import Any, Protocol
 
 from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionStatus
 from apps.server.src.core.action_lifecycle_manager import ActionLifecycleManager
+from apps.server.src.core.action_lifecycle_repository import (
+    ActionLifecycleRepository,
+    InMemoryActionLifecycleRepository,
+)
 from apps.server.src.core.actions import Action
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -85,9 +89,15 @@ class PermissionEngineRuntime:
         self,
         permission_engine: PermissionEngine,
         action_lifecycle_manager: ActionLifecycleManager,
+        lifecycle_repository: ActionLifecycleRepository | None = None,
     ) -> None:
         self._permission_engine = permission_engine
         self._action_lifecycle_manager = action_lifecycle_manager
+        self._lifecycle_repository = (
+            lifecycle_repository
+            if lifecycle_repository is not None
+            else InMemoryActionLifecycleRepository()
+        )
 
     def evaluate(self, actions: list[Action]) -> list[PermissionEvaluation]:
         """Return permission evaluations for planned actions."""
@@ -104,11 +114,8 @@ class PermissionEngineRuntime:
     def _evaluate_action(self, action: Action) -> PermissionEvaluation:
         decision = self._resolve_decision(action)
         lifecycle_state = self._resolve_lifecycle_state(decision)
-        evaluated_action = self._apply_permission_metadata(
-            action,
-            decision,
-            lifecycle_state,
-        )
+        self._lifecycle_repository.set(action.id, lifecycle_state)
+        evaluated_action = self._apply_permission_metadata(action, decision)
         return PermissionEvaluation(action=evaluated_action, decision=decision)
 
     def _resolve_decision(self, action: Action) -> PermissionDecision:
@@ -147,21 +154,10 @@ class PermissionEngineRuntime:
         self,
         action: Action,
         decision: PermissionDecision,
-        lifecycle_state: ActionLifecycleState,
     ) -> Action:
-        status = "pending"
-        if decision.status == PermissionStatus.DENIED:
-            status = "rejected"
-
         metadata = {
             **action.metadata,
             "permission_decision": decision.model_dump(mode="json"),
-            "action_lifecycle": lifecycle_state.model_dump(mode="json"),
         }
 
-        return action.model_copy(
-            update={
-                "status": status,
-                "metadata": metadata,
-            },
-        )
+        return action.model_copy(update={"metadata": metadata})

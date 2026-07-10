@@ -13,10 +13,9 @@ def test_action_creation() -> None:
     assert action.target == "message-123"
 
 
-def test_action_default_status_is_pending() -> None:
-    action = Action(type="email.reply", target="message-123")
-
-    assert action.status == "pending"
+def test_action_has_no_status_field() -> None:
+    """Lifecycle status lives in ActionLifecycleRepository, not on Action."""
+    assert "status" not in Action.model_fields
 
 
 def test_action_generates_uuid() -> None:
@@ -36,7 +35,7 @@ def test_action_is_immutable() -> None:
     action = Action(type="email.reply", target="message-123")
 
     with pytest.raises(ValidationError):
-        action.status = "approved"
+        action.type = "email.forward"
 
 
 def test_action_payload_defaults_to_empty_dict() -> None:

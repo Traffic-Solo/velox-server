@@ -82,13 +82,15 @@ Sprint 1 - VELOX Core Platform
 - Gmail Provider Composition Bootstrap
 - Google Calendar Integration Bootstrap
 - Google Account Context Contract Hardening
+- Tooling Baseline (ruff, mypy strict, GitHub Actions CI)
+- Action Lifecycle Repository (single source of truth for action status)
 
 ## Current Next Slice
 
 Audit Remediation Sprint (2026-07-10) is in progress. Slices in order:
 
-1. Tooling baseline: ruff + mypy strict + GitHub Actions CI (done in this slice).
-2. Unify action status: remove duplicated `Action.status`, lifecycle becomes single source of truth via a lifecycle repository.
+1. Tooling baseline: ruff + mypy strict + GitHub Actions CI (done).
+2. Unify action status: lifecycle repository as single source of truth (done).
 3. Approval gate: remove automatic QUEUED -> APPROVED in WorkerRuntime; external-execution roles require explicit approval.
 4. Honest execution statuses: SKIPPED for no-op fallback and unhandled placeholder paths instead of SUCCEEDED.
 5. Event retry: allow failed -> pending replay transition; fix queue_empty semantics.
@@ -102,6 +104,7 @@ After the remediation sprint, continue post-harvest Google integration design wi
 
 ## Current Implementation Notes
 
+- `Action` no longer carries a `status` field. The single source of truth for action status is `ActionLifecycleState` stored in `ActionLifecycleRepository` (in-memory implementation: `InMemoryActionLifecycleRepository`), keyed by action id. `PermissionEngineRuntime` stores QUEUED/REJECTED states there; `WorkerRuntime` reads the stored state (preserving `created_at`), transitions it, and stores the final COMPLETED/FAILED state back. The `/events/{id}/process` response exposes per-action lifecycle in `permission_decisions[].lifecycle`.
 - `Action` carries an explicit first-class `ExecutorRole`.
 - `ExecutorRole` values are vendor-neutral and do not include Gmail, Google Calendar, Notion, Slack, or other integration-specific role names.
 - `BasePlanner` produces actions with executor roles.

@@ -3,6 +3,10 @@
 from uuid import UUID
 
 from apps.server.src.core.action_lifecycle_manager import ActionLifecycleManager
+from apps.server.src.core.action_lifecycle_repository import (
+    ActionLifecycleRepository,
+    InMemoryActionLifecycleRepository,
+)
 from apps.server.src.core.action_queue import ActionQueue
 from apps.server.src.core.events import (
     BaseContextResolver,
@@ -49,10 +53,14 @@ class ApplicationContainer:
         self.event_lifecycle_states: dict[UUID, EventLifecycleState] = {}
         self.action_queue = ActionQueue()
         self.action_lifecycle_manager = ActionLifecycleManager()
+        self.action_lifecycle_repository: ActionLifecycleRepository = (
+            InMemoryActionLifecycleRepository()
+        )
         self.permission_engine: PermissionEngine = BasePermissionEngine()
         self.permission_runtime = PermissionEngineRuntime(
             permission_engine=self.permission_engine,
             action_lifecycle_manager=self.action_lifecycle_manager,
+            lifecycle_repository=self.action_lifecycle_repository,
         )
         self.worker_executor: WorkerExecutor = NoOpWorkerExecutor()
         self.worker_executor_registry = WorkerExecutorRegistry(
@@ -75,6 +83,7 @@ class ApplicationContainer:
             worker_executor=self.worker_executor,
             executor_registry=self.worker_executor_registry,
             execution_observer=self.worker_execution_observer,
+            lifecycle_repository=self.action_lifecycle_repository,
         )
         self.worker_runtime_invocation = WorkerRuntimeInvocationService(
             worker_runtime=self.worker_runtime,

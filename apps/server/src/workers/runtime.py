@@ -8,6 +8,10 @@ from uuid import UUID, uuid4
 
 from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionStatus
 from apps.server.src.core.action_lifecycle_manager import ActionLifecycleManager
+from apps.server.src.core.action_lifecycle_repository import (
+    ActionLifecycleRepository,
+    InMemoryActionLifecycleRepository,
+)
 from apps.server.src.core.action_queue import ActionQueue
 from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.workers.executor import (
@@ -144,12 +148,18 @@ class WorkerRuntime:
         worker_executor: WorkerExecutor,
         executor_registry: WorkerExecutorRegistry | None = None,
         execution_observer: InMemoryWorkerExecutionObserver | None = None,
+        lifecycle_repository: ActionLifecycleRepository | None = None,
     ) -> None:
         self._action_queue = action_queue
         self._action_lifecycle_manager = action_lifecycle_manager
         self._worker_executor = worker_executor
         self._executor_registry = executor_registry
         self._execution_observer = execution_observer or InMemoryWorkerExecutionObserver()
+        self._lifecycle_repository = (
+            lifecycle_repository
+            if lifecycle_repository is not None
+            else InMemoryActionLifecycleRepository()
+        )
 
     def process_next(self) -> WorkerProcessingResult:
         """Process one queued action if available."""
@@ -164,7 +174,9 @@ class WorkerRuntime:
                 external_execution_performed=False,
             )
 
-        lifecycle_state = ActionLifecycleState(status=ActionStatus.QUEUED)
+        lifecycle_state = self._lifecycle_repository.get(action.id)
+        if lifecycle_state is None:
+            lifecycle_state = ActionLifecycleState(status=ActionStatus.QUEUED)
         lifecycle_state = self._action_lifecycle_manager.transition(
             lifecycle_state,
             ActionStatus.APPROVED,
@@ -173,6 +185,7 @@ class WorkerRuntime:
             lifecycle_state,
             ActionStatus.EXECUTING,
         )
+        self._lifecycle_repository.set(action.id, lifecycle_state)
 
         if self._executor_registry is not None:
             resolution = self._executor_registry.resolve_with_registration(action)
@@ -230,14 +243,13 @@ class WorkerRuntime:
                 lifecycle_state,
                 ActionStatus.COMPLETED,
             )
-            action_status = "completed"
         else:
             lifecycle_state = self._action_lifecycle_manager.transition(
                 lifecycle_state,
                 ActionStatus.FAILED,
                 reason=execution_result.reason,
             )
-            action_status = action.status
+        self._lifecycle_repository.set(action.id, lifecycle_state)
 
         external_execution_performed = bool(
             execution_result.metadata.get("external_execution_performed", False)
@@ -264,10 +276,7 @@ class WorkerRuntime:
         }
 
         processed_action = execution_result.action.model_copy(
-            update={
-                "status": action_status,
-                "metadata": metadata,
-            }
+            update={"metadata": metadata}
         )
 
         return WorkerProcessingResult(

@@ -22,6 +22,7 @@ def setup_function() -> None:
     container.event_inbox.clear()
     container.event_lifecycle_states.clear()
     container.action_queue.clear()
+    container.action_lifecycle_repository.clear()
 
 
 def test_post_events_accepts_universal_event() -> None:
@@ -270,6 +271,7 @@ def test_processing_endpoint_filters_denied_actions_before_queueing(
         PermissionEngineRuntime(
             permission_engine=DenyingPermissionEngine(),
             action_lifecycle_manager=ActionLifecycleManager(),
+            lifecycle_repository=container.action_lifecycle_repository,
         ),
     )
     event_id = uuid4()
@@ -308,6 +310,7 @@ def test_processing_endpoint_returns_denied_actions_with_permission_metadata(
         PermissionEngineRuntime(
             permission_engine=DenyingPermissionEngine(),
             action_lifecycle_manager=ActionLifecycleManager(),
+            lifecycle_repository=container.action_lifecycle_repository,
         ),
     )
     event_id = uuid4()
@@ -325,11 +328,11 @@ def test_processing_endpoint_returns_denied_actions_with_permission_metadata(
 
     response = client.post(f"/events/{event_id}/process")
     action = response.json()["actions"][0]
+    permission_decision = response.json()["permission_decisions"][0]
 
-    assert action["status"] == "rejected"
     assert action["metadata"]["permission_decision"]["status"] == "denied"
-    assert action["metadata"]["action_lifecycle"]["status"] == "rejected"
-    assert response.json()["permission_decisions"][0]["decision"]["status"] == "denied"
+    assert permission_decision["decision"]["status"] == "denied"
+    assert permission_decision["lifecycle"]["status"] == "rejected"
 
 
 def test_actions_queue_endpoint_returns_empty_queue_by_default() -> None:
