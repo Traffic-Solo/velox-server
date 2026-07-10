@@ -200,7 +200,7 @@ def test_container_worker_runtime_routes_matching_action_to_gmail_executor() -> 
     result = container.worker_runtime.process_next()
 
     assert result.processed is True
-    assert result.execution_status == WorkerExecutionStatus.SUCCEEDED
+    assert result.execution_status == WorkerExecutionStatus.SKIPPED
     assert result.external_execution_performed is False
     assert result.action is not None
     execution_metadata = result.action.metadata["worker_execution"]
@@ -210,6 +210,7 @@ def test_container_worker_runtime_routes_matching_action_to_gmail_executor() -> 
         "external_execution_performed": False,
         "integration": "gmail",
         "placeholder": True,
+        "skipped": True,
     }
 
 
@@ -225,7 +226,7 @@ def test_container_worker_runtime_routes_matching_action_to_calendar_executor() 
     result = container.worker_runtime.process_next()
 
     assert result.processed is True
-    assert result.execution_status == WorkerExecutionStatus.SUCCEEDED
+    assert result.execution_status == WorkerExecutionStatus.SKIPPED
     assert result.external_execution_performed is False
     assert result.action is not None
     execution_metadata = result.action.metadata["worker_execution"]
@@ -235,6 +236,7 @@ def test_container_worker_runtime_routes_matching_action_to_calendar_executor() 
         "external_execution_performed": False,
         "integration": "calendar",
         "placeholder": True,
+        "skipped": True,
     }
 
 

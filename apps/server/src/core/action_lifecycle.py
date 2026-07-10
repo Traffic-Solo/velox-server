@@ -16,6 +16,7 @@ class ActionStatus(StrEnum):
     REJECTED = "rejected"
     EXECUTING = "executing"
     COMPLETED = "completed"
+    SKIPPED = "skipped"
     FAILED = "failed"
 
 

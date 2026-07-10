@@ -79,5 +79,5 @@ def test_lifecycle_flows_from_permission_stage_to_worker_runtime() -> None:
     assert result.processed is True
     final_state = repository.get(action.id)
     assert final_state is not None
-    assert final_state.status == ActionStatus.COMPLETED
+    assert final_state.status == ActionStatus.SKIPPED
     assert final_state.created_at == queued_state.created_at

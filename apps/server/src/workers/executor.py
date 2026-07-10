@@ -11,6 +11,7 @@ class WorkerExecutionStatus(StrEnum):
     """Supported worker executor result statuses."""
 
     SUCCEEDED = "succeeded"
+    SKIPPED = "skipped"
     FAILED = "failed"
 
 
@@ -60,14 +61,22 @@ class WorkerExecutor(Protocol):
 
 
 class NoOpWorkerExecutor:
-    """Safe default executor that performs no external work."""
+    """Safe default executor that performs no external work.
+
+    Returns SKIPPED, never SUCCEEDED: no work was done, and reporting success
+    for a no-op would hide unhandled actions (Nothing Dies Silently).
+    """
 
     def execute(self, action: Action) -> WorkerExecutionResult:
-        """Return a successful no-op execution result."""
+        """Return an explicit skipped no-op execution result."""
         return WorkerExecutionResult(
             action=action,
-            status=WorkerExecutionStatus.SUCCEEDED,
-            metadata={"external_execution_performed": False},
+            status=WorkerExecutionStatus.SKIPPED,
+            reason="no registered executor handled this action",
+            metadata={
+                "external_execution_performed": False,
+                "skipped": True,
+            },
         )
 
 

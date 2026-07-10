@@ -246,11 +246,12 @@ class CalendarWorkerExecutor:
         """Return a safe Calendar placeholder without contacting Google Calendar."""
         return WorkerExecutionResult(
             action=action,
-            status=WorkerExecutionStatus.SUCCEEDED,
-            reason="calendar executor bootstrap placeholder",
+            status=WorkerExecutionStatus.SKIPPED,
+            reason="calendar executor has no capability for this action type",
             metadata={
                 "external_execution_performed": False,
                 "integration": "calendar",
                 "placeholder": True,
+                "skipped": True,
             },
         )

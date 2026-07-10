@@ -272,6 +272,12 @@ class WorkerRuntime:
                 lifecycle_state,
                 ActionStatus.COMPLETED,
             )
+        elif execution_result.status == WorkerExecutionStatus.SKIPPED:
+            lifecycle_state = self._action_lifecycle_manager.transition(
+                lifecycle_state,
+                ActionStatus.SKIPPED,
+                reason=execution_result.reason,
+            )
         else:
             lifecycle_state = self._action_lifecycle_manager.transition(
                 lifecycle_state,

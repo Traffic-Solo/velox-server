@@ -55,12 +55,13 @@ def test_calendar_worker_executor_returns_safe_placeholder_result() -> None:
     result = executor.execute(action)
 
     assert result.action == action
-    assert result.status == WorkerExecutionStatus.SUCCEEDED
-    assert result.reason == "calendar executor bootstrap placeholder"
+    assert result.status == WorkerExecutionStatus.SKIPPED
+    assert result.reason == "calendar executor has no capability for this action type"
     assert result.metadata == {
         "external_execution_performed": False,
         "integration": "calendar",
         "placeholder": True,
+        "skipped": True,
     }
 
 
@@ -349,7 +350,7 @@ def test_calendar_bootstrap_makes_no_external_api_calls(monkeypatch) -> None:
         account="account-1",
     )
 
-    assert execution_result.status == WorkerExecutionStatus.SUCCEEDED
+    assert execution_result.status == WorkerExecutionStatus.SKIPPED
     assert execution_result.metadata["external_execution_performed"] is False
     assert provider_response.status_code == 200
     assert provider_response.body["external_execution_performed"] is False

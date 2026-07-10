@@ -78,7 +78,11 @@ def block_external_socket_calls(monkeypatch) -> None:
 
 
 def assert_succeeded_without_external_execution(result) -> None:
-    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    """Assert no failure and no external execution (SKIPPED is valid for no-ops)."""
+    assert result.status in {
+        WorkerExecutionStatus.SUCCEEDED,
+        WorkerExecutionStatus.SKIPPED,
+    }
     assert result.metadata["external_execution_performed"] is False
 
 
@@ -616,7 +620,8 @@ def test_no_op_worker_executor_is_safe_default() -> None:
     result = executor.execute(action)
 
     assert result.action == action
-    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.status == WorkerExecutionStatus.SKIPPED
+    assert result.reason == "no registered executor handled this action"
     assert result.metadata["external_execution_performed"] is False
 
 
@@ -627,12 +632,13 @@ def test_gmail_worker_executor_returns_safe_placeholder_result() -> None:
     result = executor.execute(action)
 
     assert result.action == action
-    assert result.status == WorkerExecutionStatus.SUCCEEDED
-    assert result.reason == "gmail executor bootstrap placeholder"
+    assert result.status == WorkerExecutionStatus.SKIPPED
+    assert result.reason == "gmail executor has no capability for this action type"
     assert result.metadata == {
         "external_execution_performed": False,
         "integration": "gmail",
         "placeholder": True,
+        "skipped": True,
     }
 
 
@@ -1021,5 +1027,5 @@ def test_worker_executor_registry_does_not_introduce_vendor_specific_behavior() 
     executor = registry.resolve(action)
     result = executor.execute(action)
 
-    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.status == WorkerExecutionStatus.SKIPPED
     assert result.metadata["external_execution_performed"] is False

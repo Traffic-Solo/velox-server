@@ -15,6 +15,7 @@ class ActionLifecycleManager:
         (ActionStatus.QUEUED, ActionStatus.REJECTED),
         (ActionStatus.APPROVED, ActionStatus.EXECUTING),
         (ActionStatus.EXECUTING, ActionStatus.COMPLETED),
+        (ActionStatus.EXECUTING, ActionStatus.SKIPPED),
         (ActionStatus.EXECUTING, ActionStatus.FAILED),
     }
 
@@ -31,8 +32,11 @@ class ActionLifecycleManager:
         if reason is not None and status not in {
             ActionStatus.FAILED,
             ActionStatus.REJECTED,
+            ActionStatus.SKIPPED,
         }:
-            raise ValueError("reason may only be supplied for failed or rejected actions")
+            raise ValueError(
+                "reason may only be supplied for failed, rejected or skipped actions"
+            )
 
         return ActionLifecycleState(
             status=status,

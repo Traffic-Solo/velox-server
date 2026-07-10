@@ -455,12 +455,13 @@ class GmailWorkerExecutor:
 
         return WorkerExecutionResult(
             action=action,
-            status=WorkerExecutionStatus.SUCCEEDED,
-            reason="gmail executor bootstrap placeholder",
+            status=WorkerExecutionStatus.SKIPPED,
+            reason="gmail executor has no capability for this action type",
             metadata={
                 "external_execution_performed": False,
                 "integration": "gmail",
                 "placeholder": True,
+                "skipped": True,
             },
         )
 
