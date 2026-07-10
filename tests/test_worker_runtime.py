@@ -389,7 +389,7 @@ def test_worker_runtime_invocation_processes_one_queued_action() -> None:
     result = invocation.invoke()
 
     assert result.processed_count == 1
-    assert result.queue_empty is False
+    assert result.queue_empty is True  # the only queued action was consumed
     assert result.results[0].action is not None
     assert result.results[0].action.id == action.id
     assert queue.count() == 0

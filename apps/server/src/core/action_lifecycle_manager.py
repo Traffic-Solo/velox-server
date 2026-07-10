@@ -1,7 +1,7 @@
 """Action lifecycle transition manager."""
 
 from datetime import UTC, datetime
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionStatus
 
@@ -17,6 +17,8 @@ class ActionLifecycleManager:
         (ActionStatus.EXECUTING, ActionStatus.COMPLETED),
         (ActionStatus.EXECUTING, ActionStatus.SKIPPED),
         (ActionStatus.EXECUTING, ActionStatus.FAILED),
+        # Retry: a transiently failed action may be re-queued.
+        (ActionStatus.FAILED, ActionStatus.QUEUED),
     }
 
     def transition(
@@ -24,6 +26,7 @@ class ActionLifecycleManager:
         state: ActionLifecycleState,
         status: ActionStatus,
         reason: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> ActionLifecycleState:
         """Return a new lifecycle state for a valid transition."""
         if (state.status, status) not in self._valid_transitions:
@@ -43,5 +46,5 @@ class ActionLifecycleManager:
             created_at=state.created_at,
             updated_at=datetime.now(UTC),
             reason=reason,
-            metadata=dict(state.metadata),
+            metadata={**dict(state.metadata), **(metadata or {})},
         )

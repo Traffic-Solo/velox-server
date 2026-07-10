@@ -14,6 +14,8 @@ class EventLifecycleManager:
         ("pending", "processing"),
         ("processing", "processed"),
         ("processing", "failed"),
+        # Replay: a failed event may be re-processed (Event Inbox replay).
+        ("failed", "processing"),
     }
 
     def transition(

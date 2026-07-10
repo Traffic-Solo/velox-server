@@ -86,6 +86,7 @@ Sprint 1 - VELOX Core Platform
 - Action Lifecycle Repository (single source of truth for action status)
 - Approval Gate (deny-by-default permission engine, pending approval registry, approve/reject API)
 - Honest Execution Statuses (SKIPPED for no-op and unhandled placeholder paths)
+- Event Replay and Transient Retry (failed -> processing event transition, bounded transient action retries, honest queue_empty)
 
 ## Current Next Slice
 
@@ -95,7 +96,7 @@ Audit Remediation Sprint (2026-07-10) is in progress. Slices in order:
 2. Unify action status: lifecycle repository as single source of truth (done).
 3. Approval gate: deny-by-default engine + approve/reject endpoints (done).
 4. Honest execution statuses: SKIPPED for no-op/placeholder paths (done).
-5. Event retry: allow failed -> pending replay transition; fix queue_empty semantics.
+5. Event replay + transient retry + queue_empty fix (done).
 6. Gmail: remove message_id fallback to action.target.
 7. Generic Google provider boundary shared by Gmail and Calendar.
 8. Config layer (pydantic-settings) + structured logging.
@@ -106,6 +107,7 @@ After the remediation sprint, continue post-harvest Google integration design wi
 
 ## Current Implementation Notes
 
+- Failed events can be replayed: the event lifecycle allows failed -> processing, failed events stay in the pending inbox, and POST /events/{id}/process retries them. Transient worker failures are consumed by `WorkerRuntime`: a FAILED lifecycle state with a TRANSIENT failure category is re-queued (FAILED -> QUEUED -> APPROVED, re-using the original approval) with `transient_retry_count` metadata, bounded by `max_transient_retries` (default 3). PERMANENT and INTERNAL failures are terminal. `WorkerInvocationResult.queue_empty` now reports the actual queue emptiness after the batch.
 - Execution statuses are honest. `WorkerExecutionStatus.SKIPPED` and `ActionStatus.SKIPPED` exist; `NoOpWorkerExecutor` and the Gmail/Calendar unhandled placeholder branches return SKIPPED with an explanatory reason instead of SUCCEEDED, and `WorkerRuntime` transitions EXECUTING -> SKIPPED for them. SUCCEEDED now always means real work was performed.
 - The permission layer is approval-first. `BasePermissionEngine` auto-allows only an explicit safe list of action types (`review_pull_request`, `summarize_email`, `prepare_meeting`, `gmail.read`); every other action type gets `PermissionStatus.REQUIRES_APPROVAL`. Requires-approval actions are held in `PendingApprovalRegistry` (in-memory implementation on the container) with lifecycle QUEUED + `approval_required` metadata, and enter the `ActionQueue` only through `POST /actions/{id}/approve` (QUEUED -> APPROVED). `POST /actions/{id}/reject` transitions QUEUED -> REJECTED with a reason. `GET /actions/pending-approval` lists held actions with lifecycle. Auto-allowed actions are stored as APPROVED at permission time. `WorkerRuntime` executes only APPROVED actions: unapproved queued actions are re-enqueued unprocessed (defense in depth), rejected actions are dropped safely, and legacy stateless actions without approval metadata are auto-approved for standalone runtime usage.
 - `Action` no longer carries a `status` field. The single source of truth for action status is `ActionLifecycleState` stored in `ActionLifecycleRepository` (in-memory implementation: `InMemoryActionLifecycleRepository`), keyed by action id. `PermissionEngineRuntime` stores QUEUED/REJECTED states there; `WorkerRuntime` reads the stored state (preserving `created_at`), transitions it, and stores the final COMPLETED/FAILED state back. The `/events/{id}/process` response exposes per-action lifecycle in `permission_decisions[].lifecycle`.

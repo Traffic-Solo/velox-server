@@ -149,6 +149,7 @@ class WorkerRuntime:
         executor_registry: WorkerExecutorRegistry | None = None,
         execution_observer: InMemoryWorkerExecutionObserver | None = None,
         lifecycle_repository: ActionLifecycleRepository | None = None,
+        max_transient_retries: int = 3,
     ) -> None:
         self._action_queue = action_queue
         self._action_lifecycle_manager = action_lifecycle_manager
@@ -160,6 +161,11 @@ class WorkerRuntime:
             if lifecycle_repository is not None
             else InMemoryActionLifecycleRepository()
         )
+        self._max_transient_retries = max_transient_retries
+
+    def pending_action_count(self) -> int:
+        """Return the number of actions currently waiting in the queue."""
+        return self._action_queue.count()
 
     def process_next(self) -> WorkerProcessingResult:
         """Process one queued action if available."""
@@ -286,6 +292,28 @@ class WorkerRuntime:
             )
         self._lifecycle_repository.set(action.id, lifecycle_state)
 
+        if (
+            lifecycle_state.status == ActionStatus.FAILED
+            and failure is not None
+            and failure.category == WorkerExecutionFailureCategory.TRANSIENT
+        ):
+            retry_count = int(lifecycle_state.metadata.get("transient_retry_count", 0))
+            if retry_count < self._max_transient_retries:
+                retry_state = self._action_lifecycle_manager.transition(
+                    lifecycle_state,
+                    ActionStatus.QUEUED,
+                    metadata={"transient_retry_count": retry_count + 1},
+                )
+                # The action was already approved before this execution
+                # attempt; a transient retry re-uses that approval.
+                retry_state = self._action_lifecycle_manager.transition(
+                    retry_state,
+                    ActionStatus.APPROVED,
+                )
+                self._lifecycle_repository.set(action.id, retry_state)
+                self._action_queue.enqueue(action)
+                lifecycle_state = retry_state
+
         external_execution_performed = bool(
             execution_result.metadata.get("external_execution_performed", False)
         )
@@ -374,6 +402,6 @@ class WorkerRuntimeInvocationService:
         return WorkerInvocationResult(
             requested_count=max_actions,
             processed_count=processed_count,
-            queue_empty=processed_count < max_actions,
+            queue_empty=self._worker_runtime.pending_action_count() == 0,
             results=results,
         )
