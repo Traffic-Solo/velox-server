@@ -740,7 +740,7 @@ def test_gmail_send_capability_returns_deterministic_in_memory_result() -> None:
 
 
 def test_gmail_worker_executor_executes_read_capability() -> None:
-    action = gmail_content_action("gmail.read")
+    action = gmail_content_action("gmail.read", payload={"message_id": GMAIL_MESSAGE_ID})
     executor = GmailWorkerExecutor()
 
     result = executor.execute(action)
@@ -749,6 +749,31 @@ def test_gmail_worker_executor_executes_read_capability() -> None:
     assert_succeeded_without_external_execution(result)
     assert result.metadata["adapter"] == "in_memory"
     assert result.metadata["message"]["message_id"] == GMAIL_MESSAGE_ID
+
+
+def test_gmail_worker_executor_read_does_not_fall_back_to_action_target() -> None:
+    """action.target holds an event id, never a Gmail message id."""
+    action = gmail_content_action("gmail.read", target="some-event-uuid")
+    executor = GmailWorkerExecutor()
+
+    result = executor.execute(action)
+
+    assert result.status == WorkerExecutionStatus.FAILED
+    assert result.failure is not None
+    assert result.failure.category == WorkerExecutionFailureCategory.PERMANENT
+    assert result.failure.metadata["field"] == "message_id"
+
+
+def test_gmail_worker_executor_archive_does_not_fall_back_to_action_target() -> None:
+    action = gmail_content_action("gmail.archive", target="some-event-uuid")
+    executor = GmailWorkerExecutor()
+
+    result = executor.execute(action)
+
+    assert result.status == WorkerExecutionStatus.FAILED
+    assert result.failure is not None
+    assert result.failure.category == WorkerExecutionFailureCategory.PERMANENT
+    assert result.failure.metadata["field"] == "message_id"
 
 
 def test_gmail_worker_executor_read_accepts_payload_message_id() -> None:
@@ -881,7 +906,9 @@ def test_gmail_archive_capability_handles_missing_message_safely() -> None:
 
 
 def test_gmail_worker_executor_executes_archive_capability() -> None:
-    action = gmail_content_action("gmail.archive")
+    action = gmail_content_action(
+        "gmail.archive", payload={"message_id": GMAIL_MESSAGE_ID}
+    )
     executor = GmailWorkerExecutor()
 
     result = executor.execute(action)

@@ -466,7 +466,9 @@ class GmailWorkerExecutor:
         )
 
     def _execute_read(self, action: Action) -> WorkerExecutionResult:
-        message_id = str(action.payload.get("message_id") or action.target).strip()
+        # message_id must be explicit: action.target holds an event id, not a
+        # Gmail message id, so falling back to it would query the wrong thing.
+        message_id = str(action.payload.get("message_id") or "").strip()
         if not message_id:
             return WorkerExecutionResult(
                 action=action,
@@ -495,7 +497,7 @@ class GmailWorkerExecutor:
         )
 
     def _execute_archive(self, action: Action) -> WorkerExecutionResult:
-        message_id = str(action.payload.get("message_id") or action.target).strip()
+        message_id = str(action.payload.get("message_id") or "").strip()
         if not message_id:
             return _gmail_capability_failure_result(
                 action=action,
