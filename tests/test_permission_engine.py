@@ -74,7 +74,7 @@ def test_permission_runtime_returns_allowed_action_evaluation() -> None:
     assert evaluations[0].action.metadata["permission_decision"]["status"] == "allowed"
     lifecycle_state = lifecycle_repository.get(evaluations[0].action.id)
     assert lifecycle_state is not None
-    assert lifecycle_state.status == ActionStatus.QUEUED
+    assert lifecycle_state.status == ActionStatus.APPROVED
 
 
 def test_permission_runtime_returns_denied_action_evaluation() -> None:

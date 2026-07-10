@@ -177,10 +177,39 @@ class WorkerRuntime:
         lifecycle_state = self._lifecycle_repository.get(action.id)
         if lifecycle_state is None:
             lifecycle_state = ActionLifecycleState(status=ActionStatus.QUEUED)
-        lifecycle_state = self._action_lifecycle_manager.transition(
-            lifecycle_state,
-            ActionStatus.APPROVED,
-        )
+
+        if lifecycle_state.status == ActionStatus.QUEUED:
+            if lifecycle_state.metadata.get("approval_required"):
+                # Defense in depth: an unapproved action must never execute,
+                # even if it somehow reached the execution queue.
+                self._action_queue.enqueue(action)
+                return WorkerProcessingResult(
+                    action=action,
+                    lifecycle_state=lifecycle_state,
+                    execution_status=None,
+                    execution_reason="action awaits explicit approval",
+                    processed=False,
+                    external_execution_performed=False,
+                )
+            lifecycle_state = self._action_lifecycle_manager.transition(
+                lifecycle_state,
+                ActionStatus.APPROVED,
+            )
+
+        if lifecycle_state.status != ActionStatus.APPROVED:
+            # A rejected or otherwise non-approved action is dropped safely.
+            return WorkerProcessingResult(
+                action=action,
+                lifecycle_state=lifecycle_state,
+                execution_status=None,
+                execution_reason=(
+                    "action is not approved for execution "
+                    f"(status: {lifecycle_state.status.value})"
+                ),
+                processed=False,
+                external_execution_performed=False,
+            )
+
         lifecycle_state = self._action_lifecycle_manager.transition(
             lifecycle_state,
             ActionStatus.EXECUTING,

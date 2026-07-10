@@ -8,6 +8,10 @@ from apps.server.src.core.action_lifecycle_repository import (
     InMemoryActionLifecycleRepository,
 )
 from apps.server.src.core.action_queue import ActionQueue
+from apps.server.src.core.approvals import (
+    InMemoryPendingApprovalRegistry,
+    PendingApprovalRegistry,
+)
 from apps.server.src.core.events import (
     BaseContextResolver,
     EventInbox,
@@ -56,11 +60,15 @@ class ApplicationContainer:
         self.action_lifecycle_repository: ActionLifecycleRepository = (
             InMemoryActionLifecycleRepository()
         )
+        self.pending_approval_registry: PendingApprovalRegistry = (
+            InMemoryPendingApprovalRegistry()
+        )
         self.permission_engine: PermissionEngine = BasePermissionEngine()
         self.permission_runtime = PermissionEngineRuntime(
             permission_engine=self.permission_engine,
             action_lifecycle_manager=self.action_lifecycle_manager,
             lifecycle_repository=self.action_lifecycle_repository,
+            pending_approval_registry=self.pending_approval_registry,
         )
         self.worker_executor: WorkerExecutor = NoOpWorkerExecutor()
         self.worker_executor_registry = WorkerExecutorRegistry(

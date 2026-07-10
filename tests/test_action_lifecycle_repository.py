@@ -72,7 +72,7 @@ def test_lifecycle_flows_from_permission_stage_to_worker_runtime() -> None:
     queue.enqueue_many(permission_runtime.queueable_actions(evaluations))
     queued_state = repository.get(action.id)
     assert queued_state is not None
-    assert queued_state.status == ActionStatus.QUEUED
+    assert queued_state.status == ActionStatus.APPROVED
 
     result = worker_runtime.process_next()
 

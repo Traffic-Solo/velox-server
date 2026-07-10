@@ -84,6 +84,7 @@ Sprint 1 - VELOX Core Platform
 - Google Account Context Contract Hardening
 - Tooling Baseline (ruff, mypy strict, GitHub Actions CI)
 - Action Lifecycle Repository (single source of truth for action status)
+- Approval Gate (deny-by-default permission engine, pending approval registry, approve/reject API)
 
 ## Current Next Slice
 
@@ -91,7 +92,7 @@ Audit Remediation Sprint (2026-07-10) is in progress. Slices in order:
 
 1. Tooling baseline: ruff + mypy strict + GitHub Actions CI (done).
 2. Unify action status: lifecycle repository as single source of truth (done).
-3. Approval gate: remove automatic QUEUED -> APPROVED in WorkerRuntime; external-execution roles require explicit approval.
+3. Approval gate: deny-by-default engine + approve/reject endpoints (done).
 4. Honest execution statuses: SKIPPED for no-op fallback and unhandled placeholder paths instead of SUCCEEDED.
 5. Event retry: allow failed -> pending replay transition; fix queue_empty semantics.
 6. Gmail: remove message_id fallback to action.target.
@@ -104,6 +105,7 @@ After the remediation sprint, continue post-harvest Google integration design wi
 
 ## Current Implementation Notes
 
+- The permission layer is approval-first. `BasePermissionEngine` auto-allows only an explicit safe list of action types (`review_pull_request`, `summarize_email`, `prepare_meeting`, `gmail.read`); every other action type gets `PermissionStatus.REQUIRES_APPROVAL`. Requires-approval actions are held in `PendingApprovalRegistry` (in-memory implementation on the container) with lifecycle QUEUED + `approval_required` metadata, and enter the `ActionQueue` only through `POST /actions/{id}/approve` (QUEUED -> APPROVED). `POST /actions/{id}/reject` transitions QUEUED -> REJECTED with a reason. `GET /actions/pending-approval` lists held actions with lifecycle. Auto-allowed actions are stored as APPROVED at permission time. `WorkerRuntime` executes only APPROVED actions: unapproved queued actions are re-enqueued unprocessed (defense in depth), rejected actions are dropped safely, and legacy stateless actions without approval metadata are auto-approved for standalone runtime usage.
 - `Action` no longer carries a `status` field. The single source of truth for action status is `ActionLifecycleState` stored in `ActionLifecycleRepository` (in-memory implementation: `InMemoryActionLifecycleRepository`), keyed by action id. `PermissionEngineRuntime` stores QUEUED/REJECTED states there; `WorkerRuntime` reads the stored state (preserving `created_at`), transitions it, and stores the final COMPLETED/FAILED state back. The `/events/{id}/process` response exposes per-action lifecycle in `permission_decisions[].lifecycle`.
 - `Action` carries an explicit first-class `ExecutorRole`.
 - `ExecutorRole` values are vendor-neutral and do not include Gmail, Google Calendar, Notion, Slack, or other integration-specific role names.

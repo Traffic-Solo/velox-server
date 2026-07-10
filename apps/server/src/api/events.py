@@ -3,11 +3,19 @@
 from typing import Any
 from uuid import UUID
 
+from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionStatus
 from apps.server.src.core.container import get_container
 from apps.server.src.core.events import EventLifecycleState, UniversalEvent
 from fastapi import APIRouter, HTTPException, status
+from pydantic import BaseModel
 
 router = APIRouter(tags=["events"])
+
+
+class RejectActionRequest(BaseModel):
+    """Optional request body for rejecting a pending action."""
+
+    reason: str | None = None
 
 
 @router.get("/actions/queue")
@@ -15,6 +23,102 @@ def list_action_queue() -> list[dict[str, Any]]:
     """Return currently queued actions without mutating the queue."""
     container = get_container()
     return [action.model_dump(mode="json") for action in container.action_queue.list()]
+
+
+@router.get("/actions/pending-approval")
+def list_pending_approval_actions() -> list[dict[str, Any]]:
+    """Return actions held for explicit approval, with their lifecycle state."""
+    container = get_container()
+    return [
+        {
+            "action": action.model_dump(mode="json"),
+            "lifecycle": (
+                lifecycle.model_dump(mode="json")
+                if (
+                    lifecycle := container.action_lifecycle_repository.get(action.id)
+                )
+                is not None
+                else None
+            ),
+        }
+        for action in container.pending_approval_registry.list_pending()
+    ]
+
+
+@router.post("/actions/{action_id}/approve")
+def approve_action(action_id: UUID) -> dict[str, Any]:
+    """Approve a pending action and move it to the execution queue."""
+    container = get_container()
+    action = container.pending_approval_registry.get(action_id)
+    if action is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    lifecycle_state = container.action_lifecycle_repository.get(action_id)
+    if lifecycle_state is None:
+        lifecycle_state = ActionLifecycleState(
+            status=ActionStatus.QUEUED,
+            metadata={"approval_required": True},
+        )
+
+    try:
+        approved_state = container.action_lifecycle_manager.transition(
+            lifecycle_state,
+            ActionStatus.APPROVED,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
+    container.action_lifecycle_repository.set(action_id, approved_state)
+    container.pending_approval_registry.remove(action_id)
+    container.action_queue.enqueue(action)
+    return {
+        "status": "approved",
+        "action_id": str(action_id),
+        "lifecycle": approved_state.model_dump(mode="json"),
+    }
+
+
+@router.post("/actions/{action_id}/reject")
+def reject_action(
+    action_id: UUID,
+    body: RejectActionRequest | None = None,
+) -> dict[str, Any]:
+    """Reject a pending action so it never reaches the execution queue."""
+    container = get_container()
+    action = container.pending_approval_registry.get(action_id)
+    if action is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    lifecycle_state = container.action_lifecycle_repository.get(action_id)
+    if lifecycle_state is None:
+        lifecycle_state = ActionLifecycleState(
+            status=ActionStatus.QUEUED,
+            metadata={"approval_required": True},
+        )
+
+    reason = body.reason if body is not None and body.reason else "rejected by user"
+    try:
+        rejected_state = container.action_lifecycle_manager.transition(
+            lifecycle_state,
+            ActionStatus.REJECTED,
+            reason=reason,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
+    container.action_lifecycle_repository.set(action_id, rejected_state)
+    container.pending_approval_registry.remove(action_id)
+    return {
+        "status": "rejected",
+        "action_id": str(action_id),
+        "lifecycle": rejected_state.model_dump(mode="json"),
+    }
 
 
 @router.post("/events", status_code=status.HTTP_202_ACCEPTED)
