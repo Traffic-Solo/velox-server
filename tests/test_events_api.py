@@ -151,7 +151,9 @@ def test_get_events_pending_returns_pending_events() -> None:
 def test_get_events_inbox_is_not_public() -> None:
     response = client.get("/events/inbox")
 
-    assert response.status_code == 404
+    # "inbox" is parsed by the /events/{event_id} route and is not a valid
+    # UUID, so the request is rejected; no inbox route is exposed.
+    assert response.status_code == 422
 
 
 def test_process_existing_event_returns_200() -> None:

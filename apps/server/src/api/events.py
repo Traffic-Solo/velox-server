@@ -1,15 +1,34 @@
 """Event API endpoints."""
 
-from typing import Any
+import logging
+from typing import Annotated, Any
 from uuid import UUID
 
 from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionStatus
+from apps.server.src.core.config import get_settings
 from apps.server.src.core.container import get_container
 from apps.server.src.core.events import EventLifecycleState, UniversalEvent
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel
 
-router = APIRouter(tags=["events"])
+logger = logging.getLogger(__name__)
+
+
+def require_api_token(
+    authorization: Annotated[str | None, Header()] = None,
+) -> None:
+    """Require a bearer token on every API route when VELOX_API_TOKEN is set."""
+    expected_token = get_settings().api_token
+    if expected_token is None:
+        return
+    if authorization != f"Bearer {expected_token}":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="missing or invalid bearer token",
+        )
+
+
+router = APIRouter(tags=["events"], dependencies=[Depends(require_api_token)])
 
 
 class RejectActionRequest(BaseModel):
@@ -125,6 +144,11 @@ def reject_action(
 def accept_event(event: UniversalEvent) -> dict[str, str]:
     """Accept and store a valid event without processing it."""
     container = get_container()
+    if container.event_repository.get_event(event.id) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"event {event.id} already exists",
+        )
     stored_event = container.event_repository.append(event)
     container.event_inbox.enqueue(stored_event)
     accepted_state = EventLifecycleState(
@@ -141,12 +165,15 @@ def accept_event(event: UniversalEvent) -> dict[str, str]:
 
 
 @router.get("/events")
-def list_events() -> list[dict[str, Any]]:
-    """Return stored events in append order."""
+def list_events(
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> list[dict[str, Any]]:
+    """Return stored events in append order, paginated."""
     container = get_container()
+    events = container.event_repository.list_events()
     return [
-        event.model_dump(mode="json")
-        for event in container.event_repository.list_events()
+        event.model_dump(mode="json") for event in events[offset : offset + limit]
     ]
 
 
@@ -192,9 +219,10 @@ def process_event(event_id: UUID) -> dict[str, Any]:
                 reason=str(error),
             )
         )
+        logger.exception("event %s failed processing", event_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(error),
+            detail="event processing failed",
         ) from error
 
     container.event_lifecycle_states[event_id] = (
@@ -252,3 +280,29 @@ def read_event_schema() -> dict[str, Any]:
             "payload, and records the normalizer class name in metadata."
         ),
     }
+
+
+@router.get("/events/{event_id}")
+def read_event(event_id: UUID) -> dict[str, Any]:
+    """Return one stored event by id."""
+    container = get_container()
+    event = container.event_repository.get_event(event_id)
+    if event is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    return event.model_dump(mode="json")
+
+
+@router.get("/events/{event_id}/lifecycle")
+def read_event_lifecycle(event_id: UUID) -> dict[str, Any]:
+    """Return the lifecycle state of one stored event."""
+    container = get_container()
+    if container.event_repository.get_event(event_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    lifecycle_state = container.event_lifecycle_states.get(event_id)
+    if lifecycle_state is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="no lifecycle state recorded for this event",
+        )
+    return lifecycle_state.model_dump(mode="json")
