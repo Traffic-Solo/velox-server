@@ -4,6 +4,18 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from apps.server.src.core.actions import Action, ExecutorRole
+from apps.server.src.integrations.google_provider import (
+    FakeGoogleCredentialsProvider,
+    FakeGoogleTransportClient,
+    GoogleCredentials,
+    GoogleCredentialsProvider,
+    GoogleCredentialsProviderError,
+    GoogleProviderComposition,
+    GoogleProviderFailure,
+    GoogleProviderRequest,
+    GoogleProviderResponse,
+    GoogleTransportClient,
+)
 from apps.server.src.workers.executor import (
     WorkerExecutionFailure,
     WorkerExecutionFailureCategory,
@@ -73,222 +85,50 @@ class GmailArchiveRequest:
     message_id: str
 
 
-@dataclass(frozen=True)
-class GmailCredentials:
-    """Provider-facing Gmail credential material placeholder."""
-
-    access_token: str
-    principal: str
-    account: str
-    token_type: str = "Bearer"
-    expires_at: str | None = None
-
-
-@dataclass(frozen=True)
-class GmailProviderRequest:
-    """Provider transport request behind the Gmail integration boundary."""
-
-    operation: str
-    path: str
-    method: str = "GET"
-    body: dict[str, Any] | None = None
-    query: dict[str, Any] = field(default_factory=dict)
+# Provider boundary: shared Google primitives, specialized for Gmail.
+GmailCredentials = GoogleCredentials
+GmailProviderRequest = GoogleProviderRequest
+GmailProviderFailure = GoogleProviderFailure
+GmailProviderResponse = GoogleProviderResponse
+GmailCredentialsProviderError = GoogleCredentialsProviderError
+GmailCredentialsProvider = GoogleCredentialsProvider
+GmailTransportClient = GoogleTransportClient
 
 
-@dataclass(frozen=True)
-class GmailProviderFailure:
-    """Provider failure mapping shape for future Gmail adapters."""
-
-    category: WorkerExecutionFailureCategory
-    message: str
-    retryable: bool = False
-    provider_status_code: int | None = None
-    provider_reason: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class GmailProviderResponse:
-    """Provider transport response behind the Gmail integration boundary."""
-
-    status_code: int
-    body: dict[str, Any] = field(default_factory=dict)
-    headers: dict[str, str] = field(default_factory=dict)
-    failure: GmailProviderFailure | None = None
-
-
-class GmailCredentialsProviderError(Exception):
-    """Safe Gmail credentials provider failure with provider failure metadata."""
-
-    def __init__(self, failure: GmailProviderFailure) -> None:
-        super().__init__(failure.message)
-        self.failure = failure
-
-
-@runtime_checkable
-class GmailCredentialsProvider(Protocol):
-    """Contract for resolving Gmail credentials behind the integration boundary."""
-
-    def get_credentials(
-        self,
-        principal: str | None,
-        account: str | None,
-    ) -> GmailCredentials:
-        """Return Gmail credentials for a future provider adapter."""
-
-
-class FakeGmailCredentialsProvider:
+class FakeGmailCredentialsProvider(FakeGoogleCredentialsProvider):
     """Deterministic fake Gmail credentials provider with no OAuth or storage."""
 
     def __init__(
         self,
-        failures: dict[str, GmailProviderFailure] | None = None,
+        failures: dict[str, GoogleProviderFailure] | None = None,
     ) -> None:
-        self._failures = failures or {}
-
-    def get_credentials(
-        self,
-        principal: str | None,
-        account: str | None,
-    ) -> GmailCredentials:
-        """Return deterministic fake credentials for a normalized principal/account."""
-        normalized_principal = self._normalize_identifier(principal, "principal")
-        normalized_account = self._normalize_identifier(account, "account")
-        failure = (
-            self._failures.get(f"{normalized_principal}:{normalized_account}")
-            or self._failures.get(normalized_principal)
-            or self._failures.get(normalized_account)
-        )
-        if failure is not None:
-            raise GmailCredentialsProviderError(failure)
-
-        return GmailCredentials(
-            access_token=(
-                "fake-gmail-access-token:"
-                f"{normalized_principal}:{normalized_account}"
-            ),
-            principal=normalized_principal,
-            account=normalized_account,
-            expires_at="2099-01-01T00:00:00Z",
-        )
-
-    def _normalize_identifier(self, value: str | None, field_name: str) -> str:
-        if not isinstance(value, str) or not value.strip():
-            raise GmailCredentialsProviderError(
-                GmailProviderFailure(
-                    category=WorkerExecutionFailureCategory.PERMANENT,
-                    message=f"gmail credentials request missing {field_name}",
-                    metadata={"field": field_name},
-                ),
-            )
-        return value.strip()
+        super().__init__(service="gmail", failures=failures)
 
 
-@runtime_checkable
-class GmailTransportClient(Protocol):
-    """Contract for Gmail provider transport behind the integration boundary."""
-
-    def execute(
-        self,
-        request: GmailProviderRequest,
-        credentials: GmailCredentials,
-    ) -> GmailProviderResponse:
-        """Execute a provider request for a future Gmail adapter."""
-
-
-class FakeGmailTransportClient:
+class FakeGmailTransportClient(FakeGoogleTransportClient):
     """Deterministic Gmail transport with no HTTP or provider API behavior."""
 
     def __init__(
         self,
-        responses: dict[str, GmailProviderResponse] | None = None,
-        failures: dict[str, GmailProviderFailure] | None = None,
+        responses: dict[str, GoogleProviderResponse] | None = None,
+        failures: dict[str, GoogleProviderFailure] | None = None,
     ) -> None:
-        self._responses = responses or {}
-        self._failures = failures or {}
-
-    def execute(
-        self,
-        request: GmailProviderRequest,
-        credentials: GmailCredentials,
-    ) -> GmailProviderResponse:
-        """Return a deterministic fake provider response."""
-        key = self._request_key(request)
-        failure = self._failures.get(key) or self._failures.get(request.operation)
-        if failure is not None:
-            return GmailProviderResponse(
-                status_code=failure.provider_status_code or 500,
-                body={
-                    "external_execution_performed": False,
-                    "integration": "gmail",
-                    "adapter": "fake_transport",
-                    "operation": request.operation,
-                    "failed": True,
-                },
-                failure=failure,
-            )
-
-        response = self._responses.get(key) or self._responses.get(request.operation)
-        if response is not None:
-            return response
-
-        return GmailProviderResponse(
-            status_code=200,
-            body={
-                "external_execution_performed": False,
-                "integration": "gmail",
-                "adapter": "fake_transport",
-                "operation": request.operation,
-                "path": request.path,
-                "method": request.method,
-                "token_type": credentials.token_type,
-                "principal": credentials.principal,
-                "account": credentials.account,
-            },
-        )
-
-    def _request_key(self, request: GmailProviderRequest) -> str:
-        return f"{request.method}:{request.path}:{request.operation}"
+        super().__init__(service="gmail", responses=responses, failures=failures)
 
 
-@dataclass(frozen=True)
-class GmailProviderComposition:
+class GmailProviderComposition(GoogleProviderComposition):
     """Compose fake Gmail provider dependencies behind the integration boundary."""
 
-    credentials_provider: GmailCredentialsProvider = field(
-        default_factory=FakeGmailCredentialsProvider,
-    )
-    transport_client: GmailTransportClient = field(
-        default_factory=FakeGmailTransportClient,
-    )
-
-    def execute(
+    def __init__(
         self,
-        request: GmailProviderRequest,
-        principal: str | None,
-        account: str | None,
-    ) -> GmailProviderResponse:
-        """Resolve fake credentials and execute the fake Gmail transport safely."""
-        try:
-            credentials = self.credentials_provider.get_credentials(
-                principal=principal,
-                account=account,
-            )
-        except GmailCredentialsProviderError as error:
-            failure = error.failure
-            return GmailProviderResponse(
-                status_code=failure.provider_status_code or 500,
-                body={
-                    "external_execution_performed": False,
-                    "integration": "gmail",
-                    "adapter": "fake_provider_composition",
-                    "operation": request.operation,
-                    "failed": True,
-                },
-                failure=failure,
-            )
-
-        return self.transport_client.execute(request, credentials)
+        credentials_provider: GoogleCredentialsProvider | None = None,
+        transport_client: GoogleTransportClient | None = None,
+    ) -> None:
+        super().__init__(
+            service="gmail",
+            credentials_provider=credentials_provider or FakeGmailCredentialsProvider(),
+            transport_client=transport_client or FakeGmailTransportClient(),
+        )
 
 
 @runtime_checkable
