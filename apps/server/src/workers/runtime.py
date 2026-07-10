@@ -1,5 +1,6 @@
 """Worker runtime foundation for processing queued actions."""
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import perf_counter
@@ -22,6 +23,8 @@ from apps.server.src.workers.executor import (
     WorkerExecutor,
     WorkerExecutorRegistry,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -236,6 +239,15 @@ class WorkerRuntime:
             )
             executor_registered = False
 
+        if requested_role is not None and not executor_registered:
+            logger.warning(
+                "no executor registered for role '%s' (action %s, type %s); "
+                "falling back to no-op",
+                requested_role,
+                action.id,
+                action.type,
+            )
+
         observation = self._execution_observer.start(
             action=action,
             requested_role=requested_role,
@@ -245,6 +257,11 @@ class WorkerRuntime:
         try:
             execution_result = executor.execute(action)
         except Exception as exc:
+            logger.exception(
+                "executor raised while executing action %s (%s)",
+                action.id,
+                action.type,
+            )
             execution_result = WorkerExecutionResult(
                 action=action,
                 status=WorkerExecutionStatus.FAILED,
@@ -279,6 +296,12 @@ class WorkerRuntime:
                 ActionStatus.COMPLETED,
             )
         elif execution_result.status == WorkerExecutionStatus.SKIPPED:
+            logger.info(
+                "action %s (%s) skipped: %s",
+                action.id,
+                action.type,
+                execution_result.reason,
+            )
             lifecycle_state = self._action_lifecycle_manager.transition(
                 lifecycle_state,
                 ActionStatus.SKIPPED,
@@ -313,6 +336,14 @@ class WorkerRuntime:
                 self._lifecycle_repository.set(action.id, retry_state)
                 self._action_queue.enqueue(action)
                 lifecycle_state = retry_state
+                logger.info(
+                    "transient failure for action %s (%s); re-queued "
+                    "(retry %d of %d)",
+                    action.id,
+                    action.type,
+                    retry_count + 1,
+                    self._max_transient_retries,
+                )
 
         external_execution_performed = bool(
             execution_result.metadata.get("external_execution_performed", False)

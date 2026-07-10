@@ -12,6 +12,7 @@ from apps.server.src.core.approvals import (
     InMemoryPendingApprovalRegistry,
     PendingApprovalRegistry,
 )
+from apps.server.src.core.config import get_settings
 from apps.server.src.core.events import (
     BaseContextResolver,
     EventInbox,
@@ -92,6 +93,7 @@ class ApplicationContainer:
             executor_registry=self.worker_executor_registry,
             execution_observer=self.worker_execution_observer,
             lifecycle_repository=self.action_lifecycle_repository,
+            max_transient_retries=get_settings().max_transient_retries,
         )
         self.worker_runtime_invocation = WorkerRuntimeInvocationService(
             worker_runtime=self.worker_runtime,

@@ -1,5 +1,9 @@
 from apps.server.src.api.events import router as events_router
+from apps.server.src.core.config import get_settings
+from apps.server.src.core.log import configure_logging
 from fastapi import FastAPI
+
+configure_logging(get_settings().log_level)
 
 SERVICE_NAME = "VELOX Server"
 SERVICE_VERSION = "0.0.1"

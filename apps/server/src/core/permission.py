@@ -1,5 +1,6 @@
 """Permission decision model."""
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -17,6 +18,8 @@ from apps.server.src.core.approvals import (
     PendingApprovalRegistry,
 )
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+logger = logging.getLogger(__name__)
 
 
 class PermissionStatus(StrEnum):
@@ -175,11 +178,31 @@ class PermissionEngineRuntime:
         try:
             decision = self._permission_engine.evaluate(action)
         except Exception:
+            logger.exception(
+                "permission engine raised while evaluating action %s (%s); "
+                "denying by default",
+                action.id,
+                action.type,
+            )
             decision = None
 
         if isinstance(decision, PermissionDecision):
+            if decision.status != PermissionStatus.ALLOWED:
+                logger.info(
+                    "permission decision for action %s (%s): %s (%s)",
+                    action.id,
+                    action.type,
+                    decision.status.value,
+                    decision.reason,
+                )
             return decision
 
+        logger.warning(
+            "permission engine returned no decision for action %s (%s); "
+            "denying by default",
+            action.id,
+            action.type,
+        )
         return PermissionDecision(
             status=PermissionStatus.DENIED,
             reason="permission decision could not be resolved",

@@ -89,6 +89,7 @@ Sprint 1 - VELOX Core Platform
 - Event Replay and Transient Retry (failed -> processing event transition, bounded transient action retries, honest queue_empty)
 - Gmail Explicit message_id Contract (no fallback to action.target)
 - Shared Google Provider Boundary (google_provider.py deduplicates Gmail/Calendar fakes)
+- Settings Layer and Operational Logging (pydantic-settings, VELOX_ env prefix, structured stdlib logging)
 
 ## Current Next Slice
 
@@ -101,7 +102,7 @@ Audit Remediation Sprint (2026-07-10) is in progress. Slices in order:
 5. Event replay + transient retry + queue_empty fix (done).
 6. Gmail explicit message_id contract (done).
 7. Shared Google provider boundary (done).
-8. Config layer (pydantic-settings) + structured logging.
+8. Settings layer + operational logging (done).
 9. API hardening: bearer auth, GET /events/{id}, lifecycle endpoint, pagination, duplicate event id rejection.
 10. Infra polish: Docker healthcheck, .env.example, README.
 
@@ -109,6 +110,7 @@ After the remediation sprint, continue post-harvest Google integration design wi
 
 ## Current Implementation Notes
 
+- Settings live in `apps/server/src/core/config.py` (`Settings` via pydantic-settings, cached `get_settings()`). All env vars use the `VELOX_` prefix and can come from `.env`: `VELOX_API_TOKEN` (bearer token; None disables auth for local dev), `VELOX_LOG_LEVEL`, `VELOX_MAX_TRANSIENT_RETRIES`. Never hardcode these or commit secrets. Logging is configured in `main.py` via `apps/server/src/core/log.py`; permission denials/engine crashes and worker no-executor fallbacks, skips, retries and executor exceptions are logged with action ids. New code paths with operational significance must log.
 - Gmail and Calendar share one provider boundary: `apps/server/src/integrations/google_provider.py` defines `GoogleCredentials`, `GoogleProviderRequest/Response/Failure`, `GoogleCredentialsProvider`, `GoogleTransportClient`, `FakeGoogleCredentialsProvider(service=...)`, `FakeGoogleTransportClient(service=...)` and `GoogleProviderComposition(service=...)`. Gmail/Calendar modules keep their public names (`GmailCredentials`, `FakeCalendarTransportClient`, `CalendarProviderComposition`, etc.) as aliases or thin service-bound subclasses. A future Google service integration must reuse this boundary instead of copying it.
 - Gmail read and archive require an explicit `payload.message_id`. There is no fallback to `action.target` because the planner stores the source event id in `target`, which is never a Gmail message id; missing message_id maps to a PERMANENT `WorkerExecutionFailure`.
 - Failed events can be replayed: the event lifecycle allows failed -> processing, failed events stay in the pending inbox, and POST /events/{id}/process retries them. Transient worker failures are consumed by `WorkerRuntime`: a FAILED lifecycle state with a TRANSIENT failure category is re-queued (FAILED -> QUEUED -> APPROVED, re-using the original approval) with `transient_retry_count` metadata, bounded by `max_transient_retries` (default 3). PERMANENT and INTERNAL failures are terminal. `WorkerInvocationResult.queue_empty` now reports the actual queue emptiness after the batch.
