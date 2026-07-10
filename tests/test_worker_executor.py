@@ -22,6 +22,7 @@ from apps.server.src.integrations.gmail import (
 )
 from apps.server.src.workers.executor import (
     NoOpWorkerExecutor,
+    WorkerAccountContext,
     WorkerCapabilityRoute,
     WorkerExecutionFailure,
     WorkerExecutionFailureCategory,
@@ -30,6 +31,15 @@ from apps.server.src.workers.executor import (
     WorkerExecutor,
     WorkerExecutorRegistry,
 )
+
+TEST_ACCOUNT_CONTEXT = WorkerAccountContext(
+    principal="principal-1",
+    account_identifier="account-1",
+)
+TEST_ACCOUNT_PAYLOAD = {
+    "principal": "principal-1",
+    "account_identifier": "account-1",
+}
 
 
 class SuccessfulExecutor:
@@ -1135,6 +1145,190 @@ def test_worker_executor_registry_routes_payload_capability_provider_explicitly(
     assert resolution.registered is True
     assert resolution.requested_provider == "gmail"
     assert resolution.routing_reason == "capability_route"
+
+
+def test_worker_executor_registry_routes_explicit_provider_and_account_context() -> None:
+    registry = WorkerExecutorRegistry()
+    executor = SuccessfulExecutor()
+    registry.register_capability_provider(
+        WorkerCapabilityRoute(
+            role=ExecutorRole.CONTENT_SUMMARY,
+            capability="summarize",
+            provider="gmail",
+            account_context=TEST_ACCOUNT_CONTEXT,
+        ),
+        executor,
+    )
+    action = Action(
+        type="summarize",
+        target="gmail-message-1",
+        payload={
+            "capability_provider": "gmail",
+            "account_context": TEST_ACCOUNT_PAYLOAD,
+        },
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+
+    resolution = registry.resolve_with_registration(action)
+
+    assert resolution.executor is executor
+    assert resolution.registered is True
+    assert resolution.requested_provider == "gmail"
+    assert resolution.matched_provider == "gmail"
+    assert resolution.requested_account_context == TEST_ACCOUNT_CONTEXT
+    assert resolution.matched_account_context == TEST_ACCOUNT_CONTEXT
+    assert resolution.routing_reason == "capability_route"
+
+
+def test_worker_executor_registry_wrong_account_context_fails_closed() -> None:
+    fallback_executor = NoOpWorkerExecutor()
+    registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
+    registry.register_capability_provider(
+        WorkerCapabilityRoute(
+            role=ExecutorRole.CONTENT_SUMMARY,
+            capability="summarize",
+            provider="gmail",
+            account_context=TEST_ACCOUNT_CONTEXT,
+        ),
+        SuccessfulExecutor(),
+    )
+    action = Action(
+        type="summarize",
+        target="gmail-message-1",
+        payload={
+            "capability_provider": "gmail",
+            "account_context": {
+                "principal": "principal-1",
+                "account_identifier": "wrong-account",
+            },
+        },
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+
+    resolution = registry.resolve_with_registration(action)
+    result = resolution.executor.execute(action)
+
+    assert resolution.executor is fallback_executor
+    assert resolution.registered is False
+    assert resolution.requested_provider == "gmail"
+    assert resolution.matched_provider is None
+    assert resolution.routing_reason == "no_handler"
+    assert result.status == WorkerExecutionStatus.SKIPPED
+
+
+def test_worker_executor_registry_missing_account_context_fails_closed() -> None:
+    fallback_executor = NoOpWorkerExecutor()
+    registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
+    registry.register_capability_provider(
+        WorkerCapabilityRoute(
+            role=ExecutorRole.CONTENT_SUMMARY,
+            capability="summarize",
+            provider="gmail",
+            account_context=TEST_ACCOUNT_CONTEXT,
+        ),
+        SuccessfulExecutor(),
+    )
+    action = Action(
+        type="summarize",
+        target="gmail-message-1",
+        payload={"capability_provider": "gmail"},
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+
+    resolution = registry.resolve_with_registration(action)
+    result = resolution.executor.execute(action)
+
+    assert resolution.executor is fallback_executor
+    assert resolution.registered is False
+    assert resolution.requested_account_context is None
+    assert resolution.routing_reason == "missing_account_context"
+    assert result.status == WorkerExecutionStatus.SKIPPED
+
+
+def test_worker_executor_registry_ambiguous_account_context_fails_closed() -> None:
+    fallback_executor = NoOpWorkerExecutor()
+    registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
+    registry.register_capability_provider(
+        WorkerCapabilityRoute(
+            role=ExecutorRole.CONTENT_SUMMARY,
+            capability="summarize",
+            provider="gmail",
+            account_context=WorkerAccountContext(
+                principal="principal-1",
+                account_identifier="account-1",
+            ),
+        ),
+        SuccessfulExecutor(),
+    )
+    registry.register_capability_provider(
+        WorkerCapabilityRoute(
+            role=ExecutorRole.CONTENT_SUMMARY,
+            capability="summarize",
+            provider="calendar",
+            account_context=WorkerAccountContext(
+                principal="principal-1",
+                account_identifier="account-1",
+            ),
+        ),
+        SuccessfulExecutor(),
+    )
+    action = Action(
+        type="summarize",
+        target="shared-target",
+        payload={"account_context": TEST_ACCOUNT_PAYLOAD},
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+
+    resolution = registry.resolve_with_registration(action)
+    result = resolution.executor.execute(action)
+
+    assert resolution.executor is fallback_executor
+    assert resolution.registered is False
+    assert resolution.requested_account_context == TEST_ACCOUNT_CONTEXT
+    assert resolution.routing_reason == "ambiguous_capability_route"
+    assert result.status == WorkerExecutionStatus.SKIPPED
+
+
+def test_worker_executor_registry_payload_provider_does_not_override_account_route() -> None:
+    fallback_executor = NoOpWorkerExecutor()
+    registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
+    registry.register_capability_provider(
+        WorkerCapabilityRoute(
+            role=ExecutorRole.CONTENT_SUMMARY,
+            capability="summarize",
+            provider="gmail",
+            account_context=TEST_ACCOUNT_CONTEXT,
+        ),
+        SuccessfulExecutor(),
+    )
+    registry.register_capability_provider(
+        WorkerCapabilityRoute(
+            role=ExecutorRole.CONTENT_SUMMARY,
+            capability="summarize",
+            provider="calendar",
+            account_context=TEST_ACCOUNT_CONTEXT,
+        ),
+        SuccessfulExecutor(),
+    )
+    action = Action(
+        type="summarize",
+        target="gmail-message-1",
+        payload={
+            "provider": "gmail",
+            "account_context": TEST_ACCOUNT_PAYLOAD,
+        },
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+
+    resolution = registry.resolve_with_registration(action)
+    result = resolution.executor.execute(action)
+
+    assert resolution.executor is fallback_executor
+    assert resolution.registered is False
+    assert resolution.requested_provider is None
+    assert resolution.matched_provider is None
+    assert resolution.routing_reason == "ambiguous_capability_route"
+    assert result.status == WorkerExecutionStatus.SKIPPED
 
 
 def test_worker_executor_registry_routes_single_provider_deterministically() -> None:

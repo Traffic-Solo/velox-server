@@ -68,6 +68,7 @@ Sprint 1 - VELOX Core Platform
 - Worker Runtime Invocation API
 - Worker Executor Explicit Role Registration
 - Worker Capability Provider Routing Contract
+- Worker Provider Selection and Account Context Routing Contract
 - Worker Runtime In-Memory Invocation Observability
 - Worker Runtime Exception Safety
 - Worker Executor Failure Contract
@@ -113,6 +114,8 @@ Audit Remediation Sprint (2026-07-10) is in progress. Slices in order:
 
 After the remediation sprint, continue post-harvest Google integration design without moving directly into OAuth, credentials storage, real HTTP clients or real Google API calls.
 
+Current post-harvest Google integration slice completed: Provider selection and account-context routing contract. The next highest-priority slice should connect selected provider/account routing metadata to deterministic integration adapter request construction while still avoiding OAuth, credentials storage, real HTTP clients and real Google API calls.
+
 ## Current Implementation Notes
 
 - The API is hardened: when `VELOX_API_TOKEN` is set, every route on the events router requires `Authorization: Bearer <token>` (root `/` and `/health` stay open); `POST /events` rejects duplicate event ids with 409 (idempotency guard); `GET /events` is paginated (`limit` <= 1000, `offset`); `GET /events/{id}` and `GET /events/{id}/lifecycle` exist (registered after `/events/pending` and `/events/schema`, so keep static routes above parameterized ones); processing failures return a generic 500 detail and log the real error server-side.
@@ -150,6 +153,7 @@ After the remediation sprint, continue post-harvest Google integration design wi
 - A Google Calendar integration bootstrap now exists under the integrations package, is registered in `ApplicationContainer` through explicit capability-provider routes for the vendor-neutral `CONTEXT_PREPARATION` role. Unhandled action types return a SKIPPED placeholder `WorkerExecutionResult` (never SUCCEEDED), without calendar events, OAuth, credential storage, HTTP clients or Google Calendar API calls.
 - Google Calendar provider-facing boundary placeholders now exist under the Calendar integration module for future adapter work: `CalendarCredentialsProvider`, `CalendarTransportClient`, `CalendarCredentials`, `CalendarProviderRequest`, `CalendarProviderResponse`, `CalendarProviderFailure` and `CalendarProviderComposition`. These deterministic fake boundaries validate that the Gmail provider composition pattern can be reused for another Google service without implementing OAuth, credential storage, real secrets, HTTP transport or real Google Calendar API calls.
 - Gmail and Calendar provider boundary contracts now require explicit principal/account context when resolving fake Google credentials or executing provider composition. Fake credentials carry normalized principal/account fields, fake transport responses echo that context deterministically, missing account context fails safely through provider failure responses, and Gmail and Calendar can execute with separate account identifiers without introducing a hidden global/default Google account.
+- Worker executor routing now supports an explicit vendor-neutral account context contract through `WorkerAccountContext` and official action `account_context` routing fields. Capability-provider routes can be registered with account identifiers; matching requires the official `capability_provider` and `account_context` fields, fails closed for missing, invalid, unknown or ambiguous account-aware routes, and records requested/matched account context in runtime execution metadata and observations. Generic payload or metadata `provider` fields remain ignored by routing. The application container registers Gmail and Calendar bootstrap routes with separate explicit account identifiers and no hidden default account. Legacy role-only fallback remains available only where explicitly registered and only for inferred action-type capabilities.
 
 ## Workflow
 
@@ -211,7 +215,8 @@ After every implementation slice, update this file in the same commit if the imp
 - Apple Ecosystem Strategy references ADRs that are not yet created.
 - Engineering Board in Notion may still need reconciliation with current repository state.
 - Gmail read, send and archive capabilities use deterministic in-memory fake data only. Executor resolution supports explicit capability-provider routing and returns `SKIPPED` through `NoOpWorkerExecutor` when no registered handler matches.
-- Legacy role-only executor registration remains for backward compatibility when capability is inferred from `action.type`, but production container wiring should prefer explicit capability-provider routes. Explicit payload/metadata capability requests must not fall through to legacy role-only routing.
+- Legacy role-only executor registration remains for backward compatibility when capability is inferred from `action.type`, but production container wiring should prefer explicit capability-provider-account routes. Explicit payload/metadata capability requests must not fall through to legacy role-only routing.
+- Provider account context is routing-only today. Gmail/Calendar fake provider compositions still receive account context only when called directly by integration tests; worker executors do not yet consume the selected account context to execute real provider adapter work.
 - Gmail capability tests are consolidated locally in `tests/test_worker_executor.py`; no shared `tests/conftest.py` fixture has been introduced yet.
 - Real Gmail adapter, OAuth, credential storage, HTTP transport and real Gmail API calls are not implemented yet.
 - Gmail provider boundary interfaces, fake transport bootstrap, fake credentials provider bootstrap and fake provider composition bootstrap are present behind the Gmail integration boundary. No concrete real provider implementation exists yet.

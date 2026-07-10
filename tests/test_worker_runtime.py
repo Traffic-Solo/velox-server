@@ -3,6 +3,8 @@ from apps.server.src.core.action_lifecycle_manager import ActionLifecycleManager
 from apps.server.src.core.action_queue import ActionQueue
 from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.workers.executor import (
+    WorkerAccountContext,
+    WorkerCapabilityRoute,
     WorkerExecutionFailure,
     WorkerExecutionFailureCategory,
     WorkerExecutionResult,
@@ -148,6 +150,57 @@ def test_worker_runtime_records_execution_metadata_for_registered_role() -> None
     assert execution_metadata["finished_at"] is not None
     assert execution_metadata["metadata"] == {"handled_by": "recording-executor"}
     assert execution_metadata["observation"]["action_id"] == str(action.id)
+
+
+def test_worker_runtime_records_provider_account_routing_metadata() -> None:
+    queue = ActionQueue()
+    account_context = WorkerAccountContext(
+        principal="principal-1",
+        account_identifier="account-1",
+    )
+    action = Action(
+        type="summarize",
+        target="message-1",
+        payload={
+            "capability_provider": "gmail",
+            "account_context": account_context.as_metadata(),
+        },
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+    queue.enqueue(action)
+    fallback_executor = RecordingExecutor(result_status=WorkerExecutionStatus.FAILED)
+    registered_executor = RecordingExecutor(result_status=WorkerExecutionStatus.SUCCEEDED)
+    executor_registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
+    executor_registry.register_capability_provider(
+        WorkerCapabilityRoute(
+            role=ExecutorRole.CONTENT_SUMMARY,
+            capability="summarize",
+            provider="gmail",
+            account_context=account_context,
+        ),
+        registered_executor,
+    )
+    runtime = WorkerRuntime(
+        action_queue=queue,
+        action_lifecycle_manager=ActionLifecycleManager(),
+        worker_executor=fallback_executor,
+        executor_registry=executor_registry,
+    )
+
+    result = runtime.process_next()
+
+    assert result.action is not None
+    execution_metadata = result.action.metadata["worker_execution"]
+    assert execution_metadata["matched_provider"] == "gmail"
+    assert execution_metadata["requested_account_context"] == (
+        account_context.as_metadata()
+    )
+    assert execution_metadata["matched_account_context"] == (
+        account_context.as_metadata()
+    )
+    assert execution_metadata["observation"]["matched_account_context"] == (
+        account_context.as_metadata()
+    )
 
 
 def test_worker_runtime_records_execution_timing() -> None:

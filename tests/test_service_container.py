@@ -115,6 +115,11 @@ def test_container_registers_gmail_worker_executor() -> None:
     action = Action(
         type="summarize_email",
         target="gmail-message-1",
+        payload={
+            "account_context": (
+                ApplicationContainer.GMAIL_ACCOUNT_CONTEXT.as_metadata()
+            ),
+        },
         executor_role=GMAIL_EXECUTOR_ROLE,
     )
 
@@ -123,6 +128,10 @@ def test_container_registers_gmail_worker_executor() -> None:
     assert resolution.registered is True
     assert resolution.requested_role == ExecutorRole.CONTENT_SUMMARY.value
     assert resolution.executor is container.gmail_worker_executor
+    assert (
+        resolution.matched_account_context
+        == ApplicationContainer.GMAIL_ACCOUNT_CONTEXT
+    )
     assert isinstance(resolution.executor, GmailWorkerExecutor)
 
 
@@ -131,6 +140,11 @@ def test_container_registers_calendar_worker_executor() -> None:
     action = Action(
         type="prepare_calendar_context",
         target="calendar-placeholder",
+        payload={
+            "account_context": (
+                ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT.as_metadata()
+            ),
+        },
         executor_role=CALENDAR_EXECUTOR_ROLE,
     )
 
@@ -139,6 +153,10 @@ def test_container_registers_calendar_worker_executor() -> None:
     assert resolution.registered is True
     assert resolution.requested_role == ExecutorRole.CONTEXT_PREPARATION.value
     assert resolution.executor is container.calendar_worker_executor
+    assert (
+        resolution.matched_account_context
+        == ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT
+    )
     assert isinstance(resolution.executor, CalendarWorkerExecutor)
 
 
@@ -196,11 +214,54 @@ def test_container_wired_worker_runtime_uses_executor_registry() -> None:
     assert executor.called_actions == [action]
 
 
+def test_container_gmail_route_requires_explicit_account_context() -> None:
+    container = ApplicationContainer()
+    action = Action(
+        type="summarize_email",
+        target="gmail-message-1",
+        payload={"capability_provider": "gmail"},
+        executor_role=GMAIL_EXECUTOR_ROLE,
+    )
+
+    resolution = container.worker_executor_registry.resolve_with_registration(action)
+
+    assert resolution.executor is container.worker_executor
+    assert resolution.registered is False
+    assert resolution.routing_reason == "missing_account_context"
+
+
+def test_container_gmail_route_rejects_wrong_account_context() -> None:
+    container = ApplicationContainer()
+    action = Action(
+        type="summarize_email",
+        target="gmail-message-1",
+        payload={
+            "capability_provider": "gmail",
+            "account_context": {
+                "principal": "velox-local-principal",
+                "account_identifier": "calendar-local-account",
+            },
+        },
+        executor_role=GMAIL_EXECUTOR_ROLE,
+    )
+
+    resolution = container.worker_executor_registry.resolve_with_registration(action)
+
+    assert resolution.executor is container.worker_executor
+    assert resolution.registered is False
+    assert resolution.routing_reason == "no_handler"
+
+
 def test_container_worker_runtime_routes_matching_action_to_gmail_executor() -> None:
     container = ApplicationContainer()
     action = Action(
         type="summarize_email",
         target="gmail-message-1",
+        payload={
+            "account_context": (
+                ApplicationContainer.GMAIL_ACCOUNT_CONTEXT.as_metadata()
+            ),
+        },
         executor_role=GMAIL_EXECUTOR_ROLE,
     )
     container.action_queue.enqueue(action)
@@ -216,6 +277,9 @@ def test_container_worker_runtime_routes_matching_action_to_gmail_executor() -> 
     assert execution_metadata["executor_registered"] is True
     assert execution_metadata["requested_capability"] == "summarize_email"
     assert execution_metadata["matched_provider"] == "gmail"
+    assert execution_metadata["matched_account_context"] == (
+        ApplicationContainer.GMAIL_ACCOUNT_CONTEXT.as_metadata()
+    )
     assert execution_metadata["metadata"] == {
         "external_execution_performed": False,
         "integration": "gmail",
@@ -229,6 +293,11 @@ def test_container_worker_runtime_routes_matching_action_to_calendar_executor() 
     action = Action(
         type="prepare_calendar_context",
         target="calendar-placeholder",
+        payload={
+            "account_context": (
+                ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT.as_metadata()
+            ),
+        },
         executor_role=CALENDAR_EXECUTOR_ROLE,
     )
     container.action_queue.enqueue(action)
@@ -244,6 +313,9 @@ def test_container_worker_runtime_routes_matching_action_to_calendar_executor() 
     assert execution_metadata["executor_registered"] is True
     assert execution_metadata["requested_capability"] == "prepare_calendar_context"
     assert execution_metadata["matched_provider"] == "calendar"
+    assert execution_metadata["matched_account_context"] == (
+        ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT.as_metadata()
+    )
     assert execution_metadata["metadata"] == {
         "external_execution_performed": False,
         "integration": "calendar",

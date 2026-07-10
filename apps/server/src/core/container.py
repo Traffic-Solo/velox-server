@@ -38,6 +38,7 @@ from apps.server.src.integrations.calendar import (
 from apps.server.src.integrations.gmail import GMAIL_EXECUTOR_ROLE, GmailWorkerExecutor
 from apps.server.src.workers.executor import (
     NoOpWorkerExecutor,
+    WorkerAccountContext,
     WorkerCapabilityRoute,
     WorkerExecutor,
     WorkerExecutorRegistry,
@@ -51,6 +52,15 @@ from apps.server.src.workers.runtime import (
 
 class ApplicationContainer:
     """Wires current in-process application services."""
+
+    GMAIL_ACCOUNT_CONTEXT = WorkerAccountContext(
+        principal="velox-local-principal",
+        account_identifier="gmail-local-account",
+    )
+    CALENDAR_ACCOUNT_CONTEXT = WorkerAccountContext(
+        principal="velox-local-principal",
+        account_identifier="calendar-local-account",
+    )
 
     def __init__(self) -> None:
         self.event_repository: EventRepository = EventStore()
@@ -82,6 +92,7 @@ class ApplicationContainer:
                 role=GMAIL_EXECUTOR_ROLE,
                 capability="summarize_email",
                 provider="gmail",
+                account_context=self.GMAIL_ACCOUNT_CONTEXT,
             ),
             executor=self.gmail_worker_executor,
         )
@@ -91,6 +102,7 @@ class ApplicationContainer:
                     role=GMAIL_EXECUTOR_ROLE,
                     capability=capability,
                     provider="gmail",
+                    account_context=self.GMAIL_ACCOUNT_CONTEXT,
                 ),
                 executor=self.gmail_worker_executor,
             )
@@ -101,6 +113,7 @@ class ApplicationContainer:
                     role=CALENDAR_EXECUTOR_ROLE,
                     capability=capability,
                     provider="calendar",
+                    account_context=self.CALENDAR_ACCOUNT_CONTEXT,
                 ),
                 executor=self.calendar_worker_executor,
             )

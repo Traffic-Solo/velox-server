@@ -38,6 +38,8 @@ class WorkerExecutionObservation:
     requested_capability: str | None
     requested_provider: str | None
     matched_provider: str | None
+    requested_account_context: dict[str, str | None] | None
+    matched_account_context: dict[str, str | None] | None
     routing_reason: str | None
     status: str
     started_at: datetime
@@ -58,6 +60,8 @@ class WorkerExecutionObservation:
             "requested_capability": self.requested_capability,
             "requested_provider": self.requested_provider,
             "matched_provider": self.matched_provider,
+            "requested_account_context": self.requested_account_context,
+            "matched_account_context": self.matched_account_context,
             "routing_reason": self.routing_reason,
             "status": self.status,
             "started_at": self.started_at.isoformat(),
@@ -86,6 +90,8 @@ class InMemoryWorkerExecutionObserver:
         requested_capability: str | None = None,
         requested_provider: str | None = None,
         matched_provider: str | None = None,
+        requested_account_context: dict[str, str | None] | None = None,
+        matched_account_context: dict[str, str | None] | None = None,
         routing_reason: str | None = None,
     ) -> WorkerExecutionObservation:
         """Record execution start."""
@@ -97,6 +103,8 @@ class InMemoryWorkerExecutionObserver:
             requested_capability=requested_capability,
             requested_provider=requested_provider,
             matched_provider=matched_provider,
+            requested_account_context=requested_account_context,
+            matched_account_context=matched_account_context,
             routing_reason=routing_reason,
             status="started",
             started_at=datetime.now(UTC),
@@ -249,6 +257,16 @@ class WorkerRuntime:
             requested_capability = resolution.requested_capability
             requested_provider = resolution.requested_provider
             matched_provider = resolution.matched_provider
+            requested_account_context = (
+                resolution.requested_account_context.as_metadata()
+                if resolution.requested_account_context is not None
+                else None
+            )
+            matched_account_context = (
+                resolution.matched_account_context.as_metadata()
+                if resolution.matched_account_context is not None
+                else None
+            )
             routing_reason = resolution.routing_reason
         else:
             executor = self._worker_executor
@@ -261,6 +279,8 @@ class WorkerRuntime:
             requested_capability = None
             requested_provider = None
             matched_provider = None
+            requested_account_context = None
+            matched_account_context = None
             routing_reason = "runtime_direct_executor"
 
         if requested_role is not None and not executor_registered:
@@ -279,6 +299,8 @@ class WorkerRuntime:
             requested_capability=requested_capability,
             requested_provider=requested_provider,
             matched_provider=matched_provider,
+            requested_account_context=requested_account_context,
+            matched_account_context=matched_account_context,
             routing_reason=routing_reason,
         )
         started_monotonic = perf_counter()
@@ -389,6 +411,8 @@ class WorkerRuntime:
                 "requested_capability": requested_capability,
                 "requested_provider": requested_provider,
                 "matched_provider": matched_provider,
+                "requested_account_context": requested_account_context,
+                "matched_account_context": matched_account_context,
                 "routing_reason": routing_reason,
                 "started_at": observation.started_at.isoformat(),
                 "finished_at": observation.finished_at.isoformat()
