@@ -92,6 +92,7 @@ Sprint 1 - VELOX Core Platform
 - Settings Layer and Operational Logging (pydantic-settings, VELOX_ env prefix, structured stdlib logging)
 - API Hardening (bearer auth, duplicate event rejection, pagination, event/lifecycle GET endpoints, no internal error leaks)
 - Infrastructure Polish (Docker healthcheck, .env.example, README rewrite)
+- Post-Remediation Verification (independent gate re-run, adversarial approval-bypass tests, handoff contradiction cleanup)
 
 ## Current Next Slice
 
@@ -106,7 +107,8 @@ Audit Remediation Sprint (2026-07-10) is in progress. Slices in order:
 7. Shared Google provider boundary (done).
 8. Settings layer + operational logging (done).
 9. API hardening (done).
-10. Infra polish (done). Audit Remediation Sprint complete.
+10. Infra polish (done).
+11. Post-remediation verification (done): fresh-clone re-run of all gates (306 tests at the time, ruff, mypy strict), CI confirmed green for all 10 sprint commits, adversarial tests added for double-approve, reject-after-approve, approve-after-reject, lifecycle-state-loss and route shadowing, and four stale handoff statements corrected (retry wording, SKIPPED placeholders, NoOp fallback). Audit Remediation Sprint is verified complete.
 
 After the remediation sprint, continue post-harvest Google integration design without moving directly into OAuth, credentials storage, real HTTP clients or real Google API calls.
 
@@ -125,12 +127,12 @@ After the remediation sprint, continue post-harvest Google integration design wi
 - `BasePlanner` produces actions with executor roles.
 - `WorkerExecutorRegistry` resolves executors by explicit action role.
 - `WorkerExecutorRegistry` supports explicit `ExecutorRole` registration and exposes resolution metadata showing the requested role and whether a matching executor was registered.
-- Backward compatibility is preserved because actions with no role, or with an unknown role, fall back to `NoOpWorkerExecutor`.
+- Backward compatibility is preserved because actions with no role, or with an unknown role, fall back to `NoOpWorkerExecutor`, which reports SKIPPED (never SUCCEEDED) and logs a warning for unknown requested roles.
 - `WorkerRuntime` records vendor-neutral in-memory execution observations and attaches structured execution metadata to processed actions, including status, start, finish, duration and role resolution details.
-- `WorkerRuntime` catches executor exceptions, converts them into explicit failed `WorkerExecutionResult` values, transitions lifecycle state to failed, and finishes execution observations with failure metadata. Dequeued actions are not silently lost and are not requeued by the in-memory queue.
+- `WorkerRuntime` catches executor exceptions, converts them into explicit failed `WorkerExecutionResult` values, transitions lifecycle state to failed, and finishes execution observations with failure metadata. Dequeued actions are not silently lost. The only re-queueing the runtime performs is the bounded transient retry described below; INTERNAL failures (including executor exceptions) are terminal.
 - Worker executors now have an explicit vendor-neutral failure contract via `WorkerExecutionFailure`, classified as transient, permanent or internal, with optional failure message and metadata.
-- `WorkerRuntime` consumes the failure contract without adding retries, backoff, durable queues, external logging or vendor-specific exception handling, and surfaces failure classification in execution metadata and in-memory observations.
-- A Gmail worker executor bootstrap exists under the integrations package, is registered in `ApplicationContainer` through the existing executor registry using the vendor-neutral `CONTENT_SUMMARY` role, and returns a safe placeholder `WorkerExecutionResult` without credentials, OAuth, HTTP clients or Gmail API calls.
+- `WorkerRuntime` consumes the failure contract: TRANSIENT failures are re-queued with a bounded retry budget (`VELOX_MAX_TRANSIENT_RETRIES`, default 3), PERMANENT and INTERNAL failures are terminal. There is still no backoff, no durable queue and no vendor-specific exception handling. Failure classification is surfaced in execution metadata and in-memory observations.
+- A Gmail worker executor bootstrap exists under the integrations package, is registered in `ApplicationContainer` through the existing executor registry using the vendor-neutral `CONTENT_SUMMARY` role. Unhandled action types return a SKIPPED placeholder `WorkerExecutionResult` (never SUCCEEDED), without credentials, OAuth, HTTP clients or Gmail API calls.
 - Gmail capability-level contracts now exist under the Gmail integration module for read, send and archive operations, with shared request/result dataclasses and deterministic in-memory implementations exposed by the existing Gmail worker executor.
 - Gmail read capability now has a deterministic in-memory bootstrap behind the Gmail executor boundary. It accepts `GmailReadRequest`, returns fake in-memory message metadata, safely reports no-message cases, and performs no external Gmail, OAuth, credentials, HTTP or API behavior.
 - Gmail worker executor can route explicit read actions to the in-memory read capability and maps malformed read requests to the existing `WorkerExecutionFailure` contract.
@@ -144,7 +146,7 @@ After the remediation sprint, continue post-harvest Google integration design wi
 - A deterministic `FakeGmailTransportClient` now exists behind the existing Gmail transport boundary. It accepts `GmailProviderRequest`, returns deterministic `GmailProviderResponse` values, can simulate provider failures using `GmailProviderFailure`, and performs no OAuth, credential storage, HTTP client behavior or real Gmail API calls.
 - A deterministic `FakeGmailCredentialsProvider` now exists behind the existing Gmail credentials provider boundary. It returns fake `GmailCredentials` for normalized fake principal/account inputs, handles missing principal/account input with `GmailProviderFailure` metadata via `GmailCredentialsProviderError`, can simulate configured provider failures, and performs no OAuth, credential storage, real secret handling, HTTP client behavior or real Gmail API calls.
 - A deterministic `GmailProviderComposition` now exists behind the Gmail integration boundary. It obtains fake credentials from `FakeGmailCredentialsProvider`, sends `GmailProviderRequest` through `FakeGmailTransportClient`, returns credential and transport failures safely as `GmailProviderResponse` values, and performs no OAuth, credential storage, real secret handling, HTTP client behavior or real Gmail API calls. Existing in-memory read/send/archive behavior, fake transport behavior and fake credentials provider behavior remain unchanged.
-- A Google Calendar integration bootstrap now exists under the integrations package, is registered in `ApplicationContainer` through the existing executor registry using the vendor-neutral `CONTEXT_PREPARATION` role, and returns a safe placeholder `WorkerExecutionResult` without calendar events, OAuth, credential storage, HTTP clients or Google Calendar API calls.
+- A Google Calendar integration bootstrap now exists under the integrations package, is registered in `ApplicationContainer` through the existing executor registry using the vendor-neutral `CONTEXT_PREPARATION` role. Unhandled action types return a SKIPPED placeholder `WorkerExecutionResult` (never SUCCEEDED), without calendar events, OAuth, credential storage, HTTP clients or Google Calendar API calls.
 - Google Calendar provider-facing boundary placeholders now exist under the Calendar integration module for future adapter work: `CalendarCredentialsProvider`, `CalendarTransportClient`, `CalendarCredentials`, `CalendarProviderRequest`, `CalendarProviderResponse`, `CalendarProviderFailure` and `CalendarProviderComposition`. These deterministic fake boundaries validate that the Gmail provider composition pattern can be reused for another Google service without implementing OAuth, credential storage, real secrets, HTTP transport or real Google Calendar API calls.
 - Gmail and Calendar provider boundary contracts now require explicit principal/account context when resolving fake Google credentials or executing provider composition. Fake credentials carry normalized principal/account fields, fake transport responses echo that context deterministically, missing account context fails safely through provider failure responses, and Gmail and Calendar can execute with separate account identifiers without introducing a hidden global/default Google account.
 
