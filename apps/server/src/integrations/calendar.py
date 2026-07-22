@@ -15,12 +15,30 @@ from apps.server.src.integrations.google_provider import (
 )
 from apps.server.src.workers.executor import (
     WorkerAccountContext,
+    WorkerCapability,
     WorkerExecutionFailure,
     WorkerExecutionResult,
     WorkerExecutionStatus,
 )
 
 CALENDAR_EXECUTOR_ROLE = ExecutorRole.CONTEXT_PREPARATION
+CALENDAR_PREPARE_MEETING_CAPABILITY = WorkerCapability(
+    identifier="prepare_meeting",
+    role=CALENDAR_EXECUTOR_ROLE,
+    provider="calendar",
+)
+CALENDAR_PREPARE_CONTEXT_CAPABILITY = WorkerCapability(
+    identifier="prepare_calendar_context",
+    role=CALENDAR_EXECUTOR_ROLE,
+    provider="calendar",
+)
+CALENDAR_WORKER_CAPABILITIES = (
+    CALENDAR_PREPARE_MEETING_CAPABILITY,
+    CALENDAR_PREPARE_CONTEXT_CAPABILITY,
+)
+_CALENDAR_CAPABILITY_IDENTIFIERS = frozenset(
+    capability.identifier for capability in CALENDAR_WORKER_CAPABILITIES
+)
 
 # Provider boundary: shared Google primitives, specialized for Calendar.
 CalendarCredentials = GoogleCredentials
@@ -72,6 +90,8 @@ class CalendarProviderComposition(GoogleProviderComposition):
 class CalendarWorkerExecutor:
     """Safe Calendar executor bootstrap with no external API behavior."""
 
+    worker_capabilities = CALENDAR_WORKER_CAPABILITIES
+
     def __init__(
         self,
         provider_composition: CalendarProviderComposition | None = None,
@@ -88,10 +108,10 @@ class CalendarWorkerExecutor:
         account_context: WorkerAccountContext | None = None,
     ) -> WorkerExecutionResult:
         """Return a safe Calendar placeholder without contacting Google Calendar."""
-        if account_context is not None and capability in {
-            "prepare_meeting",
-            "prepare_calendar_context",
-        }:
+        if (
+            account_context is not None
+            and capability in _CALENDAR_CAPABILITY_IDENTIFIERS
+        ):
             return self._execute_provider_request(
                 action,
                 capability,

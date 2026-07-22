@@ -71,6 +71,7 @@ Sprint 1 - VELOX Core Platform
 - Worker Provider Selection and Account Context Routing Contract
 - Provider Adapter Request Construction
 - Provider Capability Dispatch
+- Capability Registry Normalization
 - Worker Runtime In-Memory Invocation Observability
 - Worker Runtime Exception Safety
 - Worker Executor Failure Contract
@@ -116,7 +117,7 @@ Audit Remediation Sprint (2026-07-10) is in progress. Slices in order:
 
 After the remediation sprint, continue post-harvest Google integration design without moving directly into OAuth, credentials storage, real HTTP clients or real Google API calls.
 
-Current post-harvest Google integration slice completed: Provider capability dispatch. The next slice should be selected during review and must continue to avoid OAuth, credentials storage, real HTTP clients and real Google API calls.
+Current post-harvest Google integration slice completed: Capability registry normalization. The next slice should be selected during review and must continue to avoid OAuth, credentials storage, real HTTP clients and real Google API calls.
 
 ## Current Implementation Notes
 
@@ -158,6 +159,8 @@ Current post-harvest Google integration slice completed: Provider capability dis
 - Worker executor routing now supports an explicit vendor-neutral account context contract through `WorkerAccountContext` and official action `account_context` routing fields. Capability-provider routes can be registered with account identifiers; matching requires the official `capability_provider` and `account_context` fields, fails closed for missing, invalid, unknown or ambiguous account-aware routes, and records requested/matched account context in runtime execution metadata and observations. Generic payload or metadata `provider` fields remain ignored by routing. The application container registers Gmail and Calendar bootstrap routes with separate explicit account identifiers and no hidden default account. Legacy role-only fallback remains available only where explicitly registered and only for inferred action-type capabilities.
 - `WorkerRuntime` dispatches every execution through `WorkerExecutorResolution` and the common `WorkerExecutor.execute` contract, passing the resolved capability and registry-matched `WorkerAccountContext` without inspecting provider names or executor subtypes. It records `account_context_used` in execution metadata and observations. Full principal/account consistency is required; generic payload or metadata fields cannot replace the matched routing context.
 - Gmail read/send/archive and Calendar context-preparation worker paths consume the resolved capability and matched account context through the common executor contract, construct deterministic `GoogleProviderRequest` values inside their provider executors and execute them through the existing fake provider compositions. Provider composition rejects conflicting separately supplied context, provider failures map to the worker failure contract, and no OAuth, credential storage, HTTP client or external API behavior is introduced.
+- `WorkerCapability` is the canonical provider capability model. It normalizes capability and provider identifiers, carries the vendor-neutral executor role, and is registered through `WorkerExecutorRegistry.register_capability` or `register_capabilities`. Gmail and Calendar expose provider-owned `worker_capabilities` declarations in this shared format; `ApplicationContainer` no longer duplicates their capability strings.
+- `WorkerRuntime` always resolves execution through `WorkerExecutorRegistry`. When callers omit an explicit registry, the supplied legacy worker executor is installed as the registry fallback, preserving standalone behavior without retaining a direct capability-resolution path. Explicit capability requests, provider selection and account-aware matching remain fail-closed.
 
 ## Workflow
 
@@ -220,6 +223,7 @@ After every implementation slice, update this file in the same commit if the imp
 - Engineering Board in Notion may still need reconciliation with current repository state.
 - Gmail read, send and archive capabilities use deterministic in-memory fake data only. Executor resolution supports explicit capability-provider routing and returns `SKIPPED` through `NoOpWorkerExecutor` when no registered handler matches.
 - Legacy role-only executor registration remains for backward compatibility when capability is inferred from `action.type`, but production container wiring should prefer explicit capability-provider-account routes. Explicit payload/metadata capability requests must not fall through to legacy role-only routing.
+- `WorkerCapabilityRoute` and Gmail's unqualified direct-executor aliases (`read`, `send`, `archive`) remain as compatibility inputs. Production provider declarations use canonical `WorkerCapability` values and runtime routing uses their normalized identifiers.
 - Shared Google provider composition retains separate principal/account arguments for backward-compatible direct integration tests; worker adapter execution uses only account context embedded from the matched routing result.
 - Gmail capability tests are consolidated locally in `tests/test_worker_executor.py`; no shared `tests/conftest.py` fixture has been introduced yet.
 - Real Gmail adapter, OAuth, credential storage, HTTP transport and real Gmail API calls are not implemented yet.

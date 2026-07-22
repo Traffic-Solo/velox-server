@@ -31,15 +31,11 @@ from apps.server.src.core.permission import (
     PermissionEngineRuntime,
 )
 from apps.server.src.core.planner import BasePlanner, Planner
-from apps.server.src.integrations.calendar import (
-    CALENDAR_EXECUTOR_ROLE,
-    CalendarWorkerExecutor,
-)
-from apps.server.src.integrations.gmail import GMAIL_EXECUTOR_ROLE, GmailWorkerExecutor
+from apps.server.src.integrations.calendar import CalendarWorkerExecutor
+from apps.server.src.integrations.gmail import GmailWorkerExecutor
 from apps.server.src.workers.executor import (
     NoOpWorkerExecutor,
     WorkerAccountContext,
-    WorkerCapabilityRoute,
     WorkerExecutor,
     WorkerExecutorRegistry,
 )
@@ -87,36 +83,17 @@ class ApplicationContainer:
             fallback_executor=self.worker_executor,
         )
         self.gmail_worker_executor = GmailWorkerExecutor()
-        self.worker_executor_registry.register_capability_provider(
-            WorkerCapabilityRoute(
-                role=GMAIL_EXECUTOR_ROLE,
-                capability="summarize_email",
-                provider="gmail",
-                account_context=self.GMAIL_ACCOUNT_CONTEXT,
-            ),
+        self.worker_executor_registry.register_capabilities(
+            self.gmail_worker_executor.worker_capabilities,
             executor=self.gmail_worker_executor,
+            account_context=self.GMAIL_ACCOUNT_CONTEXT,
         )
-        for capability in ("gmail.read", "gmail.send", "gmail.archive"):
-            self.worker_executor_registry.register_capability_provider(
-                WorkerCapabilityRoute(
-                    role=GMAIL_EXECUTOR_ROLE,
-                    capability=capability,
-                    provider="gmail",
-                    account_context=self.GMAIL_ACCOUNT_CONTEXT,
-                ),
-                executor=self.gmail_worker_executor,
-            )
         self.calendar_worker_executor = CalendarWorkerExecutor()
-        for capability in ("prepare_meeting", "prepare_calendar_context"):
-            self.worker_executor_registry.register_capability_provider(
-                WorkerCapabilityRoute(
-                    role=CALENDAR_EXECUTOR_ROLE,
-                    capability=capability,
-                    provider="calendar",
-                    account_context=self.CALENDAR_ACCOUNT_CONTEXT,
-                ),
-                executor=self.calendar_worker_executor,
-            )
+        self.worker_executor_registry.register_capabilities(
+            self.calendar_worker_executor.worker_capabilities,
+            executor=self.calendar_worker_executor,
+            account_context=self.CALENDAR_ACCOUNT_CONTEXT,
+        )
         self.worker_execution_observer = InMemoryWorkerExecutionObserver()
         self.worker_runtime = WorkerRuntime(
             action_queue=self.action_queue,

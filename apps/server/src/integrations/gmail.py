@@ -18,6 +18,7 @@ from apps.server.src.integrations.google_provider import (
 )
 from apps.server.src.workers.executor import (
     WorkerAccountContext,
+    WorkerCapability,
     WorkerExecutionFailure,
     WorkerExecutionFailureCategory,
     WorkerExecutionResult,
@@ -25,6 +26,37 @@ from apps.server.src.workers.executor import (
 )
 
 GMAIL_EXECUTOR_ROLE = ExecutorRole.CONTENT_SUMMARY
+GMAIL_SUMMARY_CAPABILITY = WorkerCapability(
+    identifier="summarize_email",
+    role=GMAIL_EXECUTOR_ROLE,
+    provider="gmail",
+)
+GMAIL_READ_CAPABILITY = WorkerCapability(
+    identifier="gmail.read",
+    role=GMAIL_EXECUTOR_ROLE,
+    provider="gmail",
+)
+GMAIL_SEND_CAPABILITY = WorkerCapability(
+    identifier="gmail.send",
+    role=GMAIL_EXECUTOR_ROLE,
+    provider="gmail",
+)
+GMAIL_ARCHIVE_CAPABILITY = WorkerCapability(
+    identifier="gmail.archive",
+    role=GMAIL_EXECUTOR_ROLE,
+    provider="gmail",
+)
+GMAIL_WORKER_CAPABILITIES = (
+    GMAIL_SUMMARY_CAPABILITY,
+    GMAIL_READ_CAPABILITY,
+    GMAIL_SEND_CAPABILITY,
+    GMAIL_ARCHIVE_CAPABILITY,
+)
+_GMAIL_CAPABILITY_ALIASES = {
+    "read": GMAIL_READ_CAPABILITY.identifier,
+    "send": GMAIL_SEND_CAPABILITY.identifier,
+    "archive": GMAIL_ARCHIVE_CAPABILITY.identifier,
+}
 
 
 @dataclass(frozen=True)
@@ -275,6 +307,8 @@ class GmailCapabilities:
 class GmailWorkerExecutor:
     """Safe Gmail executor bootstrap with no external API behavior."""
 
+    worker_capabilities = GMAIL_WORKER_CAPABILITIES
+
     def __init__(
         self,
         capabilities: GmailCapabilities | None = None,
@@ -295,12 +329,14 @@ class GmailWorkerExecutor:
         account_context: WorkerAccountContext | None = None,
     ) -> WorkerExecutionResult:
         """Execute supported Gmail capabilities without contacting Gmail."""
-        resolved_capability = capability or self._capability_for_action(action)
-        if resolved_capability in {"gmail.read", "read"}:
+        resolved_capability = self._normalized_capability(
+            capability or self._capability_for_action(action)
+        )
+        if resolved_capability == GMAIL_READ_CAPABILITY.identifier:
             capability_result = self._execute_read(action)
-        elif resolved_capability in {"gmail.send", "send"}:
+        elif resolved_capability == GMAIL_SEND_CAPABILITY.identifier:
             capability_result = self._execute_send(action)
-        elif resolved_capability in {"gmail.archive", "archive"}:
+        elif resolved_capability == GMAIL_ARCHIVE_CAPABILITY.identifier:
             capability_result = self._execute_archive(action)
         else:
             return WorkerExecutionResult(
@@ -348,20 +384,24 @@ class GmailWorkerExecutor:
             return capability.strip()
         return action.type
 
+    def _normalized_capability(self, capability: str) -> str:
+        normalized = capability.strip().casefold()
+        return _GMAIL_CAPABILITY_ALIASES.get(normalized, normalized)
+
     def _provider_request(
         self,
         action: Action,
         capability: str,
         account_context: WorkerAccountContext,
     ) -> GmailProviderRequest:
-        if capability in {"gmail.read", "read"}:
+        if capability == GMAIL_READ_CAPABILITY.identifier:
             message_id = str(action.payload.get("message_id") or "").strip()
             return GmailProviderRequest(
                 operation="read",
                 path=f"/gmail/v1/users/me/messages/{message_id}",
                 account_context=account_context,
             )
-        if capability in {"gmail.send", "send"}:
+        if capability == GMAIL_SEND_CAPABILITY.identifier:
             return GmailProviderRequest(
                 operation="send",
                 path="/gmail/v1/users/me/messages/send",

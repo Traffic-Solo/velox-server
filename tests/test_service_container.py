@@ -3,10 +3,12 @@ from apps.server.src.core.container import ApplicationContainer, get_container
 from apps.server.src.core.permission import PermissionDecision, PermissionEngine
 from apps.server.src.integrations.calendar import (
     CALENDAR_EXECUTOR_ROLE,
+    CALENDAR_WORKER_CAPABILITIES,
     CalendarWorkerExecutor,
 )
 from apps.server.src.integrations.gmail import (
     GMAIL_EXECUTOR_ROLE,
+    GMAIL_WORKER_CAPABILITIES,
     GmailArchiveCapability,
     GmailReadCapability,
     GmailSendCapability,
@@ -181,6 +183,20 @@ def test_container_registered_gmail_executor_exposes_capability_contracts() -> N
     assert isinstance(
         container.gmail_worker_executor.capabilities.archive,
         GmailArchiveCapability,
+    )
+
+
+def test_container_registers_provider_capability_declarations() -> None:
+    container = ApplicationContainer()
+
+    assert container.gmail_worker_executor.worker_capabilities == (
+        GMAIL_WORKER_CAPABILITIES
+    )
+    assert container.calendar_worker_executor.worker_capabilities == (
+        CALENDAR_WORKER_CAPABILITIES
+    )
+    assert container.worker_executor_registry.registered_capabilities() == (
+        GMAIL_WORKER_CAPABILITIES + CALENDAR_WORKER_CAPABILITIES
     )
 
 

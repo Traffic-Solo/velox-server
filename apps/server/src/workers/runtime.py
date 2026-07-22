@@ -14,7 +14,7 @@ from apps.server.src.core.action_lifecycle_repository import (
     InMemoryActionLifecycleRepository,
 )
 from apps.server.src.core.action_queue import ActionQueue
-from apps.server.src.core.actions import Action, ExecutorRole
+from apps.server.src.core.actions import Action
 from apps.server.src.workers.executor import (
     WorkerExecutionFailure,
     WorkerExecutionFailureCategory,
@@ -22,7 +22,6 @@ from apps.server.src.workers.executor import (
     WorkerExecutionStatus,
     WorkerExecutor,
     WorkerExecutorRegistry,
-    WorkerExecutorResolution,
 )
 
 logger = logging.getLogger(__name__)
@@ -185,8 +184,9 @@ class WorkerRuntime:
     ) -> None:
         self._action_queue = action_queue
         self._action_lifecycle_manager = action_lifecycle_manager
-        self._worker_executor = worker_executor
-        self._executor_registry = executor_registry
+        self._executor_registry = executor_registry or WorkerExecutorRegistry(
+            fallback_executor=worker_executor,
+        )
         self._execution_observer = execution_observer or InMemoryWorkerExecutionObserver()
         self._lifecycle_repository = (
             lifecycle_repository
@@ -254,19 +254,7 @@ class WorkerRuntime:
         )
         self._lifecycle_repository.set(action.id, lifecycle_state)
 
-        if self._executor_registry is not None:
-            resolution = self._executor_registry.resolve_with_registration(action)
-        else:
-            resolution = WorkerExecutorResolution(
-                executor=self._worker_executor,
-                requested_role=(
-                    action.executor_role.value
-                    if isinstance(action.executor_role, ExecutorRole)
-                    else action.executor_role
-                ),
-                registered=False,
-                routing_reason="runtime_direct_executor",
-            )
+        resolution = self._executor_registry.resolve_with_registration(action)
 
         requested_role = resolution.requested_role
         executor_registered = resolution.registered

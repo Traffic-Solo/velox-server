@@ -121,9 +121,38 @@ class WorkerAccountContext:
         }
 
 
+@dataclass(frozen=True, init=False)
+class WorkerCapability:
+    """Canonical normalized capability exposed by a provider."""
+
+    identifier: str
+    role: str
+    provider: str
+
+    def __init__(
+        self,
+        identifier: str,
+        role: ExecutorRole | str,
+        provider: str,
+    ) -> None:
+        normalized_identifier = _normalize_capability_identifier(identifier)
+        normalized_role = _normalize_role(role)
+        normalized_provider = _normalize_provider_identifier(provider)
+        if not normalized_identifier:
+            raise ValueError("worker capability identifier must not be empty")
+        if not normalized_role:
+            raise ValueError("worker capability role must not be empty")
+        if not normalized_provider:
+            raise ValueError("worker capability provider must not be empty")
+
+        object.__setattr__(self, "identifier", normalized_identifier)
+        object.__setattr__(self, "role", normalized_role)
+        object.__setattr__(self, "provider", normalized_provider)
+
+
 @dataclass(frozen=True)
 class WorkerCapabilityRoute:
-    """Explicit capability-provider route for a vendor-neutral executor role."""
+    """Backward-compatible capability-provider route registration input."""
 
     role: ExecutorRole | str
     capability: str
@@ -165,6 +194,10 @@ class WorkerExecutorRegistry:
             tuple[str, str, str, str | None],
             WorkerAccountContext | None,
         ] = {}
+        self._capabilities: dict[
+            tuple[str, str, str, str | None],
+            WorkerCapability,
+        ] = {}
         self._fallback_executor = fallback_executor or NoOpWorkerExecutor()
 
     def register(self, role: ExecutorRole | str, executor: WorkerExecutor) -> None:
@@ -184,16 +217,11 @@ class WorkerExecutorRegistry:
         route: WorkerCapabilityRoute,
         executor: WorkerExecutor,
     ) -> None:
-        """Register an executor for an explicit role/capability/provider route."""
+        """Register a legacy route through the canonical capability registry."""
         role = self._normalize_role(route.role)
-        capability = self._normalize_route_value(route.capability)
-        provider = self._normalize_route_value(route.provider)
+        capability = _normalize_capability_identifier(route.capability)
+        provider = _normalize_provider_identifier(route.provider)
         account_context = self._normalize_account_context(route.account_context)
-        account_key = (
-            account_context.account_identifier
-            if account_context is not None
-            else None
-        )
         if not role:
             raise ValueError("capability route role must not be empty")
         if not capability:
@@ -203,12 +231,59 @@ class WorkerExecutorRegistry:
         if route.account_context is not None and account_context is None:
             raise ValueError("capability route account context must not be empty")
 
-        route_key = (role, capability, provider, account_key)
+        self.register_capability(
+            WorkerCapability(
+                identifier=capability,
+                role=role,
+                provider=provider,
+            ),
+            executor,
+            account_context=account_context,
+        )
+
+    def register_capability(
+        self,
+        capability: WorkerCapability,
+        executor: WorkerExecutor,
+        *,
+        account_context: WorkerAccountContext | None = None,
+    ) -> None:
+        """Register one canonical provider capability and its executor."""
+        normalized_account_context = self._normalize_account_context(account_context)
+        if account_context is not None and normalized_account_context is None:
+            raise ValueError("capability account context must not be empty")
+        account_key = (
+            normalized_account_context.account_identifier
+            if normalized_account_context is not None
+            else None
+        )
+        route_key = (
+            capability.role,
+            capability.identifier,
+            capability.provider,
+            account_key,
+        )
         if route_key in self._capability_executors:
             raise ValueError("capability route is already registered")
 
         self._capability_executors[route_key] = executor
-        self._capability_account_contexts[route_key] = account_context
+        self._capability_account_contexts[route_key] = normalized_account_context
+        self._capabilities[route_key] = capability
+
+    def register_capabilities(
+        self,
+        capabilities: tuple[WorkerCapability, ...],
+        executor: WorkerExecutor,
+        *,
+        account_context: WorkerAccountContext | None = None,
+    ) -> None:
+        """Register a provider's normalized capability declarations."""
+        for capability in capabilities:
+            self.register_capability(
+                capability,
+                executor,
+                account_context=account_context,
+            )
 
     def registered_roles(self) -> tuple[str, ...]:
         """Return currently registered executor role keys."""
@@ -217,6 +292,10 @@ class WorkerExecutorRegistry:
     def registered_capability_routes(self) -> tuple[tuple[str, str, str, str | None], ...]:
         """Return currently registered capability-provider route keys."""
         return tuple(self._capability_executors.keys())
+
+    def registered_capabilities(self) -> tuple[WorkerCapability, ...]:
+        """Return canonical capabilities in registration order."""
+        return tuple(self._capabilities.values())
 
     def resolve(self, action: Action) -> WorkerExecutor:
         """Resolve the best executor for an action, falling back to no-op."""
@@ -301,11 +380,7 @@ class WorkerExecutorRegistry:
         )
 
     def _normalize_role(self, role: ExecutorRole | str | None) -> str:
-        if isinstance(role, ExecutorRole):
-            return role.value
-        if isinstance(role, str):
-            return role.strip()
-        return ""
+        return _normalize_role(role)
 
     def _normalize_route_value(self, value: Any) -> str:
         if isinstance(value, str):
@@ -339,7 +414,9 @@ class WorkerExecutorRegistry:
 
     def _capability_for_action(self, action: Action) -> _CapabilityRouteRequest:
         if "capability" in action.payload:
-            capability = self._normalize_route_value(action.payload.get("capability"))
+            capability = _normalize_capability_identifier(
+                action.payload.get("capability")
+            )
             return _CapabilityRouteRequest(
                 capability=capability or None,
                 present=True,
@@ -347,14 +424,16 @@ class WorkerExecutorRegistry:
             )
 
         if "capability" in action.metadata:
-            capability = self._normalize_route_value(action.metadata.get("capability"))
+            capability = _normalize_capability_identifier(
+                action.metadata.get("capability")
+            )
             return _CapabilityRouteRequest(
                 capability=capability or None,
                 present=True,
                 valid=bool(capability),
             )
 
-        action_type = self._normalize_route_value(action.type)
+        action_type = _normalize_capability_identifier(action.type)
         return _CapabilityRouteRequest(
             capability=action_type or None,
             present=False,
@@ -363,7 +442,7 @@ class WorkerExecutorRegistry:
 
     def _provider_for_action(self, action: Action) -> _CapabilityProviderRequest:
         if "capability_provider" in action.payload:
-            provider = self._normalize_route_value(
+            provider = _normalize_provider_identifier(
                 action.payload.get("capability_provider")
             )
             return _CapabilityProviderRequest(
@@ -373,7 +452,7 @@ class WorkerExecutorRegistry:
             )
 
         if "capability_provider" in action.metadata:
-            provider = self._normalize_route_value(
+            provider = _normalize_provider_identifier(
                 action.metadata.get("capability_provider")
             )
             return _CapabilityProviderRequest(
@@ -604,3 +683,23 @@ class WorkerExecutorRegistry:
                 route_account_key,
             ) in self._capability_executors
         )
+
+
+def _normalize_capability_identifier(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip().casefold()
+    return ""
+
+
+def _normalize_provider_identifier(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip().casefold()
+    return ""
+
+
+def _normalize_role(role: ExecutorRole | str | None) -> str:
+    if isinstance(role, ExecutorRole):
+        return role.value
+    if isinstance(role, str):
+        return role.strip()
+    return ""

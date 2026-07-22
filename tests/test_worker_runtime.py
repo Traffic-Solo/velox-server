@@ -301,7 +301,7 @@ def test_worker_runtime_records_execution_timing() -> None:
     assert duration_ms >= 0
 
 
-def test_worker_runtime_remains_backward_compatible_without_registry() -> None:
+def test_worker_runtime_routes_legacy_fallback_through_default_registry() -> None:
     queue = ActionQueue()
     action = Action(
         type="summarize_email",
@@ -321,6 +321,7 @@ def test_worker_runtime_remains_backward_compatible_without_registry() -> None:
         ExecutorRole.CONTENT_SUMMARY.value
     )
     assert result.action.metadata["worker_execution"]["executor_registered"] is False
+    assert result.action.metadata["worker_execution"]["routing_reason"] == "no_handler"
 
 
 def test_worker_runtime_applies_lifecycle_transitions() -> None:

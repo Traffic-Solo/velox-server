@@ -2,6 +2,7 @@ import socket
 
 from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.integrations.gmail import (
+    GMAIL_WORKER_CAPABILITIES,
     FakeGmailCredentialsProvider,
     FakeGmailTransportClient,
     GmailArchiveCapability,
@@ -23,6 +24,7 @@ from apps.server.src.integrations.gmail import (
 from apps.server.src.workers.executor import (
     NoOpWorkerExecutor,
     WorkerAccountContext,
+    WorkerCapability,
     WorkerCapabilityRoute,
     WorkerExecutionFailure,
     WorkerExecutionFailureCategory,
@@ -141,6 +143,38 @@ def test_worker_executor_contract_shape() -> None:
     executor = SuccessfulExecutor()
 
     assert isinstance(executor, WorkerExecutor)
+
+
+def test_worker_capability_normalizes_provider_identifiers() -> None:
+    capability = WorkerCapability(
+        identifier="  GMAIL.READ  ",
+        role=ExecutorRole.CONTENT_SUMMARY,
+        provider="  Gmail  ",
+    )
+
+    assert capability.identifier == "gmail.read"
+    assert capability.role == ExecutorRole.CONTENT_SUMMARY.value
+    assert capability.provider == "gmail"
+
+
+def test_worker_executor_registry_registers_canonical_capabilities() -> None:
+    registry = WorkerExecutorRegistry()
+    executor = SuccessfulExecutor()
+
+    registry.register_capabilities(GMAIL_WORKER_CAPABILITIES, executor)
+    action = Action(
+        type="GMAIL.READ",
+        target="gmail-message-1",
+        payload={"capability_provider": "GMAIL"},
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+
+    resolution = registry.resolve_with_registration(action)
+
+    assert registry.registered_capabilities() == GMAIL_WORKER_CAPABILITIES
+    assert resolution.executor is executor
+    assert resolution.requested_capability == "gmail.read"
+    assert resolution.matched_provider == "gmail"
 
 
 def test_gmail_worker_executor_satisfies_worker_executor_contract() -> None:
