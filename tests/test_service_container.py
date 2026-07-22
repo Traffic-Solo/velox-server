@@ -189,15 +189,46 @@ def test_container_registered_gmail_executor_exposes_capability_contracts() -> N
 def test_container_registers_provider_capability_declarations() -> None:
     container = ApplicationContainer()
 
-    assert container.gmail_worker_executor.worker_capabilities == (
+    assert container.gmail_worker_executor.provider_manifest.capabilities == (
         GMAIL_WORKER_CAPABILITIES
     )
-    assert container.calendar_worker_executor.worker_capabilities == (
+    assert container.gmail_worker_executor.provider_manifest.executor is (
+        container.gmail_worker_executor
+    )
+    assert container.gmail_worker_executor.provider_manifest.account_context == (
+        ApplicationContainer.GMAIL_ACCOUNT_CONTEXT
+    )
+    assert container.calendar_worker_executor.provider_manifest.capabilities == (
         CALENDAR_WORKER_CAPABILITIES
+    )
+    assert container.calendar_worker_executor.provider_manifest.executor is (
+        container.calendar_worker_executor
+    )
+    assert container.calendar_worker_executor.provider_manifest.account_context == (
+        ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT
     )
     assert container.worker_executor_registry.registered_capabilities() == (
         GMAIL_WORKER_CAPABILITIES + CALENDAR_WORKER_CAPABILITIES
     )
+
+
+def test_provider_worker_capabilities_are_read_only_manifest_properties() -> None:
+    container = ApplicationContainer()
+
+    assert container.gmail_worker_executor.worker_capabilities is (
+        container.gmail_worker_executor.provider_manifest.capabilities
+    )
+    assert container.calendar_worker_executor.worker_capabilities is (
+        container.calendar_worker_executor.provider_manifest.capabilities
+    )
+
+    for executor in (
+        container.gmail_worker_executor,
+        container.calendar_worker_executor,
+    ):
+        worker_capabilities_property = type(executor).worker_capabilities
+        assert isinstance(worker_capabilities_property, property)
+        assert worker_capabilities_property.fset is None
 
 
 def test_container_exposes_wired_worker_runtime() -> None:

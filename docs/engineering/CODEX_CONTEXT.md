@@ -72,6 +72,7 @@ Sprint 1 - VELOX Core Platform
 - Capability Registry Normalization
 - Legacy Capability Route Removal
 - Provider Registry Consolidation
+- Provider Manifest Extraction
 - Worker Runtime In-Memory Invocation Observability
 - Worker Runtime Exception Safety
 - Worker Executor Failure Contract
@@ -117,7 +118,7 @@ Audit Remediation Sprint (2026-07-10) is in progress. Slices in order:
 
 After the remediation sprint, continue post-harvest Google integration design without moving directly into OAuth, credentials storage, real HTTP clients or real Google API calls.
 
-Current post-harvest Google integration slice completed: Provider registry consolidation. The next slice should be selected during review and must continue to avoid OAuth, credentials storage, real HTTP clients and real Google API calls.
+Current post-harvest Google integration slice completed: Provider Manifest Extraction. The next proposed small slice is provider manifest validation hardening, limited to declarative manifest invariants and diagnostics; it must continue to avoid OAuth, credentials storage, real HTTP clients and real Google API calls.
 
 ## Current Implementation Notes
 
@@ -159,10 +160,14 @@ Current post-harvest Google integration slice completed: Provider registry conso
 - Worker executor routing now supports an explicit vendor-neutral account context contract through `WorkerAccountContext` and official action `account_context` routing fields. Capability-provider routes can be registered with account identifiers; matching requires the official `capability_provider` and `account_context` fields, fails closed for missing, invalid, unknown or ambiguous account-aware routes, and records requested/matched account context in runtime execution metadata and observations. Generic payload or metadata `provider` fields remain ignored by routing. The application container registers Gmail and Calendar bootstrap routes with separate explicit account identifiers and no hidden default account.
 - `WorkerRuntime` dispatches every execution through `WorkerExecutorResolution` and the common `WorkerExecutor.execute` contract, passing the resolved capability and registry-matched `WorkerAccountContext` without inspecting provider names or executor subtypes. It records `account_context_used` in execution metadata and observations. Full principal/account consistency is required; generic payload or metadata fields cannot replace the matched routing context.
 - Gmail read/send/archive and Calendar context-preparation worker paths consume the resolved capability and matched account context through the common executor contract, construct deterministic `GoogleProviderRequest` values inside their provider executors and execute them through the existing fake provider compositions. Provider composition rejects conflicting separately supplied context, provider failures map to the worker failure contract, and no OAuth, credential storage, HTTP client or external API behavior is introduced.
-- `WorkerCapability` is the canonical provider capability model. It normalizes capability and provider identifiers, carries the vendor-neutral executor role, and is registered through `WorkerExecutorRegistry.register_capability` or `register_capabilities`. Gmail and Calendar expose provider-owned `worker_capabilities` declarations in this shared format; `ApplicationContainer` no longer duplicates their capability strings.
+- `WorkerCapability` is the canonical provider capability model. It normalizes capability and provider identifiers and carries the vendor-neutral executor role. Gmail and Calendar retain their public `worker_capabilities` interface as a read-only property delegated to `provider_manifest.capabilities`; the manifest remains the single declarative source of registration metadata, and `ApplicationContainer` does not duplicate capability strings.
 - `WorkerRuntime` always resolves execution through `WorkerExecutorRegistry`. When callers omit an explicit registry, the supplied legacy worker executor is installed as the registry fallback, preserving standalone behavior without retaining a direct capability-resolution path. Explicit capability requests, provider selection and account-aware matching remain fail-closed.
 - The legacy `WorkerCapabilityRoute` model and `register_capability_provider` adapter have been removed. All capability registration now enters the registry through canonical `WorkerCapability` values, while account context remains a separate route binding on `register_capability` or `register_capabilities`. Resolution behavior and metadata are unchanged.
 - `WorkerExecutorRegistry` now stores each canonical provider capability, executor and account binding in one provider-registration collection. Role-only `register`, `register_role` and `registered_roles` paths have been removed, and inferred or explicit capabilities use the same provider discovery path. The standalone runtime executor remains the registry fallback rather than a discoverable provider.
+- `ProviderManifest` is the canonical frozen, vendor-neutral declaration of a provider's `WorkerCapability` values, `WorkerExecutor` and optional `WorkerAccountContext`. Gmail and Calendar construct and expose their manifests beside their provider-owned capability and account declarations. `ApplicationContainer` only instantiates each provider executor and passes its manifest to `WorkerExecutorRegistry.register_manifest`; it does not repeat capability identifiers, provider identifiers or account bindings.
+- `WorkerExecutorRegistry.register_manifest` validates all manifest routes for duplicates before reusing the existing canonical capability registration path, so a rejected manifest cannot be partially registered. Manifest and provider registration order is preserved. Low-level `register_capability` and `register_capabilities` remain available without creating a separate registration store.
+- Provider Manifest Extraction preserves provider interface compatibility through read-only manifest-backed `worker_capabilities` properties and does not change runtime behavior, the public `WorkerExecutor` API, `WorkerRuntime` execution flow, capability inference, account-aware routing, routing metadata, fallback behavior or fail-closed semantics. Gmail read/send/archive and Calendar context-preparation behavior remain unchanged.
+- Provider Manifest Extraction validation completed with `uv run ruff check apps tests`, `uv run mypy` (30 source files) and `uv run pytest -q` (348 passed, 1 warning: existing Starlette/httpx deprecation warning).
 
 ## Workflow
 

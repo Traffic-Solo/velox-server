@@ -17,6 +17,7 @@ from apps.server.src.integrations.google_provider import (
     GoogleTransportClient,
 )
 from apps.server.src.workers.executor import (
+    ProviderManifest,
     WorkerAccountContext,
     WorkerCapability,
     WorkerExecutionFailure,
@@ -51,6 +52,10 @@ GMAIL_WORKER_CAPABILITIES = (
     GMAIL_READ_CAPABILITY,
     GMAIL_SEND_CAPABILITY,
     GMAIL_ARCHIVE_CAPABILITY,
+)
+GMAIL_ACCOUNT_CONTEXT = WorkerAccountContext(
+    principal="velox-local-principal",
+    account_identifier="gmail-local-account",
 )
 _GMAIL_CAPABILITY_ALIASES = {
     "read": GMAIL_READ_CAPABILITY.identifier,
@@ -307,8 +312,6 @@ class GmailCapabilities:
 class GmailWorkerExecutor:
     """Safe Gmail executor bootstrap with no external API behavior."""
 
-    worker_capabilities = GMAIL_WORKER_CAPABILITIES
-
     def __init__(
         self,
         capabilities: GmailCapabilities | None = None,
@@ -320,6 +323,16 @@ class GmailWorkerExecutor:
             archive=InMemoryGmailArchiveCapability(),
         )
         self.provider_composition = provider_composition or GmailProviderComposition()
+        self.provider_manifest = ProviderManifest(
+            capabilities=GMAIL_WORKER_CAPABILITIES,
+            executor=self,
+            account_context=GMAIL_ACCOUNT_CONTEXT,
+        )
+
+    @property
+    def worker_capabilities(self) -> tuple[WorkerCapability, ...]:
+        """Return manifest capabilities for provider interface compatibility."""
+        return self.provider_manifest.capabilities
 
     def execute(
         self,

@@ -151,6 +151,15 @@ class WorkerCapability:
 
 
 @dataclass(frozen=True)
+class ProviderManifest:
+    """Canonical declarative registration for one provider executor."""
+
+    capabilities: tuple[WorkerCapability, ...]
+    executor: WorkerExecutor
+    account_context: WorkerAccountContext | None = None
+
+
+@dataclass(frozen=True)
 class _CapabilityRouteRequest:
     capability: str | None
     present: bool
@@ -233,6 +242,42 @@ class WorkerExecutorRegistry:
                 executor,
                 account_context=account_context,
             )
+
+    def register_manifest(self, manifest: ProviderManifest) -> None:
+        """Register one provider manifest as a canonical declarative unit."""
+        normalized_account_context = self._normalize_account_context(
+            manifest.account_context
+        )
+        if (
+            manifest.account_context is not None
+            and normalized_account_context is None
+        ):
+            raise ValueError("capability account context must not be empty")
+
+        account_key = (
+            normalized_account_context.account_identifier
+            if normalized_account_context is not None
+            else None
+        )
+        route_keys = [
+            (
+                capability.role,
+                capability.identifier,
+                capability.provider,
+                account_key,
+            )
+            for capability in manifest.capabilities
+        ]
+        if len(route_keys) != len(set(route_keys)) or any(
+            route_key in self._provider_registrations for route_key in route_keys
+        ):
+            raise ValueError("capability route is already registered")
+
+        self.register_capabilities(
+            manifest.capabilities,
+            manifest.executor,
+            account_context=normalized_account_context,
+        )
 
     def registered_capability_routes(self) -> tuple[tuple[str, str, str, str | None], ...]:
         """Return currently registered capability-provider route keys."""

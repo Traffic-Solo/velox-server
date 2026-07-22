@@ -31,11 +31,13 @@ from apps.server.src.core.permission import (
     PermissionEngineRuntime,
 )
 from apps.server.src.core.planner import BasePlanner, Planner
-from apps.server.src.integrations.calendar import CalendarWorkerExecutor
-from apps.server.src.integrations.gmail import GmailWorkerExecutor
+from apps.server.src.integrations.calendar import (
+    CALENDAR_ACCOUNT_CONTEXT,
+    CalendarWorkerExecutor,
+)
+from apps.server.src.integrations.gmail import GMAIL_ACCOUNT_CONTEXT, GmailWorkerExecutor
 from apps.server.src.workers.executor import (
     NoOpWorkerExecutor,
-    WorkerAccountContext,
     WorkerExecutor,
     WorkerExecutorRegistry,
 )
@@ -49,14 +51,8 @@ from apps.server.src.workers.runtime import (
 class ApplicationContainer:
     """Wires current in-process application services."""
 
-    GMAIL_ACCOUNT_CONTEXT = WorkerAccountContext(
-        principal="velox-local-principal",
-        account_identifier="gmail-local-account",
-    )
-    CALENDAR_ACCOUNT_CONTEXT = WorkerAccountContext(
-        principal="velox-local-principal",
-        account_identifier="calendar-local-account",
-    )
+    GMAIL_ACCOUNT_CONTEXT = GMAIL_ACCOUNT_CONTEXT
+    CALENDAR_ACCOUNT_CONTEXT = CALENDAR_ACCOUNT_CONTEXT
 
     def __init__(self) -> None:
         self.event_repository: EventRepository = EventStore()
@@ -83,16 +79,12 @@ class ApplicationContainer:
             fallback_executor=self.worker_executor,
         )
         self.gmail_worker_executor = GmailWorkerExecutor()
-        self.worker_executor_registry.register_capabilities(
-            self.gmail_worker_executor.worker_capabilities,
-            executor=self.gmail_worker_executor,
-            account_context=self.GMAIL_ACCOUNT_CONTEXT,
+        self.worker_executor_registry.register_manifest(
+            self.gmail_worker_executor.provider_manifest
         )
         self.calendar_worker_executor = CalendarWorkerExecutor()
-        self.worker_executor_registry.register_capabilities(
-            self.calendar_worker_executor.worker_capabilities,
-            executor=self.calendar_worker_executor,
-            account_context=self.CALENDAR_ACCOUNT_CONTEXT,
+        self.worker_executor_registry.register_manifest(
+            self.calendar_worker_executor.provider_manifest
         )
         self.worker_execution_observer = InMemoryWorkerExecutionObserver()
         self.worker_runtime = WorkerRuntime(

@@ -14,6 +14,7 @@ from apps.server.src.integrations.google_provider import (
     GoogleTransportClient,
 )
 from apps.server.src.workers.executor import (
+    ProviderManifest,
     WorkerAccountContext,
     WorkerCapability,
     WorkerExecutionFailure,
@@ -35,6 +36,10 @@ CALENDAR_PREPARE_CONTEXT_CAPABILITY = WorkerCapability(
 CALENDAR_WORKER_CAPABILITIES = (
     CALENDAR_PREPARE_MEETING_CAPABILITY,
     CALENDAR_PREPARE_CONTEXT_CAPABILITY,
+)
+CALENDAR_ACCOUNT_CONTEXT = WorkerAccountContext(
+    principal="velox-local-principal",
+    account_identifier="calendar-local-account",
 )
 _CALENDAR_CAPABILITY_IDENTIFIERS = frozenset(
     capability.identifier for capability in CALENDAR_WORKER_CAPABILITIES
@@ -90,8 +95,6 @@ class CalendarProviderComposition(GoogleProviderComposition):
 class CalendarWorkerExecutor:
     """Safe Calendar executor bootstrap with no external API behavior."""
 
-    worker_capabilities = CALENDAR_WORKER_CAPABILITIES
-
     def __init__(
         self,
         provider_composition: CalendarProviderComposition | None = None,
@@ -99,6 +102,16 @@ class CalendarWorkerExecutor:
         self.provider_composition = (
             provider_composition or CalendarProviderComposition()
         )
+        self.provider_manifest = ProviderManifest(
+            capabilities=CALENDAR_WORKER_CAPABILITIES,
+            executor=self,
+            account_context=CALENDAR_ACCOUNT_CONTEXT,
+        )
+
+    @property
+    def worker_capabilities(self) -> tuple[WorkerCapability, ...]:
+        """Return manifest capabilities for provider interface compatibility."""
+        return self.provider_manifest.capabilities
 
     def execute(
         self,
