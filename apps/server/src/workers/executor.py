@@ -101,6 +101,18 @@ class WorkerAccountContext:
         }
 
 
+@runtime_checkable
+class WorkerAccountContextExecutor(Protocol):
+    """Contract for executors that consume resolved provider account context."""
+
+    def execute_with_account_context(
+        self,
+        action: Action,
+        account_context: WorkerAccountContext,
+    ) -> WorkerExecutionResult:
+        """Execute using only the account context selected by routing."""
+
+
 @dataclass(frozen=True)
 class WorkerCapabilityRoute:
     """Explicit capability-provider route for a vendor-neutral executor role."""
@@ -555,6 +567,15 @@ class WorkerExecutorRegistry:
             and route_capability == capability
             and (provider is None or route_provider == provider)
             and route_account_key == account_key
+            and self._capability_account_contexts[
+                (
+                    route_role,
+                    route_capability,
+                    route_provider,
+                    route_account_key,
+                )
+            ]
+            == account_context
         ]
 
     def _has_account_specific_routes(

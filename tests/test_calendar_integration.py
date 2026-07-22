@@ -20,9 +20,15 @@ from apps.server.src.integrations.gmail import (
     GmailProviderRequest,
 )
 from apps.server.src.workers.executor import (
+    WorkerAccountContext,
     WorkerExecutionFailureCategory,
     WorkerExecutionStatus,
     WorkerExecutor,
+)
+
+CALENDAR_ACCOUNT_CONTEXT = WorkerAccountContext(
+    principal="principal-1",
+    account_identifier="calendar-account-1",
 )
 
 
@@ -63,6 +69,38 @@ def test_calendar_worker_executor_returns_safe_placeholder_result() -> None:
         "placeholder": True,
         "skipped": True,
     }
+
+
+def test_calendar_worker_executor_constructs_account_aware_provider_request() -> None:
+    action = Action(
+        type="prepare_calendar_context",
+        target="calendar-placeholder",
+        payload={"provider": "gmail", "account": "untrusted-account"},
+        executor_role=CALENDAR_EXECUTOR_ROLE,
+    )
+    executor = CalendarWorkerExecutor()
+
+    result = executor.execute_with_account_context(
+        action,
+        CALENDAR_ACCOUNT_CONTEXT,
+    )
+
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.metadata["account_context_used"] == (
+        CALENDAR_ACCOUNT_CONTEXT.as_metadata()
+    )
+    assert result.metadata["provider_request"] == {
+        "operation": "prepare_calendar_context",
+        "path": "/calendar/v3/users/me/calendarList",
+        "method": "GET",
+        "body": None,
+        "query": {},
+        "account_context": CALENDAR_ACCOUNT_CONTEXT.as_metadata(),
+    }
+    assert result.metadata["provider_response"]["integration"] == "calendar"
+    assert result.metadata["provider_response"]["account"] == (
+        "calendar-account-1"
+    )
 
 
 def test_calendar_fake_credentials_provider_returns_deterministic_credentials() -> None:

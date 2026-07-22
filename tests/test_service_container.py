@@ -288,6 +288,41 @@ def test_container_worker_runtime_routes_matching_action_to_gmail_executor() -> 
     }
 
 
+def test_container_worker_runtime_constructs_gmail_request_with_routed_account() -> None:
+    container = ApplicationContainer()
+    action = Action(
+        type="gmail.read",
+        target="event-1",
+        payload={
+            "message_id": "gmail-message-1",
+            "account_context": (
+                ApplicationContainer.GMAIL_ACCOUNT_CONTEXT.as_metadata()
+            ),
+            "provider": "calendar",
+            "account": "untrusted-account",
+        },
+        executor_role=GMAIL_EXECUTOR_ROLE,
+    )
+    container.action_queue.enqueue(action)
+
+    result = container.worker_runtime.process_next()
+
+    assert result.execution_status == WorkerExecutionStatus.SUCCEEDED
+    assert result.external_execution_performed is False
+    assert result.action is not None
+    execution_metadata = result.action.metadata["worker_execution"]
+    assert execution_metadata["matched_provider"] == "gmail"
+    assert execution_metadata["account_context_used"] == (
+        ApplicationContainer.GMAIL_ACCOUNT_CONTEXT.as_metadata()
+    )
+    assert execution_metadata["metadata"]["provider_request"][
+        "account_context"
+    ] == ApplicationContainer.GMAIL_ACCOUNT_CONTEXT.as_metadata()
+    assert execution_metadata["metadata"]["provider_response"]["account"] == (
+        ApplicationContainer.GMAIL_ACCOUNT_CONTEXT.account_identifier
+    )
+
+
 def test_container_worker_runtime_routes_matching_action_to_calendar_executor() -> None:
     container = ApplicationContainer()
     action = Action(
@@ -305,7 +340,7 @@ def test_container_worker_runtime_routes_matching_action_to_calendar_executor() 
     result = container.worker_runtime.process_next()
 
     assert result.processed is True
-    assert result.execution_status == WorkerExecutionStatus.SKIPPED
+    assert result.execution_status == WorkerExecutionStatus.SUCCEEDED
     assert result.external_execution_performed is False
     assert result.action is not None
     execution_metadata = result.action.metadata["worker_execution"]
@@ -316,12 +351,15 @@ def test_container_worker_runtime_routes_matching_action_to_calendar_executor() 
     assert execution_metadata["matched_account_context"] == (
         ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT.as_metadata()
     )
-    assert execution_metadata["metadata"] == {
-        "external_execution_performed": False,
-        "integration": "calendar",
-        "placeholder": True,
-        "skipped": True,
-    }
+    assert execution_metadata["account_context_used"] == (
+        ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT.as_metadata()
+    )
+    assert execution_metadata["metadata"]["provider_request"][
+        "account_context"
+    ] == ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT.as_metadata()
+    assert execution_metadata["metadata"]["provider_response"]["account"] == (
+        ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT.account_identifier
+    )
 
 
 def test_container_wired_worker_runtime_records_execution_observation() -> None:

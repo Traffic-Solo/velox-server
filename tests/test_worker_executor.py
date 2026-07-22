@@ -411,6 +411,38 @@ def test_gmail_provider_composition_executes_fake_credentials_and_transport() ->
     )
 
 
+def test_gmail_provider_composition_uses_request_account_context() -> None:
+    request = GmailProviderRequest(
+        operation="read",
+        path="/gmail/v1/users/me/messages/gmail-message-1",
+        account_context=TEST_ACCOUNT_CONTEXT,
+    )
+
+    response = GmailProviderComposition().execute(request)
+
+    assert response.body["principal"] == TEST_ACCOUNT_CONTEXT.principal
+    assert response.body["account"] == TEST_ACCOUNT_CONTEXT.account_identifier
+
+
+def test_gmail_provider_composition_rejects_inconsistent_account_context() -> None:
+    request = GmailProviderRequest(
+        operation="read",
+        path="/gmail/v1/users/me/messages/gmail-message-1",
+        account_context=TEST_ACCOUNT_CONTEXT,
+    )
+
+    response = GmailProviderComposition().execute(
+        request,
+        principal="principal-1",
+        account="different-account",
+    )
+
+    assert response.status_code == 400
+    assert response.failure is not None
+    assert response.failure.category == WorkerExecutionFailureCategory.PERMANENT
+    assert response.failure.metadata == {"field": "account_context"}
+
+
 def test_gmail_provider_composition_requires_account_context_safely() -> None:
     request = GmailProviderRequest(
         operation="read",
@@ -761,6 +793,33 @@ def test_gmail_worker_executor_executes_read_capability() -> None:
     assert_succeeded_without_external_execution(result)
     assert result.metadata["adapter"] == "in_memory"
     assert result.metadata["message"]["message_id"] == GMAIL_MESSAGE_ID
+
+
+def test_gmail_worker_executor_constructs_account_aware_provider_request() -> None:
+    action = gmail_content_action(
+        "gmail.read",
+        payload={
+            "message_id": GMAIL_MESSAGE_ID,
+            "provider": "calendar",
+            "account": "untrusted-account",
+        },
+    )
+    executor = GmailWorkerExecutor()
+
+    result = executor.execute_with_account_context(action, TEST_ACCOUNT_CONTEXT)
+
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.metadata["account_context_used"] == TEST_ACCOUNT_PAYLOAD
+    assert result.metadata["provider_request"] == {
+        "operation": "read",
+        "path": f"/gmail/v1/users/me/messages/{GMAIL_MESSAGE_ID}",
+        "method": "GET",
+        "body": None,
+        "query": {},
+        "account_context": TEST_ACCOUNT_PAYLOAD,
+    }
+    assert result.metadata["provider_response"]["integration"] == "gmail"
+    assert result.metadata["provider_response"]["account"] == "account-1"
 
 
 def test_gmail_worker_executor_read_does_not_fall_back_to_action_target() -> None:
@@ -1214,6 +1273,39 @@ def test_worker_executor_registry_wrong_account_context_fails_closed() -> None:
     assert resolution.matched_provider is None
     assert resolution.routing_reason == "no_handler"
     assert result.status == WorkerExecutionStatus.SKIPPED
+
+
+def test_worker_executor_registry_wrong_principal_fails_closed() -> None:
+    registry = WorkerExecutorRegistry()
+    executor = SuccessfulExecutor()
+    registry.register_capability_provider(
+        WorkerCapabilityRoute(
+            role=ExecutorRole.CONTENT_SUMMARY,
+            capability="summarize_email",
+            provider="gmail",
+            account_context=TEST_ACCOUNT_CONTEXT,
+        ),
+        executor,
+    )
+    action = Action(
+        type="summarize_email",
+        target="message-1",
+        payload={
+            "capability_provider": "gmail",
+            "account_context": {
+                "principal": "different-principal",
+                "account_identifier": "account-1",
+            },
+        },
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+
+    resolution = registry.resolve_with_registration(action)
+
+    assert isinstance(resolution.executor, NoOpWorkerExecutor)
+    assert resolution.registered is False
+    assert resolution.matched_account_context is None
+    assert resolution.routing_reason == "no_handler"
 
 
 def test_worker_executor_registry_missing_account_context_fails_closed() -> None:

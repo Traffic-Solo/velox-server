@@ -52,6 +52,26 @@ class FailureContractExecutor:
         )
 
 
+class AccountContextRecordingExecutor:
+    def __init__(self) -> None:
+        self.called_with: list[tuple[Action, WorkerAccountContext]] = []
+
+    def execute(self, action: Action) -> WorkerExecutionResult:
+        raise AssertionError("account-aware executor used without resolved context")
+
+    def execute_with_account_context(
+        self,
+        action: Action,
+        account_context: WorkerAccountContext,
+    ) -> WorkerExecutionResult:
+        self.called_with.append((action, account_context))
+        return WorkerExecutionResult(
+            action=action,
+            status=WorkerExecutionStatus.SUCCEEDED,
+            metadata={"handled_by": "account-context-recording-executor"},
+        )
+
+
 def create_runtime(
     queue: ActionQueue,
     executor: WorkerExecutor | None = None,
@@ -199,6 +219,54 @@ def test_worker_runtime_records_provider_account_routing_metadata() -> None:
         account_context.as_metadata()
     )
     assert execution_metadata["observation"]["matched_account_context"] == (
+        account_context.as_metadata()
+    )
+
+
+def test_worker_runtime_passes_only_matched_account_context_to_executor() -> None:
+    queue = ActionQueue()
+    account_context = WorkerAccountContext(
+        principal="principal-1",
+        account_identifier="account-1",
+    )
+    action = Action(
+        type="summarize",
+        target="message-1",
+        payload={
+            "capability_provider": "gmail",
+            "account_context": account_context.as_metadata(),
+            "provider": "calendar",
+        },
+        metadata={"account": "untrusted-account"},
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+    queue.enqueue(action)
+    fallback_executor = RecordingExecutor(result_status=WorkerExecutionStatus.FAILED)
+    registered_executor = AccountContextRecordingExecutor()
+    executor_registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
+    executor_registry.register_capability_provider(
+        WorkerCapabilityRoute(
+            role=ExecutorRole.CONTENT_SUMMARY,
+            capability="summarize",
+            provider="gmail",
+            account_context=account_context,
+        ),
+        registered_executor,
+    )
+    runtime = WorkerRuntime(
+        action_queue=queue,
+        action_lifecycle_manager=ActionLifecycleManager(),
+        worker_executor=fallback_executor,
+        executor_registry=executor_registry,
+    )
+
+    result = runtime.process_next()
+
+    assert registered_executor.called_with == [(action, account_context)]
+    assert result.action is not None
+    execution_metadata = result.action.metadata["worker_execution"]
+    assert execution_metadata["account_context_used"] == account_context.as_metadata()
+    assert execution_metadata["observation"]["account_context_used"] == (
         account_context.as_metadata()
     )
 

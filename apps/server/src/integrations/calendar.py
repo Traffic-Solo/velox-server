@@ -14,6 +14,8 @@ from apps.server.src.integrations.google_provider import (
     GoogleTransportClient,
 )
 from apps.server.src.workers.executor import (
+    WorkerAccountContext,
+    WorkerExecutionFailure,
     WorkerExecutionResult,
     WorkerExecutionStatus,
 )
@@ -91,3 +93,74 @@ class CalendarWorkerExecutor:
                 "skipped": True,
             },
         )
+
+    def execute_with_account_context(
+        self,
+        action: Action,
+        account_context: WorkerAccountContext,
+    ) -> WorkerExecutionResult:
+        """Construct and execute a fake provider request with routed context."""
+        if action.type not in {"prepare_meeting", "prepare_calendar_context"}:
+            return self.execute(action)
+
+        request = CalendarProviderRequest(
+            operation=action.type,
+            path="/calendar/v3/users/me/calendarList",
+            account_context=account_context,
+        )
+        response = self.provider_composition.execute(request)
+        if response.failure is not None:
+            failure = response.failure
+            return WorkerExecutionResult(
+                action=action,
+                status=WorkerExecutionStatus.FAILED,
+                reason=failure.message,
+                metadata={
+                    "external_execution_performed": False,
+                    "integration": "calendar",
+                    "account_context_used": account_context.as_metadata(),
+                    "provider_request": _calendar_provider_request_metadata(request),
+                    "provider_response": dict(response.body),
+                },
+                failure=WorkerExecutionFailure(
+                    category=failure.category,
+                    message=failure.message,
+                    metadata={
+                        **failure.metadata,
+                        "provider_status_code": response.status_code,
+                        "provider_reason": failure.provider_reason,
+                        "retryable": failure.retryable,
+                    },
+                ),
+            )
+
+        return WorkerExecutionResult(
+            action=action,
+            status=WorkerExecutionStatus.SUCCEEDED,
+            reason="calendar provider request constructed",
+            metadata={
+                "external_execution_performed": False,
+                "integration": "calendar",
+                "adapter": "fake_transport",
+                "account_context_used": account_context.as_metadata(),
+                "provider_request": _calendar_provider_request_metadata(request),
+                "provider_response": dict(response.body),
+            },
+        )
+
+
+def _calendar_provider_request_metadata(
+    request: CalendarProviderRequest,
+) -> dict[str, object]:
+    return {
+        "operation": request.operation,
+        "path": request.path,
+        "method": request.method,
+        "body": request.body,
+        "query": dict(request.query),
+        "account_context": (
+            request.account_context.as_metadata()
+            if request.account_context is not None
+            else None
+        ),
+    }

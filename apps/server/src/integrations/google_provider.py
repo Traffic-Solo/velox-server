@@ -12,7 +12,10 @@ API behavior.
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-from apps.server.src.workers.executor import WorkerExecutionFailureCategory
+from apps.server.src.workers.executor import (
+    WorkerAccountContext,
+    WorkerExecutionFailureCategory,
+)
 
 
 @dataclass(frozen=True)
@@ -35,6 +38,7 @@ class GoogleProviderRequest:
     method: str = "GET"
     body: dict[str, Any] | None = None
     query: dict[str, Any] = field(default_factory=dict)
+    account_context: WorkerAccountContext | None = None
 
 
 @dataclass(frozen=True)
@@ -210,10 +214,40 @@ class GoogleProviderComposition:
     def execute(
         self,
         request: GoogleProviderRequest,
-        principal: str | None,
-        account: str | None,
+        principal: str | None = None,
+        account: str | None = None,
     ) -> GoogleProviderResponse:
         """Resolve fake credentials and execute the fake transport safely."""
+        if request.account_context is not None:
+            request_principal = request.account_context.principal
+            request_account = request.account_context.account_identifier
+            supplied_principal = principal.strip() if isinstance(principal, str) else None
+            supplied_account = account.strip() if isinstance(account, str) else None
+            if (
+                supplied_principal is not None
+                and supplied_principal != request_principal
+            ) or (
+                supplied_account is not None and supplied_account != request_account
+            ):
+                failure = GoogleProviderFailure(
+                    category=WorkerExecutionFailureCategory.PERMANENT,
+                    message=f"{self.service} provider request account context mismatch",
+                    metadata={"field": "account_context"},
+                )
+                return GoogleProviderResponse(
+                    status_code=400,
+                    body={
+                        "external_execution_performed": False,
+                        "integration": self.service,
+                        "adapter": "fake_provider_composition",
+                        "operation": request.operation,
+                        "failed": True,
+                    },
+                    failure=failure,
+                )
+            principal = request_principal
+            account = request_account
+
         try:
             credentials = self.credentials_provider.get_credentials(
                 principal=principal,

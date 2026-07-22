@@ -17,6 +17,7 @@ from apps.server.src.integrations.google_provider import (
     GoogleTransportClient,
 )
 from apps.server.src.workers.executor import (
+    WorkerAccountContext,
     WorkerExecutionFailure,
     WorkerExecutionFailureCategory,
     WorkerExecutionResult,
@@ -274,12 +275,17 @@ class GmailCapabilities:
 class GmailWorkerExecutor:
     """Safe Gmail executor bootstrap with no external API behavior."""
 
-    def __init__(self, capabilities: GmailCapabilities | None = None) -> None:
+    def __init__(
+        self,
+        capabilities: GmailCapabilities | None = None,
+        provider_composition: GmailProviderComposition | None = None,
+    ) -> None:
         self.capabilities = capabilities or GmailCapabilities(
             read=InMemoryGmailReadCapability(),
             send=InMemoryGmailSendCapability(),
             archive=InMemoryGmailArchiveCapability(),
         )
+        self.provider_composition = provider_composition or GmailProviderComposition()
 
     def execute(self, action: Action) -> WorkerExecutionResult:
         """Execute supported Gmail capabilities without contacting Gmail."""
@@ -303,6 +309,70 @@ class GmailWorkerExecutor:
                 "placeholder": True,
                 "skipped": True,
             },
+        )
+
+    def execute_with_account_context(
+        self,
+        action: Action,
+        account_context: WorkerAccountContext,
+    ) -> WorkerExecutionResult:
+        """Construct and execute a fake provider request with routed context."""
+        capability_result = self.execute(action)
+        if capability_result.status != WorkerExecutionStatus.SUCCEEDED:
+            return capability_result
+
+        request = self._provider_request(action, account_context)
+        response = self.provider_composition.execute(request)
+        if response.failure is not None:
+            return _gmail_provider_failure_result(action, request, response)
+
+        return WorkerExecutionResult(
+            action=action,
+            status=capability_result.status,
+            reason=capability_result.reason,
+            metadata={
+                **capability_result.metadata,
+                "account_context_used": account_context.as_metadata(),
+                "provider_request": _gmail_provider_request_metadata(request),
+                "provider_response": dict(response.body),
+            },
+        )
+
+    def _provider_request(
+        self,
+        action: Action,
+        account_context: WorkerAccountContext,
+    ) -> GmailProviderRequest:
+        if action.type == "gmail.read" or action.payload.get("capability") == "read":
+            message_id = str(action.payload.get("message_id") or "").strip()
+            return GmailProviderRequest(
+                operation="read",
+                path=f"/gmail/v1/users/me/messages/{message_id}",
+                account_context=account_context,
+            )
+        if action.type == "gmail.send" or action.payload.get("capability") == "send":
+            return GmailProviderRequest(
+                operation="send",
+                path="/gmail/v1/users/me/messages/send",
+                method="POST",
+                body={
+                    "to": _normalize_recipients(action.payload.get("to")),
+                    "subject": str(action.payload.get("subject") or "").strip(),
+                    "body": str(action.payload.get("body") or "").strip(),
+                    "cc": _normalize_recipients(action.payload.get("cc")),
+                    "bcc": _normalize_recipients(action.payload.get("bcc")),
+                    "thread_id": action.payload.get("thread_id"),
+                },
+                account_context=account_context,
+            )
+
+        message_id = str(action.payload.get("message_id") or "").strip()
+        return GmailProviderRequest(
+            operation="archive",
+            path=f"/gmail/v1/users/me/messages/{message_id}/modify",
+            method="POST",
+            body={"remove_label_ids": ("INBOX",)},
+            account_context=account_context,
         )
 
     def _execute_read(self, action: Action) -> WorkerExecutionResult:
@@ -428,5 +498,60 @@ def _gmail_capability_failure_result(
             category=WorkerExecutionFailureCategory.PERMANENT,
             message=reason,
             metadata={"field": field},
+        ),
+    )
+
+
+def _gmail_provider_request_metadata(
+    request: GmailProviderRequest,
+) -> dict[str, Any]:
+    return {
+        "operation": request.operation,
+        "path": request.path,
+        "method": request.method,
+        "body": request.body,
+        "query": dict(request.query),
+        "account_context": (
+            request.account_context.as_metadata()
+            if request.account_context is not None
+            else None
+        ),
+    }
+
+
+def _gmail_provider_failure_result(
+    action: Action,
+    request: GmailProviderRequest,
+    response: GmailProviderResponse,
+) -> WorkerExecutionResult:
+    failure = response.failure
+    if failure is None:
+        raise ValueError("gmail provider failure response must include failure details")
+
+    return WorkerExecutionResult(
+        action=action,
+        status=WorkerExecutionStatus.FAILED,
+        reason=failure.message,
+        metadata={
+            "external_execution_performed": False,
+            "integration": "gmail",
+            "capability": request.operation,
+            "account_context_used": (
+                request.account_context.as_metadata()
+                if request.account_context is not None
+                else None
+            ),
+            "provider_request": _gmail_provider_request_metadata(request),
+            "provider_response": dict(response.body),
+        },
+        failure=WorkerExecutionFailure(
+            category=failure.category,
+            message=failure.message,
+            metadata={
+                **failure.metadata,
+                "provider_status_code": response.status_code,
+                "provider_reason": failure.provider_reason,
+                "retryable": failure.retryable,
+            },
         ),
     )

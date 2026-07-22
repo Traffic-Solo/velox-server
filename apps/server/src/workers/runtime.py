@@ -16,6 +16,7 @@ from apps.server.src.core.action_lifecycle_repository import (
 from apps.server.src.core.action_queue import ActionQueue
 from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.workers.executor import (
+    WorkerAccountContextExecutor,
     WorkerExecutionFailure,
     WorkerExecutionFailureCategory,
     WorkerExecutionResult,
@@ -40,6 +41,7 @@ class WorkerExecutionObservation:
     matched_provider: str | None
     requested_account_context: dict[str, str | None] | None
     matched_account_context: dict[str, str | None] | None
+    account_context_used: dict[str, str | None] | None
     routing_reason: str | None
     status: str
     started_at: datetime
@@ -62,6 +64,7 @@ class WorkerExecutionObservation:
             "matched_provider": self.matched_provider,
             "requested_account_context": self.requested_account_context,
             "matched_account_context": self.matched_account_context,
+            "account_context_used": self.account_context_used,
             "routing_reason": self.routing_reason,
             "status": self.status,
             "started_at": self.started_at.isoformat(),
@@ -92,6 +95,7 @@ class InMemoryWorkerExecutionObserver:
         matched_provider: str | None = None,
         requested_account_context: dict[str, str | None] | None = None,
         matched_account_context: dict[str, str | None] | None = None,
+        account_context_used: dict[str, str | None] | None = None,
         routing_reason: str | None = None,
     ) -> WorkerExecutionObservation:
         """Record execution start."""
@@ -105,6 +109,7 @@ class InMemoryWorkerExecutionObserver:
             matched_provider=matched_provider,
             requested_account_context=requested_account_context,
             matched_account_context=matched_account_context,
+            account_context_used=account_context_used,
             routing_reason=routing_reason,
             status="started",
             started_at=datetime.now(UTC),
@@ -267,6 +272,7 @@ class WorkerRuntime:
                 if resolution.matched_account_context is not None
                 else None
             )
+            matched_account_context_value = resolution.matched_account_context
             routing_reason = resolution.routing_reason
         else:
             executor = self._worker_executor
@@ -281,7 +287,16 @@ class WorkerRuntime:
             matched_provider = None
             requested_account_context = None
             matched_account_context = None
+            matched_account_context_value = None
             routing_reason = "runtime_direct_executor"
+
+        account_context_used: dict[str, str | None] | None = None
+        if isinstance(executor, WorkerAccountContextExecutor):
+            account_context_used = (
+                matched_account_context_value.as_metadata()
+                if matched_account_context_value is not None
+                else None
+            )
 
         if requested_role is not None and not executor_registered:
             logger.warning(
@@ -301,11 +316,21 @@ class WorkerRuntime:
             matched_provider=matched_provider,
             requested_account_context=requested_account_context,
             matched_account_context=matched_account_context,
+            account_context_used=account_context_used,
             routing_reason=routing_reason,
         )
         started_monotonic = perf_counter()
         try:
-            execution_result = executor.execute(action)
+            if isinstance(executor, WorkerAccountContextExecutor):
+                if matched_account_context_value is None:
+                    execution_result = self._missing_account_context_result(action)
+                else:
+                    execution_result = executor.execute_with_account_context(
+                        action,
+                        matched_account_context_value,
+                    )
+            else:
+                execution_result = executor.execute(action)
         except Exception as exc:
             logger.exception(
                 "executor raised while executing action %s (%s)",
@@ -413,6 +438,7 @@ class WorkerRuntime:
                 "matched_provider": matched_provider,
                 "requested_account_context": requested_account_context,
                 "matched_account_context": matched_account_context,
+                "account_context_used": account_context_used,
                 "routing_reason": routing_reason,
                 "started_at": observation.started_at.isoformat(),
                 "finished_at": observation.finished_at.isoformat()
@@ -436,6 +462,20 @@ class WorkerRuntime:
             execution_reason=execution_result.reason,
             processed=True,
             external_execution_performed=external_execution_performed,
+        )
+
+    def _missing_account_context_result(self, action: Action) -> WorkerExecutionResult:
+        reason = "account-aware executor missing resolved account context"
+        return WorkerExecutionResult(
+            action=action,
+            status=WorkerExecutionStatus.FAILED,
+            reason=reason,
+            metadata={"external_execution_performed": False},
+            failure=WorkerExecutionFailure(
+                category=WorkerExecutionFailureCategory.PERMANENT,
+                message=reason,
+                metadata={"field": "account_context"},
+            ),
         )
 
     def _failure_for_result(
