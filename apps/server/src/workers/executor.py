@@ -171,36 +171,22 @@ class _AccountContextRequest:
     valid: bool
 
 
+@dataclass(frozen=True)
+class _WorkerProviderRegistration:
+    capability: WorkerCapability
+    executor: WorkerExecutor
+    account_context: WorkerAccountContext | None
+
+
 class WorkerExecutorRegistry:
     """Vendor-neutral registry for resolving action executors."""
 
     def __init__(self, fallback_executor: WorkerExecutor | None = None) -> None:
-        self._executors: dict[str, WorkerExecutor] = {}
-        self._capability_executors: dict[
+        self._provider_registrations: dict[
             tuple[str, str, str, str | None],
-            WorkerExecutor,
-        ] = {}
-        self._capability_account_contexts: dict[
-            tuple[str, str, str, str | None],
-            WorkerAccountContext | None,
-        ] = {}
-        self._capabilities: dict[
-            tuple[str, str, str, str | None],
-            WorkerCapability,
+            _WorkerProviderRegistration,
         ] = {}
         self._fallback_executor = fallback_executor or NoOpWorkerExecutor()
-
-    def register(self, role: ExecutorRole | str, executor: WorkerExecutor) -> None:
-        """Register an executor for a vendor-neutral role."""
-        normalized_key = self._normalize_role(role)
-        if not normalized_key:
-            raise ValueError("executor registry role must not be empty")
-
-        self._executors[normalized_key] = executor
-
-    def register_role(self, role: ExecutorRole, executor: WorkerExecutor) -> None:
-        """Register an executor for an explicit vendor-neutral executor role."""
-        self.register(role, executor)
 
     def register_capability(
         self,
@@ -224,12 +210,14 @@ class WorkerExecutorRegistry:
             capability.provider,
             account_key,
         )
-        if route_key in self._capability_executors:
+        if route_key in self._provider_registrations:
             raise ValueError("capability route is already registered")
 
-        self._capability_executors[route_key] = executor
-        self._capability_account_contexts[route_key] = normalized_account_context
-        self._capabilities[route_key] = capability
+        self._provider_registrations[route_key] = _WorkerProviderRegistration(
+            capability=capability,
+            executor=executor,
+            account_context=normalized_account_context,
+        )
 
     def register_capabilities(
         self,
@@ -246,17 +234,16 @@ class WorkerExecutorRegistry:
                 account_context=account_context,
             )
 
-    def registered_roles(self) -> tuple[str, ...]:
-        """Return currently registered executor role keys."""
-        return tuple(self._executors.keys())
-
     def registered_capability_routes(self) -> tuple[tuple[str, str, str, str | None], ...]:
         """Return currently registered capability-provider route keys."""
-        return tuple(self._capability_executors.keys())
+        return tuple(self._provider_registrations.keys())
 
     def registered_capabilities(self) -> tuple[WorkerCapability, ...]:
         """Return canonical capabilities in registration order."""
-        return tuple(self._capabilities.values())
+        return tuple(
+            registration.capability
+            for registration in self._provider_registrations.values()
+        )
 
     def resolve(self, action: Action) -> WorkerExecutor:
         """Resolve the best executor for an action, falling back to no-op."""
@@ -264,7 +251,7 @@ class WorkerExecutorRegistry:
 
     def resolve_with_registration(self, action: Action) -> WorkerExecutorResolution:
         """Resolve an executor and expose whether the requested role was registered."""
-        role = self._normalize_role(action.executor_role)
+        role = _normalize_role(action.executor_role)
         if not role:
             return WorkerExecutorResolution(
                 executor=self._fallback_executor,
@@ -318,30 +305,15 @@ class WorkerExecutorRegistry:
         if capability_resolution is not None:
             return capability_resolution
 
-        if capability_request.present:
-            return WorkerExecutorResolution(
-                executor=self._fallback_executor,
-                requested_role=role,
-                registered=False,
-                requested_capability=capability_request.capability,
-                requested_provider=provider_request.provider,
-                requested_account_context=account_context_request.account_context,
-                routing_reason="no_handler",
-            )
-
-        executor = self._executors.get(role)
         return WorkerExecutorResolution(
-            executor=executor or self._fallback_executor,
+            executor=self._fallback_executor,
             requested_role=role,
-            registered=executor is not None,
+            registered=False,
             requested_capability=capability_request.capability,
             requested_provider=provider_request.provider,
             requested_account_context=account_context_request.account_context,
-            routing_reason="legacy_role_route" if executor is not None else "no_handler",
+            routing_reason="no_handler",
         )
-
-    def _normalize_role(self, role: ExecutorRole | str | None) -> str:
-        return _normalize_role(role)
 
     def _normalize_route_value(self, value: Any) -> str:
         if isinstance(value, str):
@@ -594,36 +566,23 @@ class WorkerExecutorRegistry:
         )
         return [
             (
-                route_provider,
-                self._capability_account_contexts[
-                    (
-                        route_role,
-                        route_capability,
-                        route_provider,
-                        route_account_key,
-                    )
-                ],
-                executor,
+                registration.capability.provider,
+                registration.account_context,
+                registration.executor,
             )
-            for (
-                route_role,
-                route_capability,
-                route_provider,
-                route_account_key,
-            ), executor in self._capability_executors.items()
-            if route_role == role
-            and route_capability == capability
-            and (provider is None or route_provider == provider)
-            and route_account_key == account_key
-            and self._capability_account_contexts[
-                (
-                    route_role,
-                    route_capability,
-                    route_provider,
-                    route_account_key,
-                )
-            ]
-            == account_context
+            for registration in self._provider_registrations.values()
+            if registration.capability.role == role
+            and registration.capability.identifier == capability
+            and (
+                provider is None or registration.capability.provider == provider
+            )
+            and (
+                registration.account_context.account_identifier
+                if registration.account_context is not None
+                else None
+            )
+            == account_key
+            and registration.account_context == account_context
         ]
 
     def _has_account_specific_routes(
@@ -633,16 +592,13 @@ class WorkerExecutorRegistry:
         provider: str | None,
     ) -> bool:
         return any(
-            route_role == role
-            and route_capability == capability
-            and (provider is None or route_provider == provider)
-            and route_account_key is not None
-            for (
-                route_role,
-                route_capability,
-                route_provider,
-                route_account_key,
-            ) in self._capability_executors
+            registration.capability.role == role
+            and registration.capability.identifier == capability
+            and (
+                provider is None or registration.capability.provider == provider
+            )
+            and registration.account_context is not None
+            for registration in self._provider_registrations.values()
         )
 
 

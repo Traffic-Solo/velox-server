@@ -142,7 +142,14 @@ def test_worker_runtime_uses_registry_resolved_executor() -> None:
     fallback_executor = RecordingExecutor(result_status=WorkerExecutionStatus.FAILED)
     registered_executor = RecordingExecutor(result_status=WorkerExecutionStatus.SUCCEEDED)
     executor_registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
-    executor_registry.register(ExecutorRole.CONTEXT_PREPARATION, registered_executor)
+    executor_registry.register_capability(
+        WorkerCapability(
+            identifier="prepare_meeting",
+            role=ExecutorRole.CONTEXT_PREPARATION,
+            provider="test",
+        ),
+        registered_executor,
+    )
     runtime = WorkerRuntime(
         action_queue=queue,
         action_lifecycle_manager=ActionLifecycleManager(),
@@ -168,7 +175,14 @@ def test_worker_runtime_records_execution_metadata_for_registered_role() -> None
     fallback_executor = RecordingExecutor(result_status=WorkerExecutionStatus.FAILED)
     registered_executor = RecordingExecutor(result_status=WorkerExecutionStatus.SUCCEEDED)
     executor_registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
-    executor_registry.register_role(ExecutorRole.CONTEXT_PREPARATION, registered_executor)
+    executor_registry.register_capability(
+        WorkerCapability(
+            identifier="prepare_meeting",
+            role=ExecutorRole.CONTEXT_PREPARATION,
+            provider="test",
+        ),
+        registered_executor,
+    )
     runtime = WorkerRuntime(
         action_queue=queue,
         action_lifecycle_manager=ActionLifecycleManager(),
