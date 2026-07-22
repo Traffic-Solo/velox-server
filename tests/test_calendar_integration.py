@@ -80,9 +80,10 @@ def test_calendar_worker_executor_constructs_account_aware_provider_request() ->
     )
     executor = CalendarWorkerExecutor()
 
-    result = executor.execute_with_account_context(
+    result = executor.execute(
         action,
-        CALENDAR_ACCOUNT_CONTEXT,
+        capability="prepare_calendar_context",
+        account_context=CALENDAR_ACCOUNT_CONTEXT,
     )
 
     assert result.status == WorkerExecutionStatus.SUCCEEDED

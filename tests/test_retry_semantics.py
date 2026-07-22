@@ -15,6 +15,7 @@ from apps.server.src.core.container import get_container
 from apps.server.src.core.events import UniversalEvent
 from apps.server.src.main import app
 from apps.server.src.workers.executor import (
+    WorkerAccountContext,
     WorkerExecutionFailure,
     WorkerExecutionFailureCategory,
     WorkerExecutionResult,
@@ -42,7 +43,13 @@ class FlakyExecutor:
     def __init__(self, failures_before_success: int) -> None:
         self._remaining_failures = failures_before_success
 
-    def execute(self, action: Action) -> WorkerExecutionResult:
+    def execute(
+        self,
+        action: Action,
+        *,
+        capability: str | None = None,
+        account_context: WorkerAccountContext | None = None,
+    ) -> WorkerExecutionResult:
         if self._remaining_failures > 0:
             self._remaining_failures -= 1
             return WorkerExecutionResult(
@@ -63,7 +70,13 @@ class FlakyExecutor:
 
 
 class AlwaysPermanentFailureExecutor:
-    def execute(self, action: Action) -> WorkerExecutionResult:
+    def execute(
+        self,
+        action: Action,
+        *,
+        capability: str | None = None,
+        account_context: WorkerAccountContext | None = None,
+    ) -> WorkerExecutionResult:
         return WorkerExecutionResult(
             action=action,
             status=WorkerExecutionStatus.FAILED,

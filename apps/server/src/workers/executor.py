@@ -57,12 +57,26 @@ class WorkerExecutorResolution:
     matched_account_context: "WorkerAccountContext | None" = None
     routing_reason: str | None = None
 
+    def execute(self, action: Action) -> WorkerExecutionResult:
+        """Execute through the resolved capability and account route."""
+        return self.executor.execute(
+            action,
+            capability=self.requested_capability if self.registered else None,
+            account_context=self.matched_account_context,
+        )
+
 
 @runtime_checkable
 class WorkerExecutor(Protocol):
     """Contract for role-compatible action executors."""
 
-    def execute(self, action: Action) -> WorkerExecutionResult:
+    def execute(
+        self,
+        action: Action,
+        *,
+        capability: str | None = None,
+        account_context: "WorkerAccountContext | None" = None,
+    ) -> WorkerExecutionResult:
         """Execute an action and return an explicit execution result."""
 
 
@@ -73,7 +87,13 @@ class NoOpWorkerExecutor:
     for a no-op would hide unhandled actions (Nothing Dies Silently).
     """
 
-    def execute(self, action: Action) -> WorkerExecutionResult:
+    def execute(
+        self,
+        action: Action,
+        *,
+        capability: str | None = None,
+        account_context: "WorkerAccountContext | None" = None,
+    ) -> WorkerExecutionResult:
         """Return an explicit skipped no-op execution result."""
         return WorkerExecutionResult(
             action=action,
@@ -99,18 +119,6 @@ class WorkerAccountContext:
             "principal": self.principal,
             "account_identifier": self.account_identifier,
         }
-
-
-@runtime_checkable
-class WorkerAccountContextExecutor(Protocol):
-    """Contract for executors that consume resolved provider account context."""
-
-    def execute_with_account_context(
-        self,
-        action: Action,
-        account_context: WorkerAccountContext,
-    ) -> WorkerExecutionResult:
-        """Execute using only the account context selected by routing."""
 
 
 @dataclass(frozen=True)

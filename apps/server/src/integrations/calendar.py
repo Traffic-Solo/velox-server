@@ -80,8 +80,24 @@ class CalendarWorkerExecutor:
             provider_composition or CalendarProviderComposition()
         )
 
-    def execute(self, action: Action) -> WorkerExecutionResult:
+    def execute(
+        self,
+        action: Action,
+        *,
+        capability: str | None = None,
+        account_context: WorkerAccountContext | None = None,
+    ) -> WorkerExecutionResult:
         """Return a safe Calendar placeholder without contacting Google Calendar."""
+        if account_context is not None and capability in {
+            "prepare_meeting",
+            "prepare_calendar_context",
+        }:
+            return self._execute_provider_request(
+                action,
+                capability,
+                account_context,
+            )
+
         return WorkerExecutionResult(
             action=action,
             status=WorkerExecutionStatus.SKIPPED,
@@ -94,17 +110,14 @@ class CalendarWorkerExecutor:
             },
         )
 
-    def execute_with_account_context(
+    def _execute_provider_request(
         self,
         action: Action,
+        capability: str,
         account_context: WorkerAccountContext,
     ) -> WorkerExecutionResult:
-        """Construct and execute a fake provider request with routed context."""
-        if action.type not in {"prepare_meeting", "prepare_calendar_context"}:
-            return self.execute(action)
-
         request = CalendarProviderRequest(
-            operation=action.type,
+            operation=capability,
             path="/calendar/v3/users/me/calendarList",
             account_context=account_context,
         )

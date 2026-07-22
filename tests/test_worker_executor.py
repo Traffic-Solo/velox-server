@@ -43,7 +43,13 @@ TEST_ACCOUNT_PAYLOAD = {
 
 
 class SuccessfulExecutor:
-    def execute(self, action: Action) -> WorkerExecutionResult:
+    def execute(
+        self,
+        action: Action,
+        *,
+        capability: str | None = None,
+        account_context: WorkerAccountContext | None = None,
+    ) -> WorkerExecutionResult:
         return WorkerExecutionResult(
             action=action,
             status=WorkerExecutionStatus.SUCCEEDED,
@@ -52,7 +58,13 @@ class SuccessfulExecutor:
 
 
 class FailedExecutor:
-    def execute(self, action: Action) -> WorkerExecutionResult:
+    def execute(
+        self,
+        action: Action,
+        *,
+        capability: str | None = None,
+        account_context: WorkerAccountContext | None = None,
+    ) -> WorkerExecutionResult:
         return WorkerExecutionResult(
             action=action,
             status=WorkerExecutionStatus.FAILED,
@@ -806,7 +818,11 @@ def test_gmail_worker_executor_constructs_account_aware_provider_request() -> No
     )
     executor = GmailWorkerExecutor()
 
-    result = executor.execute_with_account_context(action, TEST_ACCOUNT_CONTEXT)
+    result = executor.execute(
+        action,
+        capability="gmail.read",
+        account_context=TEST_ACCOUNT_CONTEXT,
+    )
 
     assert result.status == WorkerExecutionStatus.SUCCEEDED
     assert result.metadata["account_context_used"] == TEST_ACCOUNT_PAYLOAD

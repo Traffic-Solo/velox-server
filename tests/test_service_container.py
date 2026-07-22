@@ -13,6 +13,7 @@ from apps.server.src.integrations.gmail import (
     GmailWorkerExecutor,
 )
 from apps.server.src.workers.executor import (
+    WorkerAccountContext,
     WorkerCapabilityRoute,
     WorkerExecutionResult,
     WorkerExecutionStatus,
@@ -23,7 +24,13 @@ class ContainerRecordingExecutor:
     def __init__(self) -> None:
         self.called_actions: list[Action] = []
 
-    def execute(self, action: Action) -> WorkerExecutionResult:
+    def execute(
+        self,
+        action: Action,
+        *,
+        capability: str | None = None,
+        account_context: WorkerAccountContext | None = None,
+    ) -> WorkerExecutionResult:
         self.called_actions.append(action)
         return WorkerExecutionResult(
             action=action,

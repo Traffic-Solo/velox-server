@@ -287,41 +287,45 @@ class GmailWorkerExecutor:
         )
         self.provider_composition = provider_composition or GmailProviderComposition()
 
-    def execute(self, action: Action) -> WorkerExecutionResult:
-        """Execute supported Gmail capabilities without contacting Gmail."""
-        if action.type == "gmail.read" or action.payload.get("capability") == "read":
-            return self._execute_read(action)
-        if action.type == "gmail.send" or action.payload.get("capability") == "send":
-            return self._execute_send(action)
-        if (
-            action.type == "gmail.archive"
-            or action.payload.get("capability") == "archive"
-        ):
-            return self._execute_archive(action)
-
-        return WorkerExecutionResult(
-            action=action,
-            status=WorkerExecutionStatus.SKIPPED,
-            reason="gmail executor has no capability for this action type",
-            metadata={
-                "external_execution_performed": False,
-                "integration": "gmail",
-                "placeholder": True,
-                "skipped": True,
-            },
-        )
-
-    def execute_with_account_context(
+    def execute(
         self,
         action: Action,
-        account_context: WorkerAccountContext,
+        *,
+        capability: str | None = None,
+        account_context: WorkerAccountContext | None = None,
     ) -> WorkerExecutionResult:
-        """Construct and execute a fake provider request with routed context."""
-        capability_result = self.execute(action)
-        if capability_result.status != WorkerExecutionStatus.SUCCEEDED:
+        """Execute supported Gmail capabilities without contacting Gmail."""
+        resolved_capability = capability or self._capability_for_action(action)
+        if resolved_capability in {"gmail.read", "read"}:
+            capability_result = self._execute_read(action)
+        elif resolved_capability in {"gmail.send", "send"}:
+            capability_result = self._execute_send(action)
+        elif resolved_capability in {"gmail.archive", "archive"}:
+            capability_result = self._execute_archive(action)
+        else:
+            return WorkerExecutionResult(
+                action=action,
+                status=WorkerExecutionStatus.SKIPPED,
+                reason="gmail executor has no capability for this action type",
+                metadata={
+                    "external_execution_performed": False,
+                    "integration": "gmail",
+                    "placeholder": True,
+                    "skipped": True,
+                },
+            )
+
+        if (
+            account_context is None
+            or capability_result.status != WorkerExecutionStatus.SUCCEEDED
+        ):
             return capability_result
 
-        request = self._provider_request(action, account_context)
+        request = self._provider_request(
+            action,
+            resolved_capability,
+            account_context,
+        )
         response = self.provider_composition.execute(request)
         if response.failure is not None:
             return _gmail_provider_failure_result(action, request, response)
@@ -338,19 +342,26 @@ class GmailWorkerExecutor:
             },
         )
 
+    def _capability_for_action(self, action: Action) -> str:
+        capability = action.payload.get("capability")
+        if isinstance(capability, str) and capability.strip():
+            return capability.strip()
+        return action.type
+
     def _provider_request(
         self,
         action: Action,
+        capability: str,
         account_context: WorkerAccountContext,
     ) -> GmailProviderRequest:
-        if action.type == "gmail.read" or action.payload.get("capability") == "read":
+        if capability in {"gmail.read", "read"}:
             message_id = str(action.payload.get("message_id") or "").strip()
             return GmailProviderRequest(
                 operation="read",
                 path=f"/gmail/v1/users/me/messages/{message_id}",
                 account_context=account_context,
             )
-        if action.type == "gmail.send" or action.payload.get("capability") == "send":
+        if capability in {"gmail.send", "send"}:
             return GmailProviderRequest(
                 operation="send",
                 path="/gmail/v1/users/me/messages/send",

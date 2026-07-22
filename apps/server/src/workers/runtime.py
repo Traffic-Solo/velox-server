@@ -16,13 +16,13 @@ from apps.server.src.core.action_lifecycle_repository import (
 from apps.server.src.core.action_queue import ActionQueue
 from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.workers.executor import (
-    WorkerAccountContextExecutor,
     WorkerExecutionFailure,
     WorkerExecutionFailureCategory,
     WorkerExecutionResult,
     WorkerExecutionStatus,
     WorkerExecutor,
     WorkerExecutorRegistry,
+    WorkerExecutorResolution,
 )
 
 logger = logging.getLogger(__name__)
@@ -256,47 +256,41 @@ class WorkerRuntime:
 
         if self._executor_registry is not None:
             resolution = self._executor_registry.resolve_with_registration(action)
-            executor = resolution.executor
-            requested_role = resolution.requested_role
-            executor_registered = resolution.registered
-            requested_capability = resolution.requested_capability
-            requested_provider = resolution.requested_provider
-            matched_provider = resolution.matched_provider
-            requested_account_context = (
-                resolution.requested_account_context.as_metadata()
-                if resolution.requested_account_context is not None
-                else None
-            )
-            matched_account_context = (
-                resolution.matched_account_context.as_metadata()
-                if resolution.matched_account_context is not None
-                else None
-            )
-            matched_account_context_value = resolution.matched_account_context
-            routing_reason = resolution.routing_reason
         else:
-            executor = self._worker_executor
-            requested_role = (
-                action.executor_role.value
-                if isinstance(action.executor_role, ExecutorRole)
-                else action.executor_role
+            resolution = WorkerExecutorResolution(
+                executor=self._worker_executor,
+                requested_role=(
+                    action.executor_role.value
+                    if isinstance(action.executor_role, ExecutorRole)
+                    else action.executor_role
+                ),
+                registered=False,
+                routing_reason="runtime_direct_executor",
             )
-            executor_registered = False
-            requested_capability = None
-            requested_provider = None
-            matched_provider = None
-            requested_account_context = None
-            matched_account_context = None
-            matched_account_context_value = None
-            routing_reason = "runtime_direct_executor"
 
-        account_context_used: dict[str, str | None] | None = None
-        if isinstance(executor, WorkerAccountContextExecutor):
-            account_context_used = (
-                matched_account_context_value.as_metadata()
-                if matched_account_context_value is not None
-                else None
-            )
+        requested_role = resolution.requested_role
+        executor_registered = resolution.registered
+        requested_capability = resolution.requested_capability
+        requested_provider = resolution.requested_provider
+        matched_provider = resolution.matched_provider
+        requested_account_context = (
+            resolution.requested_account_context.as_metadata()
+            if resolution.requested_account_context is not None
+            else None
+        )
+        matched_account_context = (
+            resolution.matched_account_context.as_metadata()
+            if resolution.matched_account_context is not None
+            else None
+        )
+        matched_account_context_value = resolution.matched_account_context
+        routing_reason = resolution.routing_reason
+
+        account_context_used = (
+            matched_account_context_value.as_metadata()
+            if matched_account_context_value is not None
+            else None
+        )
 
         if requested_role is not None and not executor_registered:
             logger.warning(
@@ -321,16 +315,7 @@ class WorkerRuntime:
         )
         started_monotonic = perf_counter()
         try:
-            if isinstance(executor, WorkerAccountContextExecutor):
-                if matched_account_context_value is None:
-                    execution_result = self._missing_account_context_result(action)
-                else:
-                    execution_result = executor.execute_with_account_context(
-                        action,
-                        matched_account_context_value,
-                    )
-            else:
-                execution_result = executor.execute(action)
+            execution_result = resolution.execute(action)
         except Exception as exc:
             logger.exception(
                 "executor raised while executing action %s (%s)",
@@ -462,20 +447,6 @@ class WorkerRuntime:
             execution_reason=execution_result.reason,
             processed=True,
             external_execution_performed=external_execution_performed,
-        )
-
-    def _missing_account_context_result(self, action: Action) -> WorkerExecutionResult:
-        reason = "account-aware executor missing resolved account context"
-        return WorkerExecutionResult(
-            action=action,
-            status=WorkerExecutionStatus.FAILED,
-            reason=reason,
-            metadata={"external_execution_performed": False},
-            failure=WorkerExecutionFailure(
-                category=WorkerExecutionFailureCategory.PERMANENT,
-                message=reason,
-                metadata={"field": "account_context"},
-            ),
         )
 
     def _failure_for_result(

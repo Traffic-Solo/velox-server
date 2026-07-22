@@ -20,7 +20,13 @@ class RecordingExecutor:
         self.result_status = result_status
         self.called_actions: list[Action] = []
 
-    def execute(self, action: Action) -> WorkerExecutionResult:
+    def execute(
+        self,
+        action: Action,
+        *,
+        capability: str | None = None,
+        account_context: WorkerAccountContext | None = None,
+    ) -> WorkerExecutionResult:
         self.called_actions.append(action)
         return WorkerExecutionResult(
             action=action,
@@ -33,12 +39,24 @@ class RecordingExecutor:
 
 
 class RaisingExecutor:
-    def execute(self, action: Action) -> WorkerExecutionResult:
+    def execute(
+        self,
+        action: Action,
+        *,
+        capability: str | None = None,
+        account_context: WorkerAccountContext | None = None,
+    ) -> WorkerExecutionResult:
         raise RuntimeError("executor boom")
 
 
 class FailureContractExecutor:
-    def execute(self, action: Action) -> WorkerExecutionResult:
+    def execute(
+        self,
+        action: Action,
+        *,
+        capability: str | None = None,
+        account_context: WorkerAccountContext | None = None,
+    ) -> WorkerExecutionResult:
         return WorkerExecutionResult(
             action=action,
             status=WorkerExecutionStatus.FAILED,
@@ -54,17 +72,16 @@ class FailureContractExecutor:
 
 class AccountContextRecordingExecutor:
     def __init__(self) -> None:
-        self.called_with: list[tuple[Action, WorkerAccountContext]] = []
+        self.called_with: list[tuple[Action, str | None, WorkerAccountContext | None]] = []
 
-    def execute(self, action: Action) -> WorkerExecutionResult:
-        raise AssertionError("account-aware executor used without resolved context")
-
-    def execute_with_account_context(
+    def execute(
         self,
         action: Action,
-        account_context: WorkerAccountContext,
+        *,
+        capability: str | None = None,
+        account_context: WorkerAccountContext | None = None,
     ) -> WorkerExecutionResult:
-        self.called_with.append((action, account_context))
+        self.called_with.append((action, capability, account_context))
         return WorkerExecutionResult(
             action=action,
             status=WorkerExecutionStatus.SUCCEEDED,
@@ -262,7 +279,7 @@ def test_worker_runtime_passes_only_matched_account_context_to_executor() -> Non
 
     result = runtime.process_next()
 
-    assert registered_executor.called_with == [(action, account_context)]
+    assert registered_executor.called_with == [(action, "summarize", account_context)]
     assert result.action is not None
     execution_metadata = result.action.metadata["worker_execution"]
     assert execution_metadata["account_context_used"] == account_context.as_metadata()
