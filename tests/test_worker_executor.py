@@ -25,7 +25,6 @@ from apps.server.src.workers.executor import (
     NoOpWorkerExecutor,
     WorkerAccountContext,
     WorkerCapability,
-    WorkerCapabilityRoute,
     WorkerExecutionFailure,
     WorkerExecutionFailureCategory,
     WorkerExecutionResult,
@@ -1184,18 +1183,18 @@ def test_worker_executor_registry_routes_one_role_to_multiple_capability_provide
     registry = WorkerExecutorRegistry()
     gmail_executor = SuccessfulExecutor()
     calendar_executor = SuccessfulExecutor()
-    registry.register_capability_provider(
-        WorkerCapabilityRoute(
+    registry.register_capability(
+        WorkerCapability(
             role=ExecutorRole.CONTENT_SUMMARY,
-            capability="summarize",
+            identifier="summarize",
             provider="gmail",
         ),
         gmail_executor,
     )
-    registry.register_capability_provider(
-        WorkerCapabilityRoute(
+    registry.register_capability(
+        WorkerCapability(
             role=ExecutorRole.CONTENT_SUMMARY,
-            capability="summarize",
+            identifier="summarize",
             provider="calendar",
         ),
         calendar_executor,
@@ -1233,10 +1232,10 @@ def test_worker_executor_registry_routes_one_role_to_multiple_capability_provide
 def test_worker_executor_registry_routes_payload_capability_provider_explicitly() -> None:
     registry = WorkerExecutorRegistry()
     executor = SuccessfulExecutor()
-    registry.register_capability_provider(
-        WorkerCapabilityRoute(
+    registry.register_capability(
+        WorkerCapability(
             role=ExecutorRole.CONTENT_SUMMARY,
-            capability="summarize",
+            identifier="summarize",
             provider="gmail",
         ),
         executor,
@@ -1259,14 +1258,14 @@ def test_worker_executor_registry_routes_payload_capability_provider_explicitly(
 def test_worker_executor_registry_routes_explicit_provider_and_account_context() -> None:
     registry = WorkerExecutorRegistry()
     executor = SuccessfulExecutor()
-    registry.register_capability_provider(
-        WorkerCapabilityRoute(
+    registry.register_capability(
+        WorkerCapability(
             role=ExecutorRole.CONTENT_SUMMARY,
-            capability="summarize",
+            identifier="summarize",
             provider="gmail",
-            account_context=TEST_ACCOUNT_CONTEXT,
         ),
         executor,
+        account_context=TEST_ACCOUNT_CONTEXT,
     )
     action = Action(
         type="summarize",
@@ -1292,14 +1291,14 @@ def test_worker_executor_registry_routes_explicit_provider_and_account_context()
 def test_worker_executor_registry_wrong_account_context_fails_closed() -> None:
     fallback_executor = NoOpWorkerExecutor()
     registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
-    registry.register_capability_provider(
-        WorkerCapabilityRoute(
+    registry.register_capability(
+        WorkerCapability(
             role=ExecutorRole.CONTENT_SUMMARY,
-            capability="summarize",
+            identifier="summarize",
             provider="gmail",
-            account_context=TEST_ACCOUNT_CONTEXT,
         ),
         SuccessfulExecutor(),
+        account_context=TEST_ACCOUNT_CONTEXT,
     )
     action = Action(
         type="summarize",
@@ -1328,14 +1327,14 @@ def test_worker_executor_registry_wrong_account_context_fails_closed() -> None:
 def test_worker_executor_registry_wrong_principal_fails_closed() -> None:
     registry = WorkerExecutorRegistry()
     executor = SuccessfulExecutor()
-    registry.register_capability_provider(
-        WorkerCapabilityRoute(
+    registry.register_capability(
+        WorkerCapability(
             role=ExecutorRole.CONTENT_SUMMARY,
-            capability="summarize_email",
+            identifier="summarize_email",
             provider="gmail",
-            account_context=TEST_ACCOUNT_CONTEXT,
         ),
         executor,
+        account_context=TEST_ACCOUNT_CONTEXT,
     )
     action = Action(
         type="summarize_email",
@@ -1361,14 +1360,14 @@ def test_worker_executor_registry_wrong_principal_fails_closed() -> None:
 def test_worker_executor_registry_missing_account_context_fails_closed() -> None:
     fallback_executor = NoOpWorkerExecutor()
     registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
-    registry.register_capability_provider(
-        WorkerCapabilityRoute(
+    registry.register_capability(
+        WorkerCapability(
             role=ExecutorRole.CONTENT_SUMMARY,
-            capability="summarize",
+            identifier="summarize",
             provider="gmail",
-            account_context=TEST_ACCOUNT_CONTEXT,
         ),
         SuccessfulExecutor(),
+        account_context=TEST_ACCOUNT_CONTEXT,
     )
     action = Action(
         type="summarize",
@@ -1390,29 +1389,29 @@ def test_worker_executor_registry_missing_account_context_fails_closed() -> None
 def test_worker_executor_registry_ambiguous_account_context_fails_closed() -> None:
     fallback_executor = NoOpWorkerExecutor()
     registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
-    registry.register_capability_provider(
-        WorkerCapabilityRoute(
+    registry.register_capability(
+        WorkerCapability(
             role=ExecutorRole.CONTENT_SUMMARY,
-            capability="summarize",
+            identifier="summarize",
             provider="gmail",
-            account_context=WorkerAccountContext(
-                principal="principal-1",
-                account_identifier="account-1",
-            ),
         ),
         SuccessfulExecutor(),
+        account_context=WorkerAccountContext(
+            principal="principal-1",
+            account_identifier="account-1",
+        ),
     )
-    registry.register_capability_provider(
-        WorkerCapabilityRoute(
+    registry.register_capability(
+        WorkerCapability(
             role=ExecutorRole.CONTENT_SUMMARY,
-            capability="summarize",
+            identifier="summarize",
             provider="calendar",
-            account_context=WorkerAccountContext(
-                principal="principal-1",
-                account_identifier="account-1",
-            ),
         ),
         SuccessfulExecutor(),
+        account_context=WorkerAccountContext(
+            principal="principal-1",
+            account_identifier="account-1",
+        ),
     )
     action = Action(
         type="summarize",
@@ -1434,23 +1433,23 @@ def test_worker_executor_registry_ambiguous_account_context_fails_closed() -> No
 def test_worker_executor_registry_payload_provider_does_not_override_account_route() -> None:
     fallback_executor = NoOpWorkerExecutor()
     registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
-    registry.register_capability_provider(
-        WorkerCapabilityRoute(
+    registry.register_capability(
+        WorkerCapability(
             role=ExecutorRole.CONTENT_SUMMARY,
-            capability="summarize",
+            identifier="summarize",
             provider="gmail",
-            account_context=TEST_ACCOUNT_CONTEXT,
         ),
         SuccessfulExecutor(),
+        account_context=TEST_ACCOUNT_CONTEXT,
     )
-    registry.register_capability_provider(
-        WorkerCapabilityRoute(
+    registry.register_capability(
+        WorkerCapability(
             role=ExecutorRole.CONTENT_SUMMARY,
-            capability="summarize",
+            identifier="summarize",
             provider="calendar",
-            account_context=TEST_ACCOUNT_CONTEXT,
         ),
         SuccessfulExecutor(),
+        account_context=TEST_ACCOUNT_CONTEXT,
     )
     action = Action(
         type="summarize",
@@ -1476,10 +1475,10 @@ def test_worker_executor_registry_payload_provider_does_not_override_account_rou
 def test_worker_executor_registry_routes_single_provider_deterministically() -> None:
     registry = WorkerExecutorRegistry()
     executor = SuccessfulExecutor()
-    registry.register_capability_provider(
-        WorkerCapabilityRoute(
+    registry.register_capability(
+        WorkerCapability(
             role=ExecutorRole.CONTENT_SUMMARY,
-            capability="summarize_email",
+            identifier="summarize_email",
             provider="gmail",
         ),
         executor,
@@ -1618,10 +1617,10 @@ def test_worker_executor_registry_inferred_action_type_can_use_legacy_role() -> 
 def test_worker_executor_registry_blank_capability_provider_fails_closed() -> None:
     fallback_executor = NoOpWorkerExecutor()
     registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
-    registry.register_capability_provider(
-        WorkerCapabilityRoute(
+    registry.register_capability(
+        WorkerCapability(
             role=ExecutorRole.CONTENT_SUMMARY,
-            capability="summarize_email",
+            identifier="summarize_email",
             provider="gmail",
         ),
         SuccessfulExecutor(),
@@ -1644,10 +1643,10 @@ def test_worker_executor_registry_blank_capability_provider_fails_closed() -> No
 def test_worker_executor_registry_non_string_capability_provider_fails_closed() -> None:
     fallback_executor = NoOpWorkerExecutor()
     registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
-    registry.register_capability_provider(
-        WorkerCapabilityRoute(
+    registry.register_capability(
+        WorkerCapability(
             role=ExecutorRole.CONTENT_SUMMARY,
-            capability="summarize_email",
+            identifier="summarize_email",
             provider="gmail",
         ),
         SuccessfulExecutor(),
@@ -1671,10 +1670,10 @@ def test_worker_executor_registry_invalid_provider_does_not_auto_select_provider
     fallback_executor = NoOpWorkerExecutor()
     route_executor = SuccessfulExecutor()
     registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
-    registry.register_capability_provider(
-        WorkerCapabilityRoute(
+    registry.register_capability(
+        WorkerCapability(
             role=ExecutorRole.CONTENT_SUMMARY,
-            capability="summarize_email",
+            identifier="summarize_email",
             provider="gmail",
         ),
         route_executor,
@@ -1715,15 +1714,15 @@ def test_worker_executor_registry_generic_provider_payload_does_not_affect_routi
 
 def test_worker_executor_registry_duplicate_capability_route_raises() -> None:
     registry = WorkerExecutorRegistry()
-    route = WorkerCapabilityRoute(
+    capability = WorkerCapability(
         role=ExecutorRole.CONTENT_SUMMARY,
-        capability="summarize_email",
+        identifier="summarize_email",
         provider="gmail",
     )
-    registry.register_capability_provider(route, SuccessfulExecutor())
+    registry.register_capability(capability, SuccessfulExecutor())
 
     try:
-        registry.register_capability_provider(route, SuccessfulExecutor())
+        registry.register_capability(capability, SuccessfulExecutor())
     except ValueError as error:
         assert str(error) == "capability route is already registered"
     else:
@@ -1733,18 +1732,18 @@ def test_worker_executor_registry_duplicate_capability_route_raises() -> None:
 def test_worker_executor_registry_does_not_silently_route_ambiguous_provider() -> None:
     fallback_executor = NoOpWorkerExecutor()
     registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
-    registry.register_capability_provider(
-        WorkerCapabilityRoute(
+    registry.register_capability(
+        WorkerCapability(
             role=ExecutorRole.CONTENT_SUMMARY,
-            capability="summarize",
+            identifier="summarize",
             provider="gmail",
         ),
         SuccessfulExecutor(),
     )
-    registry.register_capability_provider(
-        WorkerCapabilityRoute(
+    registry.register_capability(
+        WorkerCapability(
             role=ExecutorRole.CONTENT_SUMMARY,
-            capability="summarize",
+            identifier="summarize",
             provider="calendar",
         ),
         SuccessfulExecutor(),

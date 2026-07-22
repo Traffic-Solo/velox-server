@@ -151,16 +151,6 @@ class WorkerCapability:
 
 
 @dataclass(frozen=True)
-class WorkerCapabilityRoute:
-    """Backward-compatible capability-provider route registration input."""
-
-    role: ExecutorRole | str
-    capability: str
-    provider: str
-    account_context: WorkerAccountContext | None = None
-
-
-@dataclass(frozen=True)
 class _CapabilityRouteRequest:
     capability: str | None
     present: bool
@@ -211,35 +201,6 @@ class WorkerExecutorRegistry:
     def register_role(self, role: ExecutorRole, executor: WorkerExecutor) -> None:
         """Register an executor for an explicit vendor-neutral executor role."""
         self.register(role, executor)
-
-    def register_capability_provider(
-        self,
-        route: WorkerCapabilityRoute,
-        executor: WorkerExecutor,
-    ) -> None:
-        """Register a legacy route through the canonical capability registry."""
-        role = self._normalize_role(route.role)
-        capability = _normalize_capability_identifier(route.capability)
-        provider = _normalize_provider_identifier(route.provider)
-        account_context = self._normalize_account_context(route.account_context)
-        if not role:
-            raise ValueError("capability route role must not be empty")
-        if not capability:
-            raise ValueError("capability route capability must not be empty")
-        if not provider:
-            raise ValueError("capability route provider must not be empty")
-        if route.account_context is not None and account_context is None:
-            raise ValueError("capability route account context must not be empty")
-
-        self.register_capability(
-            WorkerCapability(
-                identifier=capability,
-                role=role,
-                provider=provider,
-            ),
-            executor,
-            account_context=account_context,
-        )
 
     def register_capability(
         self,

@@ -16,7 +16,7 @@ from apps.server.src.integrations.gmail import (
 )
 from apps.server.src.workers.executor import (
     WorkerAccountContext,
-    WorkerCapabilityRoute,
+    WorkerCapability,
     WorkerExecutionResult,
     WorkerExecutionStatus,
 )
@@ -221,10 +221,10 @@ def test_container_wired_worker_runtime_uses_executor_registry() -> None:
         executor_role=ExecutorRole.CONTEXT_PREPARATION,
     )
     executor = ContainerRecordingExecutor()
-    container.worker_executor_registry.register_capability_provider(
-        WorkerCapabilityRoute(
+    container.worker_executor_registry.register_capability(
+        WorkerCapability(
             role=ExecutorRole.CONTEXT_PREPARATION,
-            capability="prepare_meeting_test",
+            identifier="prepare_meeting_test",
             provider="calendar",
         ),
         executor=executor,
@@ -393,10 +393,10 @@ def test_container_wired_worker_runtime_records_execution_observation() -> None:
         executor_role=ExecutorRole.CONTEXT_PREPARATION,
     )
     executor = ContainerRecordingExecutor()
-    container.worker_executor_registry.register_capability_provider(
-        WorkerCapabilityRoute(
+    container.worker_executor_registry.register_capability(
+        WorkerCapability(
             role=ExecutorRole.CONTEXT_PREPARATION,
-            capability="prepare_meeting_test",
+            identifier="prepare_meeting_test",
             provider="calendar",
         ),
         executor=executor,

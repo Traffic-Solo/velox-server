@@ -4,7 +4,7 @@ from apps.server.src.core.action_queue import ActionQueue
 from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.workers.executor import (
     WorkerAccountContext,
-    WorkerCapabilityRoute,
+    WorkerCapability,
     WorkerExecutionFailure,
     WorkerExecutionFailureCategory,
     WorkerExecutionResult,
@@ -208,14 +208,14 @@ def test_worker_runtime_records_provider_account_routing_metadata() -> None:
     fallback_executor = RecordingExecutor(result_status=WorkerExecutionStatus.FAILED)
     registered_executor = RecordingExecutor(result_status=WorkerExecutionStatus.SUCCEEDED)
     executor_registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
-    executor_registry.register_capability_provider(
-        WorkerCapabilityRoute(
+    executor_registry.register_capability(
+        WorkerCapability(
             role=ExecutorRole.CONTENT_SUMMARY,
-            capability="summarize",
+            identifier="summarize",
             provider="gmail",
-            account_context=account_context,
         ),
         registered_executor,
+        account_context=account_context,
     )
     runtime = WorkerRuntime(
         action_queue=queue,
@@ -261,14 +261,14 @@ def test_worker_runtime_passes_only_matched_account_context_to_executor() -> Non
     fallback_executor = RecordingExecutor(result_status=WorkerExecutionStatus.FAILED)
     registered_executor = AccountContextRecordingExecutor()
     executor_registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
-    executor_registry.register_capability_provider(
-        WorkerCapabilityRoute(
+    executor_registry.register_capability(
+        WorkerCapability(
             role=ExecutorRole.CONTENT_SUMMARY,
-            capability="summarize",
+            identifier="summarize",
             provider="gmail",
-            account_context=account_context,
         ),
         registered_executor,
+        account_context=account_context,
     )
     runtime = WorkerRuntime(
         action_queue=queue,
