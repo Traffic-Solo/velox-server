@@ -13,7 +13,7 @@ This file is the canonical repository handoff for Codex engineering sessions.
 
 ## Current Sprint
 
-Sprint 1 - VELOX Core Platform
+Sprint 1 - VELOX Core Platform (completed pending final review and audit commit)
 
 ## Quality Gates
 
@@ -108,23 +108,21 @@ Sprint 1 - VELOX Core Platform
 
 ## Current Next Slice
 
-Audit Remediation Sprint (2026-07-10) is in progress. Slices in order:
+The Audit Remediation Sprint and the subsequent deterministic Google integration
+slices are complete.
 
-1. Tooling baseline: ruff + mypy strict + GitHub Actions CI (done).
-2. Unify action status: lifecycle repository as single source of truth (done).
-3. Approval gate: deny-by-default engine + approve/reject endpoints (done).
-4. Honest execution statuses: SKIPPED for no-op/placeholder paths (done).
-5. Event replay + transient retry + queue_empty fix (done).
-6. Gmail explicit message_id contract (done).
-7. Shared Google provider boundary (done).
-8. Settings layer + operational logging (done).
-9. API hardening (done).
-10. Infra polish (done).
-11. Post-remediation verification (done): fresh-clone re-run of all gates (306 tests at the time, ruff, mypy strict), CI confirmed green for all 10 sprint commits, adversarial tests added for double-approve, reject-after-approve, approve-after-reject, lifecycle-state-loss and route shadowing, and four stale handoff statements corrected (retry wording, SKIPPED placeholders, NoOp fallback). Audit Remediation Sprint is verified complete.
+The Sprint 1 Closure Audit decision is **SPRINT 1 READY TO CLOSE**. Local
+validation at audited commit `ea67b97d56d25269d41353aabead828402e89873`
+completed with focused regressions (`232 passed, 1 warning`), Ruff
+(`All checks passed!`), mypy strict (`32 source files`), and the full test suite
+(`434 passed, 1 warning`). See
+[`SPRINT_1_CLOSURE_AUDIT.md`](SPRINT_1_CLOSURE_AUDIT.md) for the evidence,
+component map, accepted technical debt, and explicit production-integration
+exclusions.
 
-After the remediation sprint, continue post-harvest Google integration design without moving directly into OAuth, credentials storage, real HTTP clients or real Google API calls.
+Next proposed task: **Sprint 2 Scope and Architecture Selection**.
 
-Current post-harvest Google integration slice completed: Deterministic Calendar Ingress Adapter. Raw Calendar mappings now enter through a Calendar-specific normalizer and adapter that reuse the existing event workflow service with explicit routing context. The next proposed small slice is Sprint 1 Closure Audit.
+Do not invent or begin Sprint 2 implementation scope before that selection.
 
 ## Current Implementation Notes
 
