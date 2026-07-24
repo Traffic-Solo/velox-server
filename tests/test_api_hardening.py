@@ -136,7 +136,11 @@ def test_processing_failure_does_not_leak_internals(
         def process(self, event: UniversalEvent) -> None:
             raise RuntimeError("secret internal detail: /etc/velox/config")
 
-    monkeypatch.setattr(container, "event_processing_pipeline", ExplodingPipeline())
+    monkeypatch.setattr(
+        container.event_workflow_service,
+        "event_processing_pipeline",
+        ExplodingPipeline(),
+    )
 
     response = client.post(f"/events/{payload['id']}/process")
 

@@ -187,7 +187,11 @@ def test_failed_event_can_be_replayed(monkeypatch: pytest.MonkeyPatch) -> None:
             raise RuntimeError("classifier temporarily unavailable")
 
     original_pipeline = container.event_processing_pipeline
-    monkeypatch.setattr(container, "event_processing_pipeline", ExplodingPipeline())
+    monkeypatch.setattr(
+        container.event_workflow_service,
+        "event_processing_pipeline",
+        ExplodingPipeline(),
+    )
 
     failed_response = client.post(f"/events/{event_id}/process")
     assert failed_response.status_code == 500
@@ -197,7 +201,11 @@ def test_failed_event_can_be_replayed(monkeypatch: pytest.MonkeyPatch) -> None:
         event.id == event_id for event in container.event_inbox.list_pending()
     )
 
-    monkeypatch.setattr(container, "event_processing_pipeline", original_pipeline)
+    monkeypatch.setattr(
+        container.event_workflow_service,
+        "event_processing_pipeline",
+        original_pipeline,
+    )
 
     retry_response = client.post(f"/events/{event_id}/process")
 

@@ -8,7 +8,10 @@ from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionSt
 from apps.server.src.core.config import get_settings
 from apps.server.src.core.container import get_container
 from apps.server.src.core.events import (
-    EventLifecycleState,
+    DuplicateEventError,
+    EventLifecycleConflictError,
+    EventNotFoundError,
+    EventProcessingError,
     IntegrationRouteContext,
     UniversalEvent,
 )
@@ -154,23 +157,16 @@ def reject_action(
 def accept_event(event: UniversalEvent) -> dict[str, str]:
     """Accept and store a valid event without processing it."""
     container = get_container()
-    if container.event_repository.get_event(event.id) is not None:
+    try:
+        result = container.event_workflow_service.accept(event)
+    except DuplicateEventError as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"event {event.id} already exists",
-        )
-    stored_event = container.event_repository.append(event)
-    container.event_inbox.enqueue(stored_event)
-    accepted_state = EventLifecycleState(
-        event_id=stored_event.id,
-        status="accepted",
-    )
-    container.event_lifecycle_states[stored_event.id] = (
-        container.event_lifecycle_manager.transition(accepted_state, "pending")
-    )
+            detail=str(error),
+        ) from error
     return {
         "status": "accepted",
-        "event_id": str(stored_event.id),
+        "event_id": str(result.event.id),
     }
 
 
@@ -201,63 +197,33 @@ def process_event(
 ) -> dict[str, Any]:
     """Manually process one stored event and remove it from the pending inbox."""
     container = get_container()
-    event = container.event_repository.get_event(event_id)
-    if event is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-
-    lifecycle_state = container.event_lifecycle_states.get(event_id)
-    if lifecycle_state is None:
-        lifecycle_state = EventLifecycleState(event_id=event_id, status="pending")
-
     try:
-        processing_state = container.event_lifecycle_manager.transition(
-            lifecycle_state,
-            "processing",
+        result = container.event_workflow_service.process(
+            event_id,
+            integration_route=(
+                body.integration_route
+                if body is not None and body.integration_route is not None
+                else None
+            ),
         )
-    except ValueError as error:
+    except EventNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from error
+    except EventLifecycleConflictError as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(error),
         ) from error
-
-    container.event_lifecycle_states[event_id] = processing_state
-
-    try:
-        if body is not None and body.integration_route is not None:
-            processed_event = container.event_processing_pipeline.process(
-                event,
-                integration_route=body.integration_route,
-            )
-        else:
-            processed_event = container.event_processing_pipeline.process(event)
-    except Exception as error:
-        container.event_lifecycle_states[event_id] = (
-            container.event_lifecycle_manager.transition(
-                processing_state,
-                "failed",
-                reason=str(error),
-            )
-        )
+    except EventProcessingError as error:
         logger.exception("event %s failed processing", event_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="event processing failed",
         ) from error
 
-    container.event_lifecycle_states[event_id] = (
-        container.event_lifecycle_manager.transition(processing_state, "processed")
-    )
-    container.event_inbox.mark_processed(event_id)
-
-    actions = container.planner.plan(processed_event)
-    permission_evaluations = container.permission_runtime.evaluate(actions)
-    container.action_queue.enqueue_many(
-        container.permission_runtime.queueable_actions(permission_evaluations)
-    )
-    response = processed_event.model_dump(mode="json")
+    response = result.processed_event.model_dump(mode="json")
     response["actions"] = [
         evaluation.action.model_dump(mode="json")
-        for evaluation in permission_evaluations
+        for evaluation in result.permission_evaluations
     ]
     response["permission_decisions"] = [
         {
@@ -274,7 +240,7 @@ def process_event(
                 else None
             ),
         }
-        for evaluation in permission_evaluations
+        for evaluation in result.permission_evaluations
     ]
     return response
 

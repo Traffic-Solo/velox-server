@@ -36,7 +36,11 @@ class UnsafeActionPlanner:
 
 def _held_action_id(monkeypatch: pytest.MonkeyPatch) -> str:
     container = get_container()
-    monkeypatch.setattr(container, "planner", UnsafeActionPlanner())
+    monkeypatch.setattr(
+        container.event_workflow_service,
+        "planner",
+        UnsafeActionPlanner(),
+    )
     event_id = uuid4()
     client.post(
         "/events",

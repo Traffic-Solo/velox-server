@@ -31,21 +31,37 @@ from apps.server.src.core.events.pipeline import (
 )
 from apps.server.src.core.events.repository import EventRepository
 from apps.server.src.core.events.store import EventStore
+from apps.server.src.core.events.workflow import (
+    DuplicateEventError,
+    EventAcceptanceResult,
+    EventLifecycleConflictError,
+    EventNotFoundError,
+    EventProcessingError,
+    EventProcessingResult,
+    EventWorkflowService,
+)
 
 __all__ = [
     "BaseContextResolver",
     "BaseEventNormalizer",
     "ContextResolver",
+    "DuplicateEventError",
+    "EventAcceptanceResult",
     "EventClassification",
     "EventClassifier",
     "EventInbox",
+    "EventLifecycleConflictError",
     "EventLifecycleManager",
     "EventLifecycleState",
     "EventNormalizer",
+    "EventNotFoundError",
+    "EventProcessingError",
     "EventProcessingPipeline",
+    "EventProcessingResult",
     "EventRepository",
     "EventStatus",
     "EventStore",
+    "EventWorkflowService",
     "IntegrationRouteContext",
     "NormalizationError",
     "ProcessedEvent",

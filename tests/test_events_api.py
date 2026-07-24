@@ -419,7 +419,7 @@ def test_processing_endpoint_filters_denied_actions_before_queueing(
 
     container = get_container()
     monkeypatch.setattr(
-        container,
+        container.event_workflow_service,
         "permission_runtime",
         PermissionEngineRuntime(
             permission_engine=DenyingPermissionEngine(),
@@ -458,7 +458,7 @@ def test_processing_endpoint_returns_denied_actions_with_permission_metadata(
 
     container = get_container()
     monkeypatch.setattr(
-        container,
+        container.event_workflow_service,
         "permission_runtime",
         PermissionEngineRuntime(
             permission_engine=DenyingPermissionEngine(),
@@ -610,7 +610,11 @@ def test_processing_failure_sets_lifecycle_state_to_failed(monkeypatch: pytest.M
 
     event_id = uuid4()
     container = get_container()
-    monkeypatch.setattr(container, "event_processing_pipeline", FailingPipeline())
+    monkeypatch.setattr(
+        container.event_workflow_service,
+        "event_processing_pipeline",
+        FailingPipeline(),
+    )
     failure_client = TestClient(app, raise_server_exceptions=False)
 
     failure_client.post(

@@ -119,6 +119,27 @@ def test_container_exposes_event_processing_pipeline() -> None:
     assert container.event_processing_pipeline is not None
 
 
+def test_container_exposes_shared_event_workflow_service() -> None:
+    container = ApplicationContainer()
+
+    assert container.event_workflow_service.event_repository is container.event_repository
+    assert container.event_workflow_service.event_inbox is container.event_inbox
+    assert (
+        container.event_workflow_service.event_lifecycle_states
+        is container.event_lifecycle_states
+    )
+    assert (
+        container.event_workflow_service.event_processing_pipeline
+        is container.event_processing_pipeline
+    )
+    assert container.event_workflow_service.planner is container.planner
+    assert (
+        container.event_workflow_service.permission_runtime
+        is container.permission_runtime
+    )
+    assert container.event_workflow_service.action_queue is container.action_queue
+
+
 def test_container_exposes_planner() -> None:
     container = ApplicationContainer()
 

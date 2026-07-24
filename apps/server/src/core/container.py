@@ -21,6 +21,7 @@ from apps.server.src.core.events import (
     EventProcessingPipeline,
     EventRepository,
     EventStore,
+    EventWorkflowService,
     RuleBasedEventClassifier,
 )
 from apps.server.src.core.events.classifier import EventClassifier
@@ -106,6 +107,16 @@ class ApplicationContainer:
             context_resolver=self.context_resolver,
         )
         self.planner: Planner = BasePlanner()
+        self.event_workflow_service = EventWorkflowService(
+            event_repository=self.event_repository,
+            event_inbox=self.event_inbox,
+            event_lifecycle_manager=self.event_lifecycle_manager,
+            event_lifecycle_states=self.event_lifecycle_states,
+            event_processing_pipeline=self.event_processing_pipeline,
+            planner=self.planner,
+            permission_runtime=self.permission_runtime,
+            action_queue=self.action_queue,
+        )
 
 
 _container: ApplicationContainer | None = None
