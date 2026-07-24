@@ -1,4 +1,8 @@
-"""Google Calendar worker executor bootstrap on the shared Google boundary."""
+"""Google Calendar worker executor and deterministic meeting-context capability."""
+
+from dataclasses import dataclass, field
+from typing import Any, Protocol, runtime_checkable
+from urllib.parse import quote
 
 from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.integrations.google_provider import (
@@ -18,6 +22,7 @@ from apps.server.src.workers.executor import (
     WorkerAccountContext,
     WorkerCapability,
     WorkerExecutionFailure,
+    WorkerExecutionFailureCategory,
     WorkerExecutionResult,
     WorkerExecutionStatus,
 )
@@ -44,7 +49,6 @@ CALENDAR_ACCOUNT_CONTEXT = WorkerAccountContext(
 _CALENDAR_CAPABILITY_IDENTIFIERS = frozenset(
     capability.identifier for capability in CALENDAR_WORKER_CAPABILITIES
 )
-
 # Provider boundary: shared Google primitives, specialized for Calendar.
 CalendarCredentials = GoogleCredentials
 CalendarProviderRequest = GoogleProviderRequest
@@ -53,6 +57,99 @@ CalendarProviderResponse = GoogleProviderResponse
 CalendarCredentialsProviderError = GoogleCredentialsProviderError
 CalendarCredentialsProvider = GoogleCredentialsProvider
 CalendarTransportClient = GoogleTransportClient
+
+
+@dataclass(frozen=True)
+class CalendarEvent:
+    """Deterministic in-memory Calendar event."""
+
+    event_id: str
+    title: str
+    start: str
+    end: str
+    attendees: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CalendarMeetingContextRequest:
+    """Request for Calendar meeting context."""
+
+    calendar_event_id: str
+
+
+@dataclass(frozen=True)
+class CalendarCapabilityResult:
+    """Safe result returned by Calendar capabilities."""
+
+    status: WorkerExecutionStatus
+    reason: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@runtime_checkable
+class CalendarMeetingContextCapability(Protocol):
+    """Contract for deterministic Calendar meeting-context lookup."""
+
+    def prepare(
+        self,
+        request: CalendarMeetingContextRequest,
+        *,
+        capability: str,
+    ) -> CalendarCapabilityResult:
+        """Prepare meeting context for one Calendar event."""
+
+
+class InMemoryCalendarMeetingContextCapability:
+    """Deterministic Calendar lookup with no external API behavior."""
+
+    def __init__(self, events: dict[str, CalendarEvent] | None = None) -> None:
+        self._events = events if events is not None else {
+            "calendar-event-1": CalendarEvent(
+                event_id="calendar-event-1",
+                title="Sprint 1 planning",
+                start="2026-07-27T09:00:00Z",
+                end="2026-07-27T09:30:00Z",
+                attendees=("owner@example.com", "team@example.com"),
+            ),
+        }
+
+    def prepare(
+        self,
+        request: CalendarMeetingContextRequest,
+        *,
+        capability: str,
+    ) -> CalendarCapabilityResult:
+        """Return deterministic meeting context without contacting Calendar."""
+        event = self._events.get(request.calendar_event_id)
+        metadata: dict[str, Any] = {
+            "external_execution_performed": False,
+            "integration": "calendar",
+            "capability": capability,
+            "adapter": "in_memory",
+            "calendar_event_id": request.calendar_event_id,
+            "found": event is not None,
+        }
+        if event is not None:
+            metadata["event"] = {
+                "event_id": event.event_id,
+                "title": event.title,
+                "start": event.start,
+                "end": event.end,
+                "attendees": event.attendees,
+            }
+
+        return CalendarCapabilityResult(
+            status=WorkerExecutionStatus.SUCCEEDED,
+            reason="calendar meeting context in-memory result",
+            metadata=metadata,
+        )
+
+
+@dataclass(frozen=True)
+class CalendarCapabilities:
+    """Capability set exposed by the Calendar worker executor."""
+
+    meeting_context: CalendarMeetingContextCapability
 
 
 class FakeCalendarCredentialsProvider(FakeGoogleCredentialsProvider):
@@ -97,8 +194,12 @@ class CalendarWorkerExecutor:
 
     def __init__(
         self,
+        capabilities: CalendarCapabilities | None = None,
         provider_composition: CalendarProviderComposition | None = None,
     ) -> None:
+        self.capabilities = capabilities or CalendarCapabilities(
+            meeting_context=InMemoryCalendarMeetingContextCapability(),
+        )
         self.provider_composition = (
             provider_composition or CalendarProviderComposition()
         )
@@ -120,38 +221,81 @@ class CalendarWorkerExecutor:
         capability: str | None = None,
         account_context: WorkerAccountContext | None = None,
     ) -> WorkerExecutionResult:
-        """Return a safe Calendar placeholder without contacting Google Calendar."""
-        if (
-            account_context is not None
-            and capability in _CALENDAR_CAPABILITY_IDENTIFIERS
-        ):
-            return self._execute_provider_request(
-                action,
-                capability,
-                account_context,
+        """Execute meeting-context lookup without contacting Google Calendar."""
+        resolved_capability = capability or action.type
+        if resolved_capability not in _CALENDAR_CAPABILITY_IDENTIFIERS:
+            return WorkerExecutionResult(
+                action=action,
+                status=WorkerExecutionStatus.SKIPPED,
+                reason="calendar executor has no capability for this action type",
+                metadata={
+                    "external_execution_performed": False,
+                    "integration": "calendar",
+                    "placeholder": True,
+                    "skipped": True,
+                },
             )
 
-        return WorkerExecutionResult(
+        calendar_event_id_value = action.payload.get("calendar_event_id")
+        if (
+            not isinstance(calendar_event_id_value, str)
+            or not calendar_event_id_value.strip()
+        ):
+            reason = "calendar meeting context request invalid calendar_event_id"
+            return WorkerExecutionResult(
+                action=action,
+                status=WorkerExecutionStatus.FAILED,
+                reason=reason,
+                metadata={
+                    "external_execution_performed": False,
+                    "integration": "calendar",
+                    "capability": resolved_capability,
+                },
+                failure=WorkerExecutionFailure(
+                    category=WorkerExecutionFailureCategory.PERMANENT,
+                    message=reason,
+                    metadata={"field": "calendar_event_id"},
+                ),
+            )
+
+        calendar_event_id = calendar_event_id_value.strip()
+        capability_result = self.capabilities.meeting_context.prepare(
+            CalendarMeetingContextRequest(calendar_event_id=calendar_event_id),
+            capability=resolved_capability,
+        )
+        if (
+            account_context is None
+            or capability_result.status != WorkerExecutionStatus.SUCCEEDED
+        ):
+            return WorkerExecutionResult(
+                action=action,
+                status=capability_result.status,
+                reason=capability_result.reason,
+                metadata=capability_result.metadata,
+            )
+
+        return self._execute_provider_request(
             action=action,
-            status=WorkerExecutionStatus.SKIPPED,
-            reason="calendar executor has no capability for this action type",
-            metadata={
-                "external_execution_performed": False,
-                "integration": "calendar",
-                "placeholder": True,
-                "skipped": True,
-            },
+            capability=resolved_capability,
+            calendar_event_id=calendar_event_id,
+            capability_result=capability_result,
+            account_context=account_context,
         )
 
     def _execute_provider_request(
         self,
         action: Action,
         capability: str,
+        calendar_event_id: str,
+        capability_result: CalendarCapabilityResult,
         account_context: WorkerAccountContext,
     ) -> WorkerExecutionResult:
         request = CalendarProviderRequest(
             operation=capability,
-            path="/calendar/v3/users/me/calendarList",
+            path=(
+                "/calendar/v3/calendars/primary/events/"
+                f"{quote(calendar_event_id, safe='')}"
+            ),
             account_context=account_context,
         )
         response = self.provider_composition.execute(request)
@@ -162,11 +306,10 @@ class CalendarWorkerExecutor:
                 status=WorkerExecutionStatus.FAILED,
                 reason=failure.message,
                 metadata={
-                    "external_execution_performed": False,
-                    "integration": "calendar",
+                    **capability_result.metadata,
                     "account_context_used": account_context.as_metadata(),
                     "provider_request": _calendar_provider_request_metadata(request),
-                    "provider_response": dict(response.body),
+                    "provider_response": _calendar_provider_response_metadata(response),
                 },
                 failure=WorkerExecutionFailure(
                     category=failure.category,
@@ -182,15 +325,13 @@ class CalendarWorkerExecutor:
 
         return WorkerExecutionResult(
             action=action,
-            status=WorkerExecutionStatus.SUCCEEDED,
-            reason="calendar provider request constructed",
+            status=capability_result.status,
+            reason=capability_result.reason,
             metadata={
-                "external_execution_performed": False,
-                "integration": "calendar",
-                "adapter": "fake_transport",
+                **capability_result.metadata,
                 "account_context_used": account_context.as_metadata(),
                 "provider_request": _calendar_provider_request_metadata(request),
-                "provider_response": dict(response.body),
+                "provider_response": _calendar_provider_response_metadata(response),
             },
         )
 
@@ -210,3 +351,23 @@ def _calendar_provider_request_metadata(
             else None
         ),
     }
+
+
+def _calendar_provider_response_metadata(
+    response: CalendarProviderResponse,
+) -> dict[str, object]:
+    metadata: dict[str, object] = {}
+    if response.body.get("external_execution_performed") is False:
+        metadata["external_execution_performed"] = False
+    if response.body.get("integration") == "calendar":
+        metadata["integration"] = "calendar"
+    adapter = response.body.get("adapter")
+    if isinstance(adapter, str) and adapter in {
+        "fake_transport",
+        "fake_provider_composition",
+    }:
+        metadata["adapter"] = adapter
+    failed = response.body.get("failed")
+    if isinstance(failed, bool):
+        metadata["failed"] = failed
+    return metadata

@@ -151,6 +151,7 @@ def test_container_registers_calendar_worker_executor() -> None:
         type="prepare_calendar_context",
         target="calendar-placeholder",
         payload={
+            "calendar_event_id": "calendar-event-1",
             "account_context": (
                 ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT.as_metadata()
             ),
@@ -415,6 +416,7 @@ def test_container_worker_runtime_routes_matching_action_to_calendar_executor() 
         type="prepare_calendar_context",
         target="calendar-placeholder",
         payload={
+            "calendar_event_id": "calendar-event-1",
             "account_context": (
                 ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT.as_metadata()
             ),
@@ -443,9 +445,26 @@ def test_container_worker_runtime_routes_matching_action_to_calendar_executor() 
     assert execution_metadata["metadata"]["provider_request"][
         "account_context"
     ] == ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT.as_metadata()
-    assert execution_metadata["metadata"]["provider_response"]["account"] == (
-        ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT.account_identifier
+    assert execution_metadata["metadata"]["provider_request"]["path"] == (
+        "/calendar/v3/calendars/primary/events/calendar-event-1"
     )
+    assert execution_metadata["metadata"]["account_context_used"] == (
+        ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT.as_metadata()
+    )
+    assert execution_metadata["metadata"]["provider_request"]["account_context"] == (
+        ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT.as_metadata()
+    )
+    assert {
+        "account",
+        "principal",
+        "operation",
+        "path",
+        "method",
+        "token_type",
+    }.isdisjoint(execution_metadata["metadata"]["provider_response"])
+    assert execution_metadata["metadata"]["calendar_event_id"] == "calendar-event-1"
+    assert execution_metadata["metadata"]["found"] is True
+    assert execution_metadata["metadata"]["event"]["event_id"] == "calendar-event-1"
 
 
 def test_container_wired_worker_runtime_records_execution_observation() -> None:

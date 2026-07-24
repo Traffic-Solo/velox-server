@@ -74,6 +74,7 @@ Sprint 1 - VELOX Core Platform
 - Provider Registry Consolidation
 - Provider Manifest Extraction
 - Provider Manifest Validation Hardening
+- Deterministic In-Memory Calendar Meeting Context Capability
 - Worker Runtime In-Memory Invocation Observability
 - Worker Runtime Exception Safety
 - Worker Executor Failure Contract
@@ -119,7 +120,7 @@ Audit Remediation Sprint (2026-07-10) is in progress. Slices in order:
 
 After the remediation sprint, continue post-harvest Google integration design without moving directly into OAuth, credentials storage, real HTTP clients or real Google API calls.
 
-Current post-harvest Google integration slice completed: Provider Manifest Validation Hardening. The next proposed small slice is provider manifest declaration test consolidation, limited to shared test helpers for provider-owned manifest contract coverage; it must continue to avoid OAuth, credentials storage, real HTTP clients and real Google API calls.
+Current post-harvest Google integration slice completed: Deterministic In-Memory Calendar Meeting Context Capability. The next proposed small slice is an architecture-reviewed Calendar event-input propagation contract at the normalization/planning boundary so planner-generated actions can carry an explicit `calendar_event_id`; it must not change provider/account selection and must continue to avoid OAuth, credentials storage, real HTTP clients and real Google API calls.
 
 ## Current Implementation Notes
 
@@ -173,6 +174,12 @@ Current post-harvest Google integration slice completed: Provider Manifest Valid
 - Provider manifest validation uses one `ValueError` contract with deterministic `invalid provider manifest:` diagnostics. Duplicate routes identify the canonical role, capability and provider without including account context or provider credentials. Conflicts with existing registrations are preflighted before any route is added, so manifest registration remains atomic.
 - Provider Manifest Validation Hardening does not change runtime behavior, provider interfaces, the public `WorkerExecutor` API, `WorkerRuntime` execution flow, capability inference, account-aware routing, routing metadata, fallback behavior, fail-closed semantics or provider registration order. Gmail read/send/archive and Calendar context-preparation behavior remain unchanged.
 - Provider Manifest Validation Hardening validation completed with focused executor/container tests (122 passed), `uv run ruff check apps tests`, `uv run mypy` (30 source files) and `uv run pytest -q` (352 passed, 1 warning: existing Starlette/httpx deprecation warning).
+- Calendar now exposes frozen `CalendarEvent`, `CalendarMeetingContextRequest`, `CalendarCapabilityResult` and `CalendarCapabilities` contracts, a runtime-checkable `CalendarMeetingContextCapability` protocol and an injectable `InMemoryCalendarMeetingContextCapability`. Both existing manifest identifiers, `prepare_meeting` and `prepare_calendar_context`, delegate to the same deterministic capability.
+- Calendar meeting-context lookup requires an explicit non-blank string in `action.payload["calendar_event_id"]`. `Action.target` remains the internal VELOX source event ID and is never used as a Calendar event ID fallback. Missing, blank and malformed values fail before capability or provider invocation through a PERMANENT `WorkerExecutionFailure` identifying `calendar_event_id`.
+- A known deterministic Calendar event returns SUCCEEDED structured context containing event ID, title, start, end and attendees. A valid unknown event ID is also a successful deterministic lookup with `found: False` and no fabricated event.
+- Successful Calendar capability results execute the existing account-aware fake provider composition only when official matched account context is present. The provider request encodes the validated explicit event ID as one opaque path segment, preserves the original ID in domain metadata, preserves account context unchanged and merges provider request/response metadata with the in-memory domain metadata. Provider response metadata is reconstructed only from type-validated Calendar service fields (`external_execution_performed`, `integration`, `adapter` and `failed`), so arbitrary response keys and values, credentials and tokens are not exposed. Existing credentials and transport failure classifications are preserved.
+- Deterministic In-Memory Calendar Meeting Context Capability leaves `Action`, `WorkerExecutor`, `WorkerExecutionResult`, `WorkerRuntime`, `WorkerExecutorRegistry`, provider manifests, routing metadata, runtime fallback, fail-closed behavior, provider registration order, approval, retry, failure classification, planner and Gmail behavior unchanged. It introduces no socket, OAuth, credentials storage, HTTP or external API behavior.
+- Deterministic In-Memory Calendar Meeting Context Capability validation completed with focused Calendar/container tests (67 passed), `uv run ruff check apps tests`, `uv run mypy` (30 source files) and `uv run pytest -q` (367 passed, 1 warning: existing Starlette/httpx deprecation warning).
 
 ## Workflow
 
@@ -239,5 +246,5 @@ After every implementation slice, update this file in the same commit if the imp
 - Gmail capability tests are consolidated locally in `tests/test_worker_executor.py`; no shared `tests/conftest.py` fixture has been introduced yet.
 - Real Gmail adapter, OAuth, credential storage, HTTP transport and real Gmail API calls are not implemented yet.
 - Gmail provider boundary interfaces, fake transport bootstrap, fake credentials provider bootstrap and fake provider composition bootstrap are present behind the Gmail integration boundary. No concrete real provider implementation exists yet.
-- Google Calendar has deterministic account-aware provider request construction for context-preparation actions, but no calendar event capability model, OAuth, credential storage, HTTP transport or real Google Calendar API calls.
+- Google Calendar meeting context uses deterministic in-memory event data only. Planner-generated Calendar actions still use the internal VELOX event ID as `Action.target` and do not yet supply the required explicit `payload.calendar_event_id`; input propagation requires a separately architecture-reviewed slice. OAuth, credential storage, HTTP transport and real Google Calendar API calls are not implemented.
 - Notion sync may still need reconciliation for the latest completed Google integration slices; do not claim Notion is updated unless the sync is explicitly performed.
