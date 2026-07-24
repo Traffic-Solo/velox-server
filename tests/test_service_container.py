@@ -1,5 +1,13 @@
+import pytest
 from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.core.container import ApplicationContainer, get_container
+from apps.server.src.core.events import (
+    EventClassification,
+    IntegrationRouteContext,
+    ProcessedEvent,
+    ResolvedContext,
+    UniversalEvent,
+)
 from apps.server.src.core.permission import PermissionDecision, PermissionEngine
 from apps.server.src.integrations.calendar import (
     CALENDAR_EXECUTOR_ROLE,
@@ -40,6 +48,45 @@ class ContainerRecordingExecutor:
             status=WorkerExecutionStatus.SUCCEEDED,
             metadata={"handled_by": "container-recording-executor"},
         )
+
+
+def create_planner_calendar_action(
+    *,
+    calendar_event_id: object = "calendar-event-1",
+    include_calendar_event_id: bool = True,
+    integration_route: IntegrationRouteContext | None = None,
+) -> Action:
+    payload = (
+        {"calendar_event_id": calendar_event_id}
+        if include_calendar_event_id
+        else {}
+    )
+    event = UniversalEvent(
+        source="calendar",
+        type="calendar.event",
+        payload=payload,
+    )
+    classification = EventClassification(
+        category="calendar",
+        confidence=1.0,
+        labels=["calendar"],
+        reason="test classification",
+    )
+    context = ResolvedContext(
+        event=event,
+        classification=classification,
+        context={},
+        sources=[],
+        confidence=1.0,
+        reason="test context",
+    )
+    processed_event = ProcessedEvent(
+        event=event,
+        classification=classification,
+        context=context,
+        integration_route=integration_route,
+    )
+    return ApplicationContainer().planner.plan(processed_event)[0]
 
 
 def test_container_exposes_event_repository() -> None:
@@ -465,6 +512,125 @@ def test_container_worker_runtime_routes_matching_action_to_calendar_executor() 
     assert execution_metadata["metadata"]["calendar_event_id"] == "calendar-event-1"
     assert execution_metadata["metadata"]["found"] is True
     assert execution_metadata["metadata"]["event"]["event_id"] == "calendar-event-1"
+
+
+def test_planner_calendar_action_resolves_to_registered_calendar_executor() -> None:
+    container = ApplicationContainer()
+    action = create_planner_calendar_action(
+        integration_route=IntegrationRouteContext(
+            provider="calendar",
+            principal=ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT.principal,
+            account_identifier=(
+                ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT.account_identifier
+            ),
+        )
+    )
+
+    resolution = container.worker_executor_registry.resolve_with_registration(action)
+
+    assert resolution.executor is container.calendar_worker_executor
+    assert resolution.registered is True
+
+
+def test_planner_calendar_action_without_route_fails_closed() -> None:
+    container = ApplicationContainer()
+    action = create_planner_calendar_action()
+
+    resolution = container.worker_executor_registry.resolve_with_registration(action)
+
+    assert resolution.registered is False
+    assert resolution.routing_reason == "missing_account_context"
+
+
+def test_planner_calendar_action_with_unknown_account_fails_closed() -> None:
+    container = ApplicationContainer()
+    action = create_planner_calendar_action(
+        integration_route=IntegrationRouteContext(
+            provider="calendar",
+            principal=ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT.principal,
+            account_identifier="unknown-account",
+        )
+    )
+
+    resolution = container.worker_executor_registry.resolve_with_registration(action)
+
+    assert resolution.registered is False
+    assert resolution.routing_reason == "no_handler"
+
+
+def test_planner_calendar_action_with_mismatched_provider_fails_closed() -> None:
+    container = ApplicationContainer()
+    action = create_planner_calendar_action(
+        integration_route=IntegrationRouteContext(
+            provider="gmail",
+            principal=ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT.principal,
+            account_identifier=(
+                ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT.account_identifier
+            ),
+        )
+    )
+
+    resolution = container.worker_executor_registry.resolve_with_registration(action)
+
+    assert resolution.registered is False
+    assert resolution.routing_reason == "no_handler"
+
+
+def test_planner_calendar_action_reaches_calendar_capability_successfully() -> None:
+    container = ApplicationContainer()
+    action = create_planner_calendar_action(
+        integration_route=IntegrationRouteContext(
+            provider="calendar",
+            principal=ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT.principal,
+            account_identifier=(
+                ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT.account_identifier
+            ),
+        )
+    )
+    container.action_queue.enqueue(action)
+
+    result = container.worker_runtime.process_next()
+
+    assert result.execution_status == WorkerExecutionStatus.SUCCEEDED
+    assert result.action is not None
+    execution_metadata = result.action.metadata["worker_execution"]
+    assert execution_metadata["matched_provider"] == "calendar"
+    assert execution_metadata["metadata"]["calendar_event_id"] == "calendar-event-1"
+    assert execution_metadata["metadata"]["found"] is True
+
+
+@pytest.mark.parametrize(
+    ("calendar_event_id", "include_calendar_event_id"),
+    [(None, False), ("", True), (42, True)],
+)
+def test_routed_planner_calendar_invalid_id_reaches_permanent_calendar_failure(
+    calendar_event_id: object,
+    include_calendar_event_id: bool,
+) -> None:
+    container = ApplicationContainer()
+    action = create_planner_calendar_action(
+        calendar_event_id=calendar_event_id,
+        include_calendar_event_id=include_calendar_event_id,
+        integration_route=IntegrationRouteContext(
+            provider="calendar",
+            principal=ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT.principal,
+            account_identifier=(
+                ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT.account_identifier
+            ),
+        ),
+    )
+    container.action_queue.enqueue(action)
+
+    result = container.worker_runtime.process_next()
+
+    assert result.execution_status == WorkerExecutionStatus.FAILED
+    assert result.action is not None
+    execution_metadata = result.action.metadata["worker_execution"]
+    assert execution_metadata["executor_registered"] is True
+    failure = execution_metadata["failure"]
+    assert failure is not None
+    assert failure["category"] == "permanent"
+    assert failure["metadata"]["field"] == "calendar_event_id"
 
 
 def test_container_wired_worker_runtime_records_execution_observation() -> None:
