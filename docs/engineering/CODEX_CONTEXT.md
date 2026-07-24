@@ -73,6 +73,7 @@ Sprint 1 - VELOX Core Platform
 - Legacy Capability Route Removal
 - Provider Registry Consolidation
 - Provider Manifest Extraction
+- Provider Manifest Validation Hardening
 - Worker Runtime In-Memory Invocation Observability
 - Worker Runtime Exception Safety
 - Worker Executor Failure Contract
@@ -118,7 +119,7 @@ Audit Remediation Sprint (2026-07-10) is in progress. Slices in order:
 
 After the remediation sprint, continue post-harvest Google integration design without moving directly into OAuth, credentials storage, real HTTP clients or real Google API calls.
 
-Current post-harvest Google integration slice completed: Provider Manifest Extraction. The next proposed small slice is provider manifest validation hardening, limited to declarative manifest invariants and diagnostics; it must continue to avoid OAuth, credentials storage, real HTTP clients and real Google API calls.
+Current post-harvest Google integration slice completed: Provider Manifest Validation Hardening. The next proposed small slice is provider manifest declaration test consolidation, limited to shared test helpers for provider-owned manifest contract coverage; it must continue to avoid OAuth, credentials storage, real HTTP clients and real Google API calls.
 
 ## Current Implementation Notes
 
@@ -168,6 +169,10 @@ Current post-harvest Google integration slice completed: Provider Manifest Extra
 - `WorkerExecutorRegistry.register_manifest` validates all manifest routes for duplicates before reusing the existing canonical capability registration path, so a rejected manifest cannot be partially registered. Manifest and provider registration order is preserved. Low-level `register_capability` and `register_capabilities` remain available without creating a separate registration store.
 - Provider Manifest Extraction preserves provider interface compatibility through read-only manifest-backed `worker_capabilities` properties and does not change runtime behavior, the public `WorkerExecutor` API, `WorkerRuntime` execution flow, capability inference, account-aware routing, routing metadata, fallback behavior or fail-closed semantics. Gmail read/send/archive and Calendar context-preparation behavior remain unchanged.
 - Provider Manifest Extraction validation completed with `uv run ruff check apps tests`, `uv run mypy` (30 source files) and `uv run pytest -q` (348 passed, 1 warning: existing Starlette/httpx deprecation warning).
+- `ProviderManifest.validate` now enforces manifest-level invariants before registry mutation: capabilities are non-empty canonical `WorkerCapability` values; identifiers and provider identifiers are non-empty and normalized; every capability uses a defined vendor-neutral `ExecutorRole`; all capabilities declare one provider; capability routes are unique within the manifest; the executor structurally implements `WorkerExecutor`; and supplied account context contains a non-empty account identifier and a non-empty principal when principal is provided. A provider executor may expose capabilities across multiple valid executor roles.
+- Provider manifest validation uses one `ValueError` contract with deterministic `invalid provider manifest:` diagnostics. Duplicate routes identify the canonical role, capability and provider without including account context or provider credentials. Conflicts with existing registrations are preflighted before any route is added, so manifest registration remains atomic.
+- Provider Manifest Validation Hardening does not change runtime behavior, provider interfaces, the public `WorkerExecutor` API, `WorkerRuntime` execution flow, capability inference, account-aware routing, routing metadata, fallback behavior, fail-closed semantics or provider registration order. Gmail read/send/archive and Calendar context-preparation behavior remain unchanged.
+- Provider Manifest Validation Hardening validation completed with focused executor/container tests (122 passed), `uv run ruff check apps tests`, `uv run mypy` (30 source files) and `uv run pytest -q` (352 passed, 1 warning: existing Starlette/httpx deprecation warning).
 
 ## Workflow
 

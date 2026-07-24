@@ -19,6 +19,7 @@ from apps.server.src.workers.executor import (
     WorkerCapability,
     WorkerExecutionResult,
     WorkerExecutionStatus,
+    WorkerExecutorRegistry,
 )
 
 
@@ -209,6 +210,37 @@ def test_container_registers_provider_capability_declarations() -> None:
     )
     assert container.worker_executor_registry.registered_capabilities() == (
         GMAIL_WORKER_CAPABILITIES + CALENDAR_WORKER_CAPABILITIES
+    )
+
+
+def test_valid_provider_manifests_register_independently() -> None:
+    gmail_executor = GmailWorkerExecutor()
+    calendar_executor = CalendarWorkerExecutor()
+    gmail_registry = WorkerExecutorRegistry()
+    calendar_registry = WorkerExecutorRegistry()
+
+    gmail_registry.register_manifest(gmail_executor.provider_manifest)
+    calendar_registry.register_manifest(calendar_executor.provider_manifest)
+
+    assert gmail_registry.registered_capabilities() == GMAIL_WORKER_CAPABILITIES
+    assert calendar_registry.registered_capabilities() == CALENDAR_WORKER_CAPABILITIES
+    assert gmail_registry.registered_capability_routes() == tuple(
+        (
+            capability.role,
+            capability.identifier,
+            capability.provider,
+            ApplicationContainer.GMAIL_ACCOUNT_CONTEXT.account_identifier,
+        )
+        for capability in GMAIL_WORKER_CAPABILITIES
+    )
+    assert calendar_registry.registered_capability_routes() == tuple(
+        (
+            capability.role,
+            capability.identifier,
+            capability.provider,
+            ApplicationContainer.CALENDAR_ACCOUNT_CONTEXT.account_identifier,
+        )
+        for capability in CALENDAR_WORKER_CAPABILITIES
     )
 
 

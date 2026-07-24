@@ -158,6 +158,67 @@ class ProviderManifest:
     executor: WorkerExecutor
     account_context: WorkerAccountContext | None = None
 
+    def validate(self) -> None:
+        """Validate manifest invariants before registry mutation."""
+        error_prefix = "invalid provider manifest: "
+        if not self.capabilities:
+            raise ValueError(f"{error_prefix}capabilities must not be empty")
+        if not isinstance(self.executor, WorkerExecutor):
+            raise ValueError(
+                f"{error_prefix}executor must implement WorkerExecutor"
+            )
+
+        providers: set[str] = set()
+        route_keys: set[tuple[str, str, str]] = set()
+        for index, capability in enumerate(self.capabilities):
+            if not isinstance(capability, WorkerCapability):
+                raise ValueError(
+                    f"{error_prefix}capability at index {index} must be "
+                    "a WorkerCapability"
+                )
+            if (
+                not capability.identifier
+                or capability.identifier
+                != _normalize_capability_identifier(capability.identifier)
+            ):
+                raise ValueError(
+                    f"{error_prefix}capability at index {index} has an invalid "
+                    "identifier"
+                )
+            if (
+                not capability.provider
+                or capability.provider
+                != _normalize_provider_identifier(capability.provider)
+            ):
+                raise ValueError(
+                    f"{error_prefix}capability at index {index} has an invalid "
+                    "provider identifier"
+                )
+            if capability.role not in {role.value for role in ExecutorRole}:
+                raise ValueError(
+                    f"{error_prefix}capability at index {index} has an invalid "
+                    "executor role"
+                )
+
+            providers.add(capability.provider)
+            route_key = (
+                capability.role,
+                capability.identifier,
+                capability.provider,
+            )
+            if route_key in route_keys:
+                raise ValueError(
+                    f"{error_prefix}duplicate capability route "
+                    f"'{capability.role}:{capability.identifier}:"
+                    f"{capability.provider}'"
+                )
+            route_keys.add(route_key)
+
+        if len(providers) != 1:
+            raise ValueError(
+                f"{error_prefix}capabilities must declare one provider"
+            )
+
 
 @dataclass(frozen=True)
 class _CapabilityRouteRequest:
@@ -245,6 +306,7 @@ class WorkerExecutorRegistry:
 
     def register_manifest(self, manifest: ProviderManifest) -> None:
         """Register one provider manifest as a canonical declarative unit."""
+        manifest.validate()
         normalized_account_context = self._normalize_account_context(
             manifest.account_context
         )
@@ -252,7 +314,10 @@ class WorkerExecutorRegistry:
             manifest.account_context is not None
             and normalized_account_context is None
         ):
-            raise ValueError("capability account context must not be empty")
+            raise ValueError(
+                "invalid provider manifest: account context must contain a "
+                "non-empty account identifier and principal when provided"
+            )
 
         account_key = (
             normalized_account_context.account_identifier
@@ -268,10 +333,20 @@ class WorkerExecutorRegistry:
             )
             for capability in manifest.capabilities
         ]
-        if len(route_keys) != len(set(route_keys)) or any(
-            route_key in self._provider_registrations for route_key in route_keys
-        ):
-            raise ValueError("capability route is already registered")
+        conflicting_route = next(
+            (
+                route_key
+                for route_key in route_keys
+                if route_key in self._provider_registrations
+            ),
+            None,
+        )
+        if conflicting_route is not None:
+            role, capability, provider, _ = conflicting_route
+            raise ValueError(
+                "invalid provider manifest: capability route conflicts with an "
+                f"existing registration '{role}:{capability}:{provider}'"
+            )
 
         self.register_capabilities(
             manifest.capabilities,

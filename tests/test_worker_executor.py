@@ -200,6 +200,25 @@ def test_worker_executor_registry_registers_provider_manifest_as_one_unit() -> N
     )
 
 
+def test_worker_executor_registry_rejects_empty_manifest_atomically() -> None:
+    registry = WorkerExecutorRegistry()
+    manifest = ProviderManifest(
+        capabilities=(),
+        executor=SuccessfulExecutor(),
+    )
+
+    try:
+        registry.register_manifest(manifest)
+    except ValueError as error:
+        assert str(error) == (
+            "invalid provider manifest: capabilities must not be empty"
+        )
+    else:
+        raise AssertionError("expected empty provider manifest to fail")
+
+    assert registry.registered_capability_routes() == ()
+
+
 def test_provider_manifest_is_immutable() -> None:
     manifest = ProviderManifest(
         capabilities=GMAIL_WORKER_CAPABILITIES,
@@ -229,7 +248,10 @@ def test_worker_executor_registry_rejects_duplicate_manifest_atomically() -> Non
     try:
         registry.register_manifest(manifest)
     except ValueError as error:
-        assert str(error) == "capability route is already registered"
+        assert str(error) == (
+            "invalid provider manifest: capability route conflicts with an "
+            "existing registration 'content_summary:gmail.read:gmail'"
+        )
     else:
         raise AssertionError("expected duplicate provider manifest to fail")
 
@@ -250,7 +272,10 @@ def test_worker_executor_registry_rejects_duplicate_routes_inside_manifest() -> 
     try:
         registry.register_manifest(manifest)
     except ValueError as error:
-        assert str(error) == "capability route is already registered"
+        assert str(error) == (
+            "invalid provider manifest: duplicate capability route "
+            "'content_summary:summarize_email:gmail'"
+        )
     else:
         raise AssertionError("expected duplicate manifest routes to fail")
 
@@ -274,12 +299,67 @@ def test_invalid_manifest_account_context_does_not_modify_registry() -> None:
     try:
         registry.register_manifest(manifest)
     except ValueError as error:
-        assert str(error) == "capability account context must not be empty"
+        assert str(error) == (
+            "invalid provider manifest: account context must contain a non-empty "
+            "account identifier and principal when provided"
+        )
     else:
         raise AssertionError("expected invalid manifest account context to fail")
 
     assert registry.registered_capability_routes() == routes_before_registration
     assert registry.registered_capabilities() == (existing_capability,)
+
+
+def test_manifest_registers_capabilities_across_executor_roles_in_order() -> None:
+    registry = WorkerExecutorRegistry()
+    executor = SuccessfulExecutor()
+    capabilities = (
+        GMAIL_WORKER_CAPABILITIES[0],
+        WorkerCapability(
+            identifier="prepare_meeting",
+            role=ExecutorRole.CONTEXT_PREPARATION,
+            provider="gmail",
+        ),
+    )
+    manifest = ProviderManifest(
+        capabilities=capabilities,
+        executor=executor,
+    )
+
+    registry.register_manifest(manifest)
+
+    assert registry.registered_capabilities() == capabilities
+    assert registry.registered_capability_routes() == (
+        ("content_summary", "summarize_email", "gmail", None),
+        ("context_preparation", "prepare_meeting", "gmail", None),
+    )
+    for capability in capabilities:
+        action = Action(
+            type=capability.identifier,
+            target="test-target",
+            payload={"capability_provider": capability.provider},
+            executor_role=capability.role,
+        )
+        assert registry.resolve(action) is executor
+
+
+def test_manifest_rejects_incompatible_executor_atomically() -> None:
+    registry = WorkerExecutorRegistry()
+    manifest = ProviderManifest(
+        capabilities=(GMAIL_WORKER_CAPABILITIES[0],),
+        executor=object(),  # type: ignore[arg-type]
+    )
+
+    try:
+        registry.register_manifest(manifest)
+    except ValueError as error:
+        assert str(error) == (
+            "invalid provider manifest: executor must implement WorkerExecutor"
+        )
+    else:
+        raise AssertionError("expected incompatible manifest executor to fail")
+
+    assert registry.registered_capability_routes() == ()
 
 
 def test_gmail_worker_executor_satisfies_worker_executor_contract() -> None:
