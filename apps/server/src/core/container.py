@@ -36,6 +36,10 @@ from apps.server.src.integrations.calendar import (
     CALENDAR_ACCOUNT_CONTEXT,
     CalendarWorkerExecutor,
 )
+from apps.server.src.integrations.calendar_ingress import (
+    CalendarEventNormalizer,
+    CalendarIngressAdapter,
+)
 from apps.server.src.integrations.gmail import GMAIL_ACCOUNT_CONTEXT, GmailWorkerExecutor
 from apps.server.src.workers.executor import (
     NoOpWorkerExecutor,
@@ -116,6 +120,11 @@ class ApplicationContainer:
             planner=self.planner,
             permission_runtime=self.permission_runtime,
             action_queue=self.action_queue,
+        )
+        self.calendar_event_normalizer = CalendarEventNormalizer()
+        self.calendar_ingress_adapter = CalendarIngressAdapter(
+            normalizer=self.calendar_event_normalizer,
+            workflow_service=self.event_workflow_service,
         )
 
 

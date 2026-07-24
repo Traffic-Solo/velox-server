@@ -14,6 +14,10 @@ from apps.server.src.integrations.calendar import (
     CALENDAR_WORKER_CAPABILITIES,
     CalendarWorkerExecutor,
 )
+from apps.server.src.integrations.calendar_ingress import (
+    CalendarEventNormalizer,
+    CalendarIngressAdapter,
+)
 from apps.server.src.integrations.gmail import (
     GMAIL_EXECUTOR_ROLE,
     GMAIL_WORKER_CAPABILITIES,
@@ -117,6 +121,17 @@ def test_container_exposes_event_processing_pipeline() -> None:
     container = ApplicationContainer()
 
     assert container.event_processing_pipeline is not None
+
+
+def test_container_wires_calendar_ingress_to_shared_workflow_service() -> None:
+    container = ApplicationContainer()
+
+    assert isinstance(container.calendar_event_normalizer, CalendarEventNormalizer)
+    assert isinstance(container.calendar_ingress_adapter, CalendarIngressAdapter)
+    assert (
+        container.calendar_ingress_adapter._workflow_service
+        is container.event_workflow_service
+    )
 
 
 def test_container_exposes_shared_event_workflow_service() -> None:

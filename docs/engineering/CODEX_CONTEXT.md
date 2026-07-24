@@ -78,6 +78,7 @@ Sprint 1 - VELOX Core Platform
 - Explicit Integration Route Context Contract
 - Planner Integration Route and Calendar Event-ID Propagation
 - Event Workflow Application Service Extraction
+- Deterministic Calendar Ingress Adapter
 - Worker Runtime In-Memory Invocation Observability
 - Worker Runtime Exception Safety
 - Worker Executor Failure Contract
@@ -123,7 +124,7 @@ Audit Remediation Sprint (2026-07-10) is in progress. Slices in order:
 
 After the remediation sprint, continue post-harvest Google integration design without moving directly into OAuth, credentials storage, real HTTP clients or real Google API calls.
 
-Current post-harvest Google integration slice completed: Event Workflow Application Service Extraction. Event acceptance and processing orchestration now live in a reusable vendor-neutral core application service. FastAPI delegates to the service while retaining request validation, serialization, logging and HTTP status-code responsibility, so integrations can reuse the workflow without importing API functions. The next proposed small slice is Deterministic Calendar Ingress Adapter; it must use the extracted service without duplicating event workflow orchestration and must continue to avoid OAuth, credentials storage, real HTTP clients and real Google API calls.
+Current post-harvest Google integration slice completed: Deterministic Calendar Ingress Adapter. Raw Calendar mappings now enter through a Calendar-specific normalizer and adapter that reuse the existing event workflow service with explicit routing context. The next proposed small slice is Sprint 1 Closure Audit.
 
 ## Current Implementation Notes
 
@@ -197,6 +198,11 @@ Current post-harvest Google integration slice completed: Event Workflow Applicat
 - Explicit `IntegrationRouteContext` remains a separate optional processing input. The service passes it to the pipeline only when supplied and performs no payload or metadata extraction, provider inference or account defaulting. Runtime, planner, permission, approval, lifecycle, replay and routing behavior remain unchanged, and event processing does not execute workers.
 - Event Workflow Application Service Extraction adds no Calendar ingress, OAuth, credentials, HTTP client or external API behavior.
 - Event Workflow Application Service Extraction validation completed with focused workflow/API/container and affected regression tests (119 passed), `uv run ruff check apps tests`, `uv run mypy` (31 source files) and `uv run pytest -q` (417 passed, 1 warning: existing Starlette/httpx deprecation warning).
+- `CalendarEventNormalizer` copies raw Calendar mappings into a new `UniversalEvent` with source `calendar` and type `calendar.event`. When `event_id` is present, its value is copied unchanged to `payload.calendar_event_id`; absence, explicit `None`, blank and whitespace-bearing strings, and non-string values remain distinct.
+- `CalendarIngressAdapter` accepts provider/account routing only through its explicit keyword-only `integration_route` argument. Raw route-like fields may remain in payload but never become metadata or routing authority.
+- Calendar ingress reuses the container-owned `EventWorkflowService` for acceptance, processing, planning, permission evaluation and queueing. It duplicates no API or workflow orchestration and does not invoke workers.
+- Deterministic end-to-end tests prove Calendar ingress, lifecycle processing, planning, explicit account-aware routing, permission approval, queueing and separate invocation of the existing Calendar worker executor. No OAuth, credentials storage, HTTP transport, socket access, real Google Calendar API calls or other external integration behavior was added.
+- Deterministic Calendar Ingress Adapter validation completed with focused Calendar ingress/workflow/planner/container regression tests (91 passed), including the Calendar ingress/container subset (62 passed), `uv run ruff check apps tests`, `uv run mypy` (32 source files) and `uv run pytest -q` (434 passed, 1 warning: existing Starlette/httpx deprecation warning).
 
 ## Workflow
 
@@ -263,5 +269,5 @@ After every implementation slice, update this file in the same commit if the imp
 - Gmail capability tests are consolidated locally in `tests/test_worker_executor.py`; no shared `tests/conftest.py` fixture has been introduced yet.
 - Real Gmail adapter, OAuth, credential storage, HTTP transport and real Gmail API calls are not implemented yet.
 - Gmail provider boundary interfaces, fake transport bootstrap, fake credentials provider bootstrap and fake provider composition bootstrap are present behind the Gmail integration boundary. No concrete real provider implementation exists yet.
-- Google Calendar meeting context uses deterministic in-memory event data only. Planner-generated Calendar actions now propagate an explicitly supplied Calendar event ID and integration route, and the reusable event workflow boundary is available, but no deterministic Calendar ingress adapter currently supplies events or route context. OAuth, credential storage, HTTP transport and real Google Calendar API calls are not implemented.
+- Google Calendar meeting context and ingress use deterministic in-memory behavior only. OAuth, credential storage, HTTP transport and real Google Calendar API calls are not implemented.
 - Notion sync may still need reconciliation for the latest completed Google integration slices; do not claim Notion is updated unless the sync is explicitly performed.
