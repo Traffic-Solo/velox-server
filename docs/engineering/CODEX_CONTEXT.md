@@ -13,7 +13,7 @@ This file is the canonical repository handoff for Codex engineering sessions.
 
 ## Current Sprint
 
-Sprint 1 - VELOX Core Platform (completed pending final review and audit commit)
+Sprint 1 - VELOX Core Platform (completed)
 
 ## Quality Gates
 
