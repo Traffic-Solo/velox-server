@@ -1,6 +1,7 @@
 from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.core.events import (
     EventClassification,
+    IntegrationRouteContext,
     ProcessedEvent,
     ResolvedContext,
     UniversalEvent,
@@ -119,3 +120,22 @@ def test_base_planner_remains_deterministic() -> None:
     assert [action.model_dump(exclude={"id", "created_at"}) for action in first_actions] == [
         action.model_dump(exclude={"id", "created_at"}) for action in second_actions
     ]
+
+
+def test_base_planner_does_not_propagate_integration_route() -> None:
+    planner = BasePlanner()
+    processed_event = create_processed_event("calendar").model_copy(
+        update={
+            "integration_route": IntegrationRouteContext(
+                provider="calendar",
+                principal="principal-1",
+                account_identifier="calendar-account",
+            )
+        }
+    )
+
+    action = planner.plan(processed_event)[0]
+
+    assert action.payload == {}
+    assert "capability_provider" not in action.metadata
+    assert "account_context" not in action.metadata

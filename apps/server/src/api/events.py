@@ -7,7 +7,11 @@ from uuid import UUID
 from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionStatus
 from apps.server.src.core.config import get_settings
 from apps.server.src.core.container import get_container
-from apps.server.src.core.events import EventLifecycleState, UniversalEvent
+from apps.server.src.core.events import (
+    EventLifecycleState,
+    IntegrationRouteContext,
+    UniversalEvent,
+)
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel
 
@@ -35,6 +39,12 @@ class RejectActionRequest(BaseModel):
     """Optional request body for rejecting a pending action."""
 
     reason: str | None = None
+
+
+class ProcessEventRequest(BaseModel):
+    """Explicit processing inputs supplied separately from the stored event."""
+
+    integration_route: IntegrationRouteContext | None = None
 
 
 @router.get("/actions/queue")
@@ -185,7 +195,10 @@ def list_pending_events() -> list[dict[str, Any]]:
 
 
 @router.post("/events/{event_id}/process")
-def process_event(event_id: UUID) -> dict[str, Any]:
+def process_event(
+    event_id: UUID,
+    body: ProcessEventRequest | None = None,
+) -> dict[str, Any]:
     """Manually process one stored event and remove it from the pending inbox."""
     container = get_container()
     event = container.event_repository.get_event(event_id)
@@ -210,7 +223,13 @@ def process_event(event_id: UUID) -> dict[str, Any]:
     container.event_lifecycle_states[event_id] = processing_state
 
     try:
-        processed_event = container.event_processing_pipeline.process(event)
+        if body is not None and body.integration_route is not None:
+            processed_event = container.event_processing_pipeline.process(
+                event,
+                integration_route=body.integration_route,
+            )
+        else:
+            processed_event = container.event_processing_pipeline.process(event)
     except Exception as error:
         container.event_lifecycle_states[event_id] = (
             container.event_lifecycle_manager.transition(

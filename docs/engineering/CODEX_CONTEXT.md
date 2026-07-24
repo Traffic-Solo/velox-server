@@ -75,6 +75,7 @@ Sprint 1 - VELOX Core Platform
 - Provider Manifest Extraction
 - Provider Manifest Validation Hardening
 - Deterministic In-Memory Calendar Meeting Context Capability
+- Explicit Integration Route Context Contract
 - Worker Runtime In-Memory Invocation Observability
 - Worker Runtime Exception Safety
 - Worker Executor Failure Contract
@@ -120,7 +121,7 @@ Audit Remediation Sprint (2026-07-10) is in progress. Slices in order:
 
 After the remediation sprint, continue post-harvest Google integration design without moving directly into OAuth, credentials storage, real HTTP clients or real Google API calls.
 
-Current post-harvest Google integration slice completed: Deterministic In-Memory Calendar Meeting Context Capability. The next proposed small slice is an architecture-reviewed Calendar event-input propagation contract at the normalization/planning boundary so planner-generated actions can carry an explicit `calendar_event_id`; it must not change provider/account selection and must continue to avoid OAuth, credentials storage, real HTTP clients and real Google API calls.
+Current post-harvest Google integration slice completed: Explicit Integration Route Context Contract. The next proposed small slice is an architecture-reviewed planner propagation contract so planner-generated Calendar actions carry the normalized `calendar_event_id` and explicit integration route context; it must preserve `Action.target` as the internal VELOX event ID and continue to avoid OAuth, credentials storage, real HTTP clients and real Google API calls.
 
 ## Current Implementation Notes
 
@@ -180,6 +181,11 @@ Current post-harvest Google integration slice completed: Deterministic In-Memory
 - Successful Calendar capability results execute the existing account-aware fake provider composition only when official matched account context is present. The provider request encodes the validated explicit event ID as one opaque path segment, preserves the original ID in domain metadata, preserves account context unchanged and merges provider request/response metadata with the in-memory domain metadata. Provider response metadata is reconstructed only from type-validated Calendar service fields (`external_execution_performed`, `integration`, `adapter` and `failed`), so arbitrary response keys and values, credentials and tokens are not exposed. Existing credentials and transport failure classifications are preserved.
 - Deterministic In-Memory Calendar Meeting Context Capability leaves `Action`, `WorkerExecutor`, `WorkerExecutionResult`, `WorkerRuntime`, `WorkerExecutorRegistry`, provider manifests, routing metadata, runtime fallback, fail-closed behavior, provider registration order, approval, retry, failure classification, planner and Gmail behavior unchanged. It introduces no socket, OAuth, credentials storage, HTTP or external API behavior.
 - Deterministic In-Memory Calendar Meeting Context Capability validation completed with focused Calendar/container tests (67 passed), `uv run ruff check apps tests`, `uv run mypy` (30 source files) and `uv run pytest -q` (367 passed, 1 warning: existing Starlette/httpx deprecation warning).
+- `IntegrationRouteContext` is the immutable vendor-neutral core contract for explicit provider/account selection supplied separately through the event processing boundary. It contains provider, optional principal and account identifier values, rejects non-string or blank supplied values, preserves valid submitted text unchanged and does not depend on `WorkerAccountContext`.
+- `ProcessedEvent` optionally preserves an explicitly supplied `IntegrationRouteContext`. `EventProcessingPipeline.process` accepts it only as a keyword input, does not infer it from event source, payload or metadata and leaves the original `UniversalEvent`, context resolution and classifier behavior unchanged.
+- `POST /events/{event_id}/process` accepts an optional `ProcessEventRequest.integration_route`; the existing bodyless request remains compatible. Arbitrary `account_context`, `capability_provider` and `provider` fields in stored event payload or metadata are not routing authority. Route existence remains the responsibility of `WorkerExecutorRegistry`.
+- Explicit Integration Route Context Contract leaves `UniversalEvent`, `Action`, planner, worker account context, worker registry, routing, manifests, integrations, permission, approval, runtime, retry and lifecycle behavior unchanged. It does not yet propagate Calendar event identity or integration route context into actions.
+- Explicit Integration Route Context Contract validation completed with focused event pipeline/API/planner tests (63 passed), `uv run ruff check apps tests`, `uv run mypy` (30 source files) and `uv run pytest -q` (386 passed, 1 warning: existing Starlette/httpx deprecation warning).
 
 ## Workflow
 

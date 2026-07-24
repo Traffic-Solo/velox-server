@@ -197,6 +197,157 @@ def test_process_event_response_contains_event_classification_and_context() -> N
     assert "context" in body
 
 
+def test_process_event_accepts_explicit_integration_route() -> None:
+    event_id = uuid4()
+    client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "calendar",
+            "type": "event.updated",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {},
+            "metadata": {},
+        },
+    )
+
+    response = client.post(
+        f"/events/{event_id}/process",
+        json={
+            "integration_route": {
+                "provider": "calendar",
+                "account_identifier": "calendar-account",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["integration_route"] == {
+        "provider": "calendar",
+        "principal": None,
+        "account_identifier": "calendar-account",
+    }
+
+
+def test_process_event_rejects_malformed_integration_route() -> None:
+    event_id = uuid4()
+    client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "calendar",
+            "type": "event.updated",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {},
+            "metadata": {},
+        },
+    )
+
+    response = client.post(
+        f"/events/{event_id}/process",
+        json={
+            "integration_route": {
+                "provider": 123,
+                "principal": None,
+                "account_identifier": "calendar-account",
+            },
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_process_event_without_integration_route_returns_none() -> None:
+    event_id = uuid4()
+    client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "calendar",
+            "type": "event.updated",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {},
+            "metadata": {},
+        },
+    )
+
+    response = client.post(f"/events/{event_id}/process")
+
+    assert response.status_code == 200
+    assert response.json()["integration_route"] is None
+
+
+def test_process_event_with_empty_json_body_returns_none_route() -> None:
+    event_id = uuid4()
+    client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "calendar",
+            "type": "event.updated",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {},
+            "metadata": {},
+        },
+    )
+
+    response = client.post(f"/events/{event_id}/process", json={})
+
+    assert response.status_code == 200
+    assert response.json()["integration_route"] is None
+
+
+def test_process_event_with_explicit_null_route_returns_none() -> None:
+    event_id = uuid4()
+    client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "calendar",
+            "type": "event.updated",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": {},
+            "metadata": {},
+        },
+    )
+
+    response = client.post(
+        f"/events/{event_id}/process",
+        json={"integration_route": None},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["integration_route"] is None
+
+
+def test_process_event_ignores_event_fields_as_integration_route_authority() -> None:
+    event_id = uuid4()
+    untrusted_fields = {
+        "account_context": {
+            "principal": "untrusted",
+            "account_identifier": "untrusted-account",
+        },
+        "capability_provider": "untrusted-provider",
+        "provider": "untrusted-provider",
+    }
+    client.post(
+        "/events",
+        json={
+            "id": str(event_id),
+            "source": "calendar",
+            "type": "event.updated",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "payload": untrusted_fields,
+            "metadata": untrusted_fields,
+        },
+    )
+
+    response = client.post(f"/events/{event_id}/process")
+
+    assert response.status_code == 200
+    assert response.json()["integration_route"] is None
+
+
 def test_process_event_response_includes_actions() -> None:
     event_id = uuid4()
     client.post(

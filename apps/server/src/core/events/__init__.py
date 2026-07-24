@@ -26,6 +26,7 @@ from apps.server.src.core.events.normalizer import (
 )
 from apps.server.src.core.events.pipeline import (
     EventProcessingPipeline,
+    IntegrationRouteContext,
     ProcessedEvent,
 )
 from apps.server.src.core.events.repository import EventRepository
@@ -45,6 +46,7 @@ __all__ = [
     "EventRepository",
     "EventStatus",
     "EventStore",
+    "IntegrationRouteContext",
     "NormalizationError",
     "ProcessedEvent",
     "ResolvedContext",
