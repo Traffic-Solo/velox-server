@@ -41,6 +41,13 @@ class CredentialAlreadyExistsError(Exception):
         self.reference = reference
 
 
+class CredentialStoreBackendError(Exception):
+    """Safe vendor-neutral failure raised when credential persistence fails."""
+
+    def __init__(self) -> None:
+        super().__init__("credential store backend operation failed")
+
+
 @runtime_checkable
 class CredentialStore(Protocol):
     """Storage boundary for opaque credentials addressed by explicit reference."""

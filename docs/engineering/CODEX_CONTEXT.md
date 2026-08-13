@@ -80,6 +80,7 @@ Sprint 2 - Production Integration Foundations
 - Event Workflow Application Service Extraction
 - Deterministic Calendar Ingress Adapter
 - Credential Store Contract and Deterministic Fake Store
+- macOS Keychain Credential Store Backend through keyring
 - Worker Runtime In-Memory Invocation Observability
 - Worker Runtime Exception Safety
 - Worker Executor Failure Contract
@@ -121,14 +122,14 @@ completed with focused regressions (`232 passed, 1 warning`), Ruff
 component map, accepted technical debt, and explicit production-integration
 exclusions.
 
-The first two Sprint 2 slices are implemented. Calendar event data now enters
+The first three Sprint 2 slices are implemented. Calendar event data now enters
 the worker through the account-aware provider composition response, and a
 vendor-neutral credential-store contract plus deterministic in-memory fake are
-available for future refresh-capable credential persistence.
+available alongside a production macOS Keychain adapter through keyring.
 
-Next proposed task: **macOS Keychain Credential Store Backend through keyring**.
-Keep the backend behind the existing credential-store contract; do not add
-Google OAuth bootstrap or wire provider compositions unless that slice
+Next proposed task: **installed Google OAuth bootstrap and account
+verification**. Reuse the existing credential-store contract and macOS Keychain
+adapter; do not wire Calendar or Gmail provider compositions unless that slice
 explicitly requires it.
 
 ## Current Implementation Notes
@@ -213,6 +214,10 @@ explicitly requires it.
 - `CredentialStore` defines deterministic store, retrieve and delete operations. Initial writes do not silently overwrite existing values; callers must explicitly request replacement. Missing reads return `None` and missing deletes return `False`.
 - `InMemoryCredentialStore` is the deterministic contract fake for tests. Its backing mapping is private, it performs no filesystem, socket, keychain, subprocess, HTTP or external API I/O, and it is not wired into Google, Gmail or Calendar provider composition.
 - Credential Store Contract and Deterministic Fake Store validation completed with focused credential-store tests (13 passed), `uv run ruff check apps tests`, `uv run mypy` (33 source files) and the full test suite (448 passed, 1 warning: existing Starlette/httpx deprecation warning).
+- `MacOSKeychainCredentialStore` is the production integration adapter for the existing vendor-neutral `CredentialStore`. It maps `CredentialReference.namespace` to keyring service, `CredentialReference.account_identifier` to keyring username and `CredentialMaterial.value` to the stored secret. Default construction accepts only the usable macOS Keychain backend selected by keyring and fails closed otherwise; tests inject a deterministic backend and never access the real Keychain.
+- The keyring adapter preserves explicit replacement, missing read and delete, and safe backend-failure semantics through the vendor-neutral `CredentialStoreBackendError`. Backend failures expose no credential material, and the adapter is not wired into Google, Gmail or Calendar provider composition.
+- Keyring exposes no atomic create-if-absent operation, so the required no-silent-overwrite behavior uses an unavoidable check-then-write sequence. Its race remains documented technical debt rather than changing the credential-store contract in this slice.
+- macOS Keychain Credential Store Backend through keyring validation completed with focused credential-store tests (22 passed), `uv run ruff check apps tests`, `uv run mypy` (34 source files) and the full test suite (457 passed, 1 warning: existing Starlette/httpx deprecation warning).
 
 ## Workflow
 
