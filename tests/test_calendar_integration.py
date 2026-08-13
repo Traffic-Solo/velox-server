@@ -4,12 +4,10 @@ import pytest
 from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.integrations.calendar import (
     CALENDAR_EXECUTOR_ROLE,
-    CalendarCapabilities,
-    CalendarCapabilityResult,
     CalendarCredentials,
     CalendarCredentialsProvider,
     CalendarCredentialsProviderError,
-    CalendarMeetingContextRequest,
+    CalendarEvent,
     CalendarProviderComposition,
     CalendarProviderFailure,
     CalendarProviderRequest,
@@ -18,7 +16,6 @@ from apps.server.src.integrations.calendar import (
     CalendarWorkerExecutor,
     FakeCalendarCredentialsProvider,
     FakeCalendarTransportClient,
-    InMemoryCalendarMeetingContextCapability,
 )
 from apps.server.src.integrations.gmail import (
     GmailProviderComposition,
@@ -35,16 +32,6 @@ CALENDAR_ACCOUNT_CONTEXT = WorkerAccountContext(
     principal="principal-1",
     account_identifier="calendar-account-1",
 )
-
-
-class UnexpectedCalendarMeetingContextCapability:
-    def prepare(
-        self,
-        request: CalendarMeetingContextRequest,
-        *,
-        capability: str,
-    ) -> CalendarCapabilityResult:
-        raise AssertionError("calendar capability adapter invoked")
 
 
 class UnexpectedCalendarProviderComposition(CalendarProviderComposition):
@@ -113,23 +100,59 @@ def test_calendar_known_event_returns_structured_meeting_context() -> None:
         executor_role=CALENDAR_EXECUTOR_ROLE,
     )
 
-    result = CalendarWorkerExecutor().execute(action)
+    result = CalendarWorkerExecutor().execute(
+        action,
+        account_context=CALENDAR_ACCOUNT_CONTEXT,
+    )
 
     assert result.status == WorkerExecutionStatus.SUCCEEDED
-    assert result.metadata == {
-        "external_execution_performed": False,
-        "integration": "calendar",
-        "capability": "prepare_calendar_context",
-        "adapter": "in_memory",
-        "calendar_event_id": "calendar-event-1",
-        "found": True,
-        "event": {
-            "event_id": "calendar-event-1",
-            "title": "Sprint 1 planning",
-            "start": "2026-07-27T09:00:00Z",
-            "end": "2026-07-27T09:30:00Z",
-            "attendees": ("owner@example.com", "team@example.com"),
-        },
+    assert result.metadata["calendar_event_id"] == "calendar-event-1"
+    assert result.metadata["found"] is True
+    assert result.metadata["event"] == {
+        "event_id": "calendar-event-1",
+        "title": "Sprint 1 planning",
+        "start": "2026-07-27T09:00:00Z",
+        "end": "2026-07-27T09:30:00Z",
+        "attendees": ("owner@example.com", "team@example.com"),
+    }
+    assert result.metadata["adapter"] == "fake_transport"
+
+
+def test_calendar_event_data_originates_from_provider_response() -> None:
+    provider_event = CalendarEvent(
+        event_id="calendar-event-1",
+        title="Provider-backed planning",
+        start="2026-08-14T10:00:00Z",
+        end="2026-08-14T10:45:00Z",
+        attendees=("provider@example.com",),
+    )
+    executor = CalendarWorkerExecutor(
+        provider_composition=CalendarProviderComposition(
+            transport_client=FakeCalendarTransportClient(
+                events={provider_event.event_id: provider_event},
+            ),
+        ),
+    )
+    action = Action(
+        type="prepare_meeting",
+        target="internal-velox-event-id",
+        payload={"calendar_event_id": provider_event.event_id},
+        executor_role=CALENDAR_EXECUTOR_ROLE,
+    )
+
+    result = executor.execute(
+        action,
+        capability="prepare_meeting",
+        account_context=CALENDAR_ACCOUNT_CONTEXT,
+    )
+
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.metadata["event"] == {
+        "event_id": provider_event.event_id,
+        "title": provider_event.title,
+        "start": provider_event.start,
+        "end": provider_event.end,
+        "attendees": provider_event.attendees,
     }
 
 
@@ -141,7 +164,10 @@ def test_calendar_unknown_event_is_successful_not_found() -> None:
         executor_role=CALENDAR_EXECUTOR_ROLE,
     )
 
-    result = CalendarWorkerExecutor().execute(action)
+    result = CalendarWorkerExecutor().execute(
+        action,
+        account_context=CALENDAR_ACCOUNT_CONTEXT,
+    )
 
     assert result.status == WorkerExecutionStatus.SUCCEEDED
     assert result.metadata["calendar_event_id"] == "unknown-event"
@@ -151,8 +177,8 @@ def test_calendar_unknown_event_is_successful_not_found() -> None:
 
 def test_calendar_explicit_empty_event_store_remains_empty() -> None:
     executor = CalendarWorkerExecutor(
-        capabilities=CalendarCapabilities(
-            meeting_context=InMemoryCalendarMeetingContextCapability(events={}),
+        provider_composition=CalendarProviderComposition(
+            transport_client=FakeCalendarTransportClient(events={}),
         ),
     )
     action = Action(
@@ -162,7 +188,7 @@ def test_calendar_explicit_empty_event_store_remains_empty() -> None:
         executor_role=CALENDAR_EXECUTOR_ROLE,
     )
 
-    result = executor.execute(action)
+    result = executor.execute(action, account_context=CALENDAR_ACCOUNT_CONTEXT)
 
     assert result.status == WorkerExecutionStatus.SUCCEEDED
     assert result.metadata["calendar_event_id"] == "calendar-event-1"
@@ -191,9 +217,6 @@ def test_calendar_invalid_event_id_is_permanent_failure(
 
 def test_calendar_invalid_event_id_does_not_invoke_adapters() -> None:
     executor = CalendarWorkerExecutor(
-        capabilities=CalendarCapabilities(
-            meeting_context=UnexpectedCalendarMeetingContextCapability(),
-        ),
         provider_composition=UnexpectedCalendarProviderComposition(),
     )
     action = Action(
@@ -224,7 +247,11 @@ def test_calendar_capability_identifiers_use_meeting_context(capability: str) ->
         executor_role=CALENDAR_EXECUTOR_ROLE,
     )
 
-    result = CalendarWorkerExecutor().execute(action, capability=capability)
+    result = CalendarWorkerExecutor().execute(
+        action,
+        capability=capability,
+        account_context=CALENDAR_ACCOUNT_CONTEXT,
+    )
 
     assert result.status == WorkerExecutionStatus.SUCCEEDED
     assert result.metadata["capability"] == capability
@@ -277,7 +304,7 @@ def test_calendar_worker_executor_constructs_account_aware_provider_request() ->
         "method",
         "token_type",
     }.isdisjoint(result.metadata["provider_response"])
-    assert result.metadata["adapter"] == "in_memory"
+    assert result.metadata["adapter"] == "fake_transport"
     assert result.metadata["found"] is True
 
 
@@ -328,6 +355,15 @@ def test_calendar_provider_response_metadata_is_allowlisted(
             "external_execution_performed": False,
             "integration": "calendar",
             "adapter": "fake_transport",
+            "found": True,
+            "event": {
+                "event_id": "calendar-event-1",
+                "title": "Provider result",
+                "start": "2026-08-14T10:00:00Z",
+                "end": "2026-08-14T10:30:00Z",
+                "attendees": ["safe@example.com"],
+                "authorization": "must-not-leak",
+            },
             "operation": {"credentials": "must-not-leak"},
             "path": "must-not-leak",
             "method": {"authorization": "must-not-leak"},
@@ -359,8 +395,6 @@ def test_calendar_provider_response_metadata_is_allowlisted(
     )
 
     assert result.status == expected_status
-    assert result.metadata["found"] is True
-    assert result.metadata["event"]["event_id"] == "calendar-event-1"
     provider_metadata = result.metadata["provider_response"]
     assert provider_metadata["external_execution_performed"] is False
     assert provider_metadata["integration"] == "calendar"
@@ -378,6 +412,18 @@ def test_calendar_provider_response_metadata_is_allowlisted(
         "account_context": CALENDAR_ACCOUNT_CONTEXT.as_metadata(),
     }
     assert "must-not-leak" not in repr(result.metadata)
+    if failure is None:
+        assert result.metadata["found"] is True
+        assert result.metadata["event"] == {
+            "event_id": "calendar-event-1",
+            "title": "Provider result",
+            "start": "2026-08-14T10:00:00Z",
+            "end": "2026-08-14T10:30:00Z",
+            "attendees": ("safe@example.com",),
+        }
+    else:
+        assert "found" not in result.metadata
+        assert "event" not in result.metadata
     for sensitive_field in (
         "account",
         "principal",
@@ -708,7 +754,7 @@ def test_calendar_executor_preserves_provider_failure_classification(
     assert result.status == WorkerExecutionStatus.FAILED
     assert result.failure is not None
     assert result.failure.category == failure_category
-    assert result.metadata["found"] is True
+    assert "found" not in result.metadata
 
 
 def test_calendar_bootstrap_makes_no_external_api_calls(monkeypatch) -> None:
@@ -725,7 +771,10 @@ def test_calendar_bootstrap_makes_no_external_api_calls(monkeypatch) -> None:
         path="/calendar/v3/users/me/calendarList",
     )
 
-    execution_result = executor.execute(action)
+    execution_result = executor.execute(
+        action,
+        account_context=CALENDAR_ACCOUNT_CONTEXT,
+    )
     provider_response = executor.provider_composition.execute(
         request,
         principal="principal-1",

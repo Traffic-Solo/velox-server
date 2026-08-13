@@ -223,9 +223,6 @@ def test_mismatched_provider_route_fails_closed_without_calendar_execution(
 ) -> None:
     container = ApplicationContainer()
     calendar_executor_spy = Mock(wraps=container.calendar_worker_executor.execute)
-    calendar_capability_spy = Mock(
-        wraps=container.calendar_worker_executor.capabilities.meeting_context.prepare
-    )
     calendar_provider_spy = Mock(
         wraps=container.calendar_worker_executor.provider_composition.execute
     )
@@ -233,11 +230,6 @@ def test_mismatched_provider_route_fails_closed_without_calendar_execution(
         container.calendar_worker_executor,
         "execute",
         calendar_executor_spy,
-    )
-    monkeypatch.setattr(
-        container.calendar_worker_executor.capabilities.meeting_context,
-        "prepare",
-        calendar_capability_spy,
     )
     monkeypatch.setattr(
         container.calendar_worker_executor.provider_composition,
@@ -257,7 +249,6 @@ def test_mismatched_provider_route_fails_closed_without_calendar_execution(
     assert execution["executor_registered"] is False
     assert execution["routing_reason"] == "no_handler"
     calendar_executor_spy.assert_not_called()
-    calendar_capability_spy.assert_not_called()
     calendar_provider_spy.assert_not_called()
 
 
@@ -267,16 +258,8 @@ def test_valid_calendar_ingress_completes_deterministic_path(
     container = ApplicationContainer()
     raw = raw_calendar_event()
     route = calendar_route()
-    calendar_capability_spy = Mock(
-        wraps=container.calendar_worker_executor.capabilities.meeting_context.prepare
-    )
     calendar_provider_spy = Mock(
         wraps=container.calendar_worker_executor.provider_composition.execute
-    )
-    monkeypatch.setattr(
-        container.calendar_worker_executor.capabilities.meeting_context,
-        "prepare",
-        calendar_capability_spy,
     )
     monkeypatch.setattr(
         container.calendar_worker_executor.provider_composition,
@@ -315,12 +298,10 @@ def test_valid_calendar_ingress_completes_deterministic_path(
     assert action_lifecycle.status == ActionStatus.APPROVED
     assert container.action_queue.list() == [action]
     assert container.worker_execution_observer.list() == []
-    calendar_capability_spy.assert_not_called()
     calendar_provider_spy.assert_not_called()
 
     invocation = container.worker_runtime_invocation.invoke()
 
-    calendar_capability_spy.assert_called_once()
     calendar_provider_spy.assert_called_once()
     worker_result = invocation.results[0]
     assert worker_result.processed is True
