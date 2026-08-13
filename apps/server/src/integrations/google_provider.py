@@ -184,6 +184,14 @@ class FakeGoogleTransportClient:
         if response is not None:
             return response
 
+        return self._default_response(request, credentials)
+
+    def _default_response(
+        self,
+        request: GoogleProviderRequest,
+        credentials: GoogleCredentials,
+    ) -> GoogleProviderResponse:
+        """Return the service-neutral deterministic response."""
         return GoogleProviderResponse(
             status_code=200,
             body={
