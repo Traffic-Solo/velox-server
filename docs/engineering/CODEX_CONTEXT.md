@@ -79,6 +79,7 @@ Sprint 2 - Production Integration Foundations
 - Planner Integration Route and Calendar Event-ID Propagation
 - Event Workflow Application Service Extraction
 - Deterministic Calendar Ingress Adapter
+- Credential Store Contract and Deterministic Fake Store
 - Worker Runtime In-Memory Invocation Observability
 - Worker Runtime Exception Safety
 - Worker Executor Failure Contract
@@ -120,12 +121,15 @@ completed with focused regressions (`232 passed, 1 warning`), Ruff
 component map, accepted technical debt, and explicit production-integration
 exclusions.
 
-The first Sprint 2 slice, **Calendar Provider-Backed Event Read Contract**, is
-implemented. Calendar event data now enters the worker through the account-aware
-provider composition response instead of a pre-provider in-memory capability.
+The first two Sprint 2 slices are implemented. Calendar event data now enters
+the worker through the account-aware provider composition response, and a
+vendor-neutral credential-store contract plus deterministic in-memory fake are
+available for future refresh-capable credential persistence.
 
-Next proposed task: **Credential Store Contract**. Do not begin it as part of the
-Calendar provider-backed event-read slice.
+Next proposed task: **macOS Keychain Credential Store Backend through keyring**.
+Keep the backend behind the existing credential-store contract; do not add
+Google OAuth bootstrap or wire provider compositions unless that slice
+explicitly requires it.
 
 ## Current Implementation Notes
 
@@ -205,6 +209,10 @@ Calendar provider-backed event-read slice.
 - Deterministic end-to-end tests prove Calendar ingress, lifecycle processing, planning, explicit account-aware routing, permission approval, queueing and separate invocation of the existing Calendar worker executor. No OAuth, credentials storage, HTTP transport, socket access, real Google Calendar API calls or other external integration behavior was added.
 - Deterministic Calendar Ingress Adapter validation completed with focused Calendar ingress/workflow/planner/container regression tests (91 passed), including the Calendar ingress/container subset (62 passed), `uv run ruff check apps tests`, `uv run mypy` (32 source files) and `uv run pytest -q` (434 passed, 1 warning: existing Starlette/httpx deprecation warning).
 - Calendar account-aware meeting-context execution now obtains deterministic event data from `CalendarProviderComposition` and `FakeCalendarTransportClient`; the pre-provider `InMemoryCalendarMeetingContextCapability` and executor `capabilities` attribute are removed. The executor validates and allowlists provider response event fields before returning VELOX metadata. Known events preserve structured context, unknown events return `found: False`, provider credential/transport failures preserve their classifications, event IDs remain explicit and path-segment encoded, and untrusted provider response fields are not exposed.
+- `CredentialReference` is the immutable vendor-neutral identity for stored credentials, using an explicit VELOX namespace and account identifier without making secret material part of provider-routing identity. `CredentialMaterial` holds opaque string material and always redacts its public representation.
+- `CredentialStore` defines deterministic store, retrieve and delete operations. Initial writes do not silently overwrite existing values; callers must explicitly request replacement. Missing reads return `None` and missing deletes return `False`.
+- `InMemoryCredentialStore` is the deterministic contract fake for tests. Its backing mapping is private, it performs no filesystem, socket, keychain, subprocess, HTTP or external API I/O, and it is not wired into Google, Gmail or Calendar provider composition.
+- Credential Store Contract and Deterministic Fake Store validation completed with focused credential-store tests (13 passed), `uv run ruff check apps tests`, `uv run mypy` (33 source files) and the full test suite (448 passed, 1 warning: existing Starlette/httpx deprecation warning).
 
 ## Workflow
 
@@ -269,7 +277,7 @@ After every implementation slice, update this file in the same commit if the imp
 - Gmail's unqualified direct-executor aliases (`read`, `send`, `archive`) remain as compatibility inputs. Production provider declarations use canonical `WorkerCapability` values and runtime routing uses their normalized identifiers.
 - Shared Google provider composition retains separate principal/account arguments for backward-compatible direct integration tests; worker adapter execution uses only account context embedded from the matched routing result.
 - Gmail capability tests are consolidated locally in `tests/test_worker_executor.py`; no shared `tests/conftest.py` fixture has been introduced yet.
-- Real Gmail adapter, OAuth, credential storage, HTTP transport and real Gmail API calls are not implemented yet.
+- Real Gmail adapter, OAuth, production credential storage, HTTP transport and real Gmail API calls are not implemented yet. The vendor-neutral credential-store contract and deterministic in-memory fake are present, but no keyring or platform secret-store backend exists.
 - Gmail provider boundary interfaces, fake transport bootstrap, fake credentials provider bootstrap and fake provider composition bootstrap are present behind the Gmail integration boundary. No concrete real provider implementation exists yet.
 - Google Calendar meeting context and ingress use deterministic fake provider behavior only. OAuth, credential storage, real HTTP transport and real Google Calendar API calls are not implemented.
 - Notion sync may still need reconciliation for the latest completed Google integration slices; do not claim Notion is updated unless the sync is explicitly performed.
