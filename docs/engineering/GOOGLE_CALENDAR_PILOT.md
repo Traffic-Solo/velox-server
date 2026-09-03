@@ -273,6 +273,25 @@ the command fails with `credential_already_exists`.
 | `duplicate_event` | sync | This Calendar event was already ingested into the current VELOX process state. |
 | `invalid_input` | both | A supplied value is blank or has surrounding whitespace. |
 
+## Known benign warning on refresh
+
+Every live sync writes this line to stderr before succeeding:
+
+```
+Not all requested scopes were granted by the authorization server, missing scopes email.
+```
+
+It is emitted by `google-auth` during token refresh and is **not** a failure. It has the
+same root cause as the historical bootstrap failure: the stored credential records the
+approved scope `email`, while Google's refresh response reports it in canonical form as
+`https://www.googleapis.com/auth/userinfo.email`, so a verbatim comparison reports it
+missing. Refresh completes and `events.get` succeeds.
+
+Judge a run by its exit code and JSON, not by the presence of this line. Silencing it
+would mean either recording canonical scope URLs in stored credentials or filtering a
+third-party logger, both of which change approved behavior; it is recorded as technical
+debt instead.
+
 ## Testing note
 
 No default test opens a browser, contacts Google, uses the real Keychain, or requires
