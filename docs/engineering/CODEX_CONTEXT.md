@@ -125,16 +125,18 @@ completed with focused regressions (`232 passed, 1 warning`), Ruff
 component map, accepted technical debt, and explicit production-integration
 exclusions.
 
-The first five Sprint 2 slices are implemented. One explicit VELOX account can
-now resolve stored refresh-capable Google OAuth material, refresh an ephemeral
-access token and read one event from that account's primary Google Calendar
-through the synchronous httpx `events.get` transport. The deterministic fake
-Calendar composition remains the default; production dependencies must be
-injected explicitly.
+The first six Sprint 2 slices are implemented. One explicit local command can
+now accept a VELOX principal, VELOX account identifier and Google Calendar event
+ID, resolve stored refresh-capable Google OAuth material, read that one event
+from the account's primary Google Calendar and pass the allowlisted event shape
+through the existing Calendar ingress and application-owned event workflow. The
+deterministic fake Calendar composition remains the application default;
+production dependencies are composed only by the opt-in manual command.
 
-The next Sprint 2 slice requires an explicit engineering decision. Calendar
-`events.list`, manual synchronization and a live smoke/pilot remain later work
-and were not included in Slice 5.
+The next proposed Sprint 2 slice is opt-in live smoke/pilot validation of the
+manual single-event command together with its pilot runbook. This is not yet
+implemented. Calendar `events.list` also remains explicitly unimplemented and
+is separate from the proposed live pilot slice.
 
 ## Current Implementation Notes
 
@@ -231,6 +233,11 @@ and were not included in Slice 5.
 - `HttpxCalendarTransportClient` implements only synchronous Google Calendar `events.get` against `https://www.googleapis.com` with an injected `httpx.Client`, a bounded timeout, Bearer authorization and preserved query parameters. It maps timed and all-day events into the existing VELOX event shape, treats event 404 as `found: False`, classifies required HTTP and transport failures, and exposes only allow-listed safe failure reasons.
 - Calendar transport retries and exponential backoff remain owned by VELOX bounded transient retry behavior; the adapter performs no transport-local retries or backoff. `CalendarProviderComposition()` remains deterministic and fake by default, and no production Google path is wired into `ApplicationContainer`.
 - Real Google Calendar `events.get` transport validation completed with focused Google OAuth and Calendar tests (102 passed), `uv run ruff check apps tests`, `uv run mypy` (35 source files) and the full test suite (527 passed, 1 warning: existing Starlette/httpx deprecation warning).
+- `ManualCalendarSyncService` provides one explicit local single-event synchronization boundary. Its request requires non-blank, whitespace-normalized VELOX principal, VELOX account identifier and Google Calendar event ID before production construction or provider execution. The thin dependency-free module command accepts exactly those three positional values.
+- Production manual composition is opt-in: `MacOSKeychainCredentialStore` -> `StoredGoogleCredentialsProvider` -> bounded `HttpxCalendarTransportClient` -> `CalendarProviderComposition` -> `CalendarWorkerExecutor`. The provider event read uses the primary-calendar `events.get` path with opaque event-ID encoding, and only event ID, title, start, end and attendees cross into `CalendarIngressAdapter`.
+- Manual Calendar sync reuses the current `ApplicationContainer.calendar_ingress_adapter` and its application-owned `EventWorkflowService`. It supplies an exact `IntegrationRouteContext`, preserves current UniversalEvent identity and duplicate semantics, queues the existing planner output without invoking the worker runtime, returns only safe VELOX/routing outcome data and maps input, credential, transport, provider, not-found, malformed-event, duplicate and ingress/workflow failures without retaining third-party exceptions or secret material.
+- Manual Google Calendar Single-Event Sync validation completed with focused manual-sync/Calendar ingress/Calendar integration/container tests (139 passed), `uv run ruff check apps tests`, `uv run mypy` (36 source files) and the full test suite (553 passed, 1 warning: existing Starlette/httpx deprecation warning).
+- Calendar `events.list`, live smoke/pilot validation and the pilot runbook remain explicitly unimplemented after Slice 6.
 
 ## Workflow
 
