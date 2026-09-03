@@ -370,7 +370,9 @@ class FakeCalendarTransportClient(FakeGoogleTransportClient):
 
     @staticmethod
     def _invalid_page_token_response() -> GoogleProviderResponse:
-        """Reject an unrecognized token the way Google rejects a bad pageToken."""
+        """Reject a token failing the format or offset check, as Google rejects a
+        malformed pageToken. No registry of issued tokens is kept.
+        """
         return GoogleProviderResponse(
             status_code=400,
             body={

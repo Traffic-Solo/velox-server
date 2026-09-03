@@ -612,7 +612,12 @@ def test_fake_transport_walks_pages_only_when_the_caller_asks() -> None:
     assert len(set(seen[0]) | set(seen[1]) | set(seen[2])) == 5
 
 
-def test_fake_transport_rejects_a_token_it_did_not_issue() -> None:
+def test_fake_transport_rejects_a_malformed_fake_page_token() -> None:
+    """The fake rejects a token failing its own format and offset checks.
+
+    It validates shape only and keeps no registry of tokens it has issued, so a
+    well-formed token it never issued would still be accepted.
+    """
     result = execute(paginating_executor(5), list_action(page_token=OPAQUE_TOKEN))
 
     assert result.status == WorkerExecutionStatus.FAILED
