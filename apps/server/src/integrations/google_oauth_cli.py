@@ -89,9 +89,11 @@ class GoogleOAuthCliError(Exception):
         code: GoogleOAuthCliFailureCode,
         *,
         authorizer_error_type: str | None = None,
+        authorizer_credential_fields: dict[str, bool] | None = None,
     ) -> None:
         self.code = code
         self.authorizer_error_type = authorizer_error_type
+        self.authorizer_credential_fields = authorizer_credential_fields
         super().__init__(_FAILURE_MESSAGES[code])
 
     def as_dict(self) -> dict[str, object]:
@@ -103,7 +105,16 @@ class GoogleOAuthCliError(Exception):
         }
         if self.authorizer_error_type is not None:
             failure["authorizer_error_type"] = self.authorizer_error_type
+        if self.authorizer_credential_fields is not None:
+            failure["authorizer_credential_fields"] = dict(
+                self.authorizer_credential_fields
+            )
         return failure
+
+
+def _is_non_blank(value: object) -> bool:
+    """Report only whether a credential field is usable, never its value."""
+    return isinstance(value, str) and bool(value.strip())
 
 
 class DiagnosticAuthorizer:
@@ -119,6 +130,7 @@ class DiagnosticAuthorizer:
     def __init__(self, inner: GoogleOAuthAuthorizer) -> None:
         self._inner = inner
         self.error_type: str | None = None
+        self.credential_fields: dict[str, bool] | None = None
 
     def authorize(
         self,
@@ -126,10 +138,15 @@ class DiagnosticAuthorizer:
         scopes: tuple[str, ...],
     ) -> Credentials:
         try:
-            return self._inner.authorize(client_secrets_file, scopes)
+            credentials = self._inner.authorize(client_secrets_file, scopes)
         except BaseException as error:
             self.error_type = type(error).__name__
             raise
+        self.credential_fields = {
+            name + "_present": _is_non_blank(getattr(credentials, name, None))
+            for name in ("refresh_token", "id_token", "client_id", "client_secret")
+        }
+        return credentials
 
 
 class ManualOpenGoogleOAuthAuthorizer:
@@ -237,6 +254,7 @@ def _connect(
         raise GoogleOAuthCliError(
             GoogleOAuthCliFailureCode.OAUTH_BOOTSTRAP_FAILED,
             authorizer_error_type=authorizer.error_type,
+            authorizer_credential_fields=authorizer.credential_fields,
         ) from None
 
     return {

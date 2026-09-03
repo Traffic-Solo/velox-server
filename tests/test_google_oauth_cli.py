@@ -581,3 +581,71 @@ def test_diagnostic_authorizer_reraises_and_retains_no_exception(
     assert wrapper.error_type == "AccessDeniedMarkerError"
     # Only the class name is retained, never the exception object itself.
     assert isinstance(wrapper.error_type, str)
+
+
+class MissingRefreshTokenAuthorizer:
+    """Return credentials that completed consent but carry no refresh token."""
+
+    def authorize(self, client_secrets_file: str, scopes: tuple[str, ...]) -> Credentials:
+        return Credentials(
+            token=ACCESS_TOKEN,
+            refresh_token=None,
+            id_token=ID_TOKEN,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=CLIENT_ID,
+            client_secret=CLIENT_SECRET,
+            scopes=GOOGLE_OAUTH_SCOPES,
+        )
+
+
+def test_post_authorization_failure_reports_field_presence_not_error_type(
+    credential_store: InMemoryCredentialStore,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        google_oauth_cli,
+        "InstalledAppGoogleOAuthAuthorizer",
+        MissingRefreshTokenAuthorizer,
+    )
+    monkeypatch.setattr(
+        google_oauth_cli,
+        "GoogleIdTokenIdentityVerifier",
+        FakeIdentityVerifier,
+    )
+
+    exit_code = google_oauth_cli.main(connect_arguments())
+
+    failure = json.loads(capsys.readouterr().err)
+    assert exit_code == 1
+    # authorize() succeeded, so there is no authorizer error type ...
+    assert "authorizer_error_type" not in failure
+    # ... and the field map isolates the real cause.
+    assert failure["authorizer_credential_fields"] == {
+        "client_id_present": True,
+        "client_secret_present": True,
+        "id_token_present": True,
+        "refresh_token_present": False,
+    }
+    assert credential_store.get(credential_reference()) is None
+
+
+def test_flow_failure_reports_error_type_and_no_field_map(
+    credential_store: InMemoryCredentialStore,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        google_oauth_cli,
+        "InstalledAppGoogleOAuthAuthorizer",
+        ExplodingAuthorizer,
+    )
+    monkeypatch.setattr(
+        google_oauth_cli, "GoogleIdTokenIdentityVerifier", FakeIdentityVerifier
+    )
+
+    google_oauth_cli.main(connect_arguments())
+
+    failure = json.loads(capsys.readouterr().err)
+    assert failure["authorizer_error_type"] == "AccessDeniedMarkerError"
+    assert "authorizer_credential_fields" not in failure
