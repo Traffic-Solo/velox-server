@@ -4,3 +4,12 @@ __pycache__/
 *.pyc
 .DS_Store
 *.log
+
+# Google OAuth Desktop client-secret files (pilot only; never commit real credentials)
+client_secret*.json
+client-secret*.json
+client-secrets*.json
+token.json
+
+# Browser-automation scratch output; may capture downloaded credential files
+.playwright-mcp/
