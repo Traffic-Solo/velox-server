@@ -133,10 +133,12 @@ through the existing Calendar ingress and application-owned event workflow. The
 deterministic fake Calendar composition remains the application default;
 production dependencies are composed only by the opt-in manual command.
 
-The next proposed Sprint 2 slice is opt-in live smoke/pilot validation of the
-manual single-event command together with its pilot runbook. This is not yet
-implemented. Calendar `events.list` also remains explicitly unimplemented and
-is separate from the proposed live pilot slice.
+Slice 7 adds the two remaining pieces the live pilot needs: an explicit local
+command around the existing `GoogleOAuthBootstrapService`, and the operational
+runbook `docs/engineering/GOOGLE_CALENDAR_PILOT.md`. Executing the live pilot
+against a real Google account is a manual, opt-in activity and is not performed
+by any default test. Calendar `events.list` remains explicitly unimplemented and
+is separate from the live pilot.
 
 ## Current Implementation Notes
 
@@ -238,6 +240,11 @@ is separate from the proposed live pilot slice.
 - Manual Calendar sync reuses the current `ApplicationContainer.calendar_ingress_adapter` and its application-owned `EventWorkflowService`. It supplies an exact `IntegrationRouteContext`, preserves current UniversalEvent identity and duplicate semantics, queues the existing planner output without invoking the worker runtime, returns only safe VELOX/routing outcome data and maps input, credential, transport, provider, not-found, malformed-event, duplicate and ingress/workflow failures without retaining third-party exceptions or secret material.
 - Manual Google Calendar Single-Event Sync validation completed with focused manual-sync/Calendar ingress/Calendar integration/container tests (139 passed), `uv run ruff check apps tests`, `uv run mypy` (36 source files) and the full test suite (553 passed, 1 warning: existing Starlette/httpx deprecation warning).
 - Calendar `events.list`, live smoke/pilot validation and the pilot runbook remain explicitly unimplemented after Slice 6.
+- `google_oauth_cli` is the thin explicit local entry point around the existing `GoogleOAuthBootstrapService`. It composes only `MacOSKeychainCredentialStore`, `InstalledAppGoogleOAuthAuthorizer` and `GoogleIdTokenIdentityVerifier`; it adds no framework and does not change OAuth behavior, scopes, verification or storage. `connect` requires an explicit VELOX account identifier, expected Google email and Desktop client-secrets path, and requires `--replace` before overwriting stored material. `verify` is read-only and reports credential presence, parse success, expected-field presence, approved scopes and the absence of any persisted `access_token`/`id_token`/`token`.
+- Both CLI commands print one safe JSON object and never print access tokens, refresh tokens, ID tokens, client secrets or Authorization headers. Failures map to safe codes without retaining third-party exceptions.
+- `docs/engineering/GOOGLE_CALENDAR_PILOT.md` is the operational pilot runbook: Google Cloud/Desktop-client setup, approved scopes, client-secret handling, both commands with safe expected output, Keychain namespace/account mapping, success criteria, the safe not-found probe, reconnect procedure, common errors and the Testing vs In production seven-day note.
+- `.gitignore` blocks `client_secret*.json`, `client-secrets*.json` and `token.json`. Google client-secret files are kept outside the repository entirely.
+- No default test opens a browser, contacts Google, uses the real macOS Keychain or requires real credentials. Live pilot execution is manual and opt-in only.
 
 ## Workflow
 
@@ -305,4 +312,6 @@ After every implementation slice, update this file in the same commit if the imp
 - Real Gmail adapter, Gmail credential refresh integration, HTTP transport and real Gmail API calls are not implemented yet. The provider-local Calendar read-only OAuth bootstrap and macOS Keychain credential store exist but are not wired into Gmail provider composition.
 - Gmail provider boundary interfaces, fake transport bootstrap, fake credentials provider bootstrap and fake provider composition bootstrap are present behind the Gmail integration boundary. No concrete real provider implementation exists yet.
 - Google Calendar meeting context and ingress remain wired to the deterministic fake provider by default. The stored-credential resolver and real `events.get` httpx transport require explicit production dependency injection and are not wired into `ApplicationContainer`. Calendar `events.list`, manual synchronization and a live smoke/pilot remain later work.
+- Calendar `events.list` remains unimplemented, so the pilot requires an event ID supplied out of band.
+- Refresh-token rotation persistence remains unimplemented; a rotated refresh token is not written back to the Keychain.
 - Notion sync may still need reconciliation for the latest completed Google integration slices; do not claim Notion is updated unless the sync is explicitly performed.
