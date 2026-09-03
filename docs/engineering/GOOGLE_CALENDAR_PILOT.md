@@ -29,9 +29,11 @@ These rules are absolute.
   namespace `velox.google.oauth`.
 - Never place tokens, client secrets, authorization codes or ID tokens in the
   repository, `.env`, Notion, logs, command output, or test fixtures.
-- Never commit the downloaded Google client-secret JSON. `.gitignore` already blocks
-  `client_secret*.json`, `client-secrets*.json` and `token.json`, but keep the file
-  outside the repository anyway.
+- Never commit the downloaded Google client-secret JSON. `.gitignore` blocks
+  `client_secret*.json`, `client-secret*.json`, `client-secrets*.json`, `token.json` and
+  `.playwright-mcp/`, but keep the file outside the repository anyway. Browsers and
+  browser-automation tools may drop a download into the working tree; if that happens,
+  move it out immediately rather than relying on the ignore rules.
 - Both pilot commands print JSON containing only safe metadata. If any command ever
   prints a token or secret, stop and treat it as a defect.
 
@@ -54,8 +56,11 @@ These rules are absolute.
    - `email`
    - `https://www.googleapis.com/auth/calendar.events.readonly`
 5. Create credentials -> **OAuth client ID** -> Application type: **Desktop app**.
-6. Download the client-secret JSON and store it outside the repository, for example
-   `~/.config/velox/google-client-secret.json`. Restrict it: `chmod 600 <path>`.
+6. Download the client-secret JSON and store it **outside the repository**, for example
+   `~/.config/velox/velox-calendar-pilot-client-secret.json`. Restrict it:
+   `chmod 700 ~/.config/velox && chmod 600 <path>`. The file's top-level key must be
+   `installed` — that is what marks it a Desktop client and what `InstalledAppFlow`
+   expects. A `web` key means you created the wrong client type.
 
 ### Testing mode vs In production
 
@@ -87,7 +92,7 @@ Never widen this to `https://www.googleapis.com/auth/calendar` or any read-write
 uv run python -m apps.server.src.integrations.google_oauth_cli connect \
   --account-identifier <VELOX_ACCOUNT_IDENTIFIER> \
   --expected-google-email <you@example.com> \
-  --client-secrets ~/.config/velox/google-client-secret.json
+  --client-secrets ~/.config/velox/velox-calendar-pilot-client-secret.json
 ```
 
 Add `--replace` only when you intentionally want to overwrite existing stored material
@@ -220,7 +225,7 @@ revoked in the Google account's security settings, or when the sync command retu
 uv run python -m apps.server.src.integrations.google_oauth_cli connect \
   --account-identifier <VELOX_ACCOUNT_IDENTIFIER> \
   --expected-google-email <you@example.com> \
-  --client-secrets ~/.config/velox/google-client-secret.json \
+  --client-secrets ~/.config/velox/velox-calendar-pilot-client-secret.json \
   --replace
 ```
 
