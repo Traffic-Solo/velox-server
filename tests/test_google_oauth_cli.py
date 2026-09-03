@@ -11,7 +11,7 @@ from apps.server.src.core.credentials import (
     CredentialStoreBackendError,
     InMemoryCredentialStore,
 )
-from apps.server.src.integrations import google_oauth_cli
+from apps.server.src.integrations import google_oauth, google_oauth_cli
 from apps.server.src.integrations.google_oauth import (
     GOOGLE_OAUTH_CREDENTIAL_NAMESPACE,
     GOOGLE_OAUTH_SCOPES,
@@ -467,7 +467,7 @@ def test_no_browser_mode_emits_url_to_stderr_and_never_opens_a_browser(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(google_oauth_cli, "InstalledAppFlow", RecordingFlow)
+    monkeypatch.setattr(google_oauth, "InstalledAppFlow", RecordingFlow)
     monkeypatch.setattr(
         google_oauth_cli,
         "GoogleIdTokenIdentityVerifier",

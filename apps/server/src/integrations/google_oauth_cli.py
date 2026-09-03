@@ -8,7 +8,6 @@ import json
 import sys
 from collections.abc import Sequence
 from enum import StrEnum
-from typing import cast
 
 from apps.server.src.core.credentials import (
     CredentialAlreadyExistsError,
@@ -26,12 +25,12 @@ from apps.server.src.integrations.google_oauth import (
     GoogleOAuthBootstrapService,
     GoogleOAuthConnectRequest,
     InstalledAppGoogleOAuthAuthorizer,
+    run_installed_app_flow,
 )
 from apps.server.src.integrations.keyring_credentials import (
     MacOSKeychainCredentialStore,
 )
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 
 _PROGRAM_NAME = "python -m apps.server.src.integrations.google_oauth_cli"
 # Printed to stderr in --no-browser mode so the operator can open the URL
@@ -163,18 +162,12 @@ class ManualOpenGoogleOAuthAuthorizer:
         client_secrets_file: str,
         scopes: tuple[str, ...],
     ) -> Credentials:
-        flow = InstalledAppFlow.from_client_secrets_file(client_secrets_file, scopes=scopes)
         with contextlib.redirect_stdout(sys.stderr):
-            return cast(
-                Credentials,
-                flow.run_local_server(
-                    host="127.0.0.1",
-                    port=0,
-                    open_browser=False,
-                    access_type="offline",
-                    prompt="consent",
-                    authorization_prompt_message=_AUTHORIZATION_URL_PREFIX + "{url}",
-                ),
+            return run_installed_app_flow(
+                client_secrets_file,
+                scopes,
+                open_browser=False,
+                authorization_prompt_message=_AUTHORIZATION_URL_PREFIX + "{url}",
             )
 
 

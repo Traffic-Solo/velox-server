@@ -1,7 +1,9 @@
 """Installed Google OAuth bootstrap for one explicit VELOX account."""
 
 import json
-from collections.abc import Callable, Mapping
+import os
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol, cast, runtime_checkable
@@ -34,6 +36,13 @@ GOOGLE_OAUTH_SCOPES = (
 _STORED_GOOGLE_CREDENTIAL_FIELDS = frozenset(
     {"client_id", "client_secret", "refresh_token", "scopes"}
 )
+_RELAX_TOKEN_SCOPE_ENV = "OAUTHLIB_RELAX_TOKEN_SCOPE"
+# Google echoes the short OpenID scopes back in their canonical URL form, so the
+# granted scope string never matches the requested one verbatim.
+_GOOGLE_CANONICAL_SCOPE_ALIASES = {
+    "email": "https://www.googleapis.com/auth/userinfo.email",
+    "profile": "https://www.googleapis.com/auth/userinfo.profile",
+}
 
 
 class GoogleOAuthBootstrapError(Exception):
@@ -41,6 +50,13 @@ class GoogleOAuthBootstrapError(Exception):
 
     def __init__(self) -> None:
         super().__init__("Google OAuth bootstrap failed")
+
+
+class GoogleOAuthScopeMismatchError(GoogleOAuthBootstrapError):
+    """Safe failure raised when the granted scopes are not the approved scopes."""
+
+    def __init__(self) -> None:
+        Exception.__init__(self, "granted Google scopes do not match approved scopes")
 
 
 class GoogleOAuthAccountMismatchError(GoogleOAuthBootstrapError):
@@ -81,6 +97,65 @@ class GoogleOAuthAuthorizer(Protocol):
     ) -> Credentials: ...
 
 
+def canonical_scope_set(scopes: Iterable[str]) -> frozenset[str]:
+    """Normalize Google's short scope aliases to one comparable canonical form."""
+    return frozenset(
+        _GOOGLE_CANONICAL_SCOPE_ALIASES.get(scope, scope) for scope in scopes
+    )
+
+
+@contextmanager
+def _relaxed_oauthlib_scope_check() -> Iterator[None]:
+    """Allow Google's canonical scope aliases through oauthlib's equality check.
+
+    oauthlib raises a bare `Warning` whenever the granted scope string differs
+    from the requested one, which Google triggers on every request that includes
+    `email`. Relaxing that check on its own would discard the guarantee that
+    nothing broader than the approved scopes was granted, so the caller must
+    verify equivalence explicitly. The previous value is always restored.
+    """
+    previous = os.environ.get(_RELAX_TOKEN_SCOPE_ENV)
+    os.environ[_RELAX_TOKEN_SCOPE_ENV] = "1"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(_RELAX_TOKEN_SCOPE_ENV, None)
+        else:
+            os.environ[_RELAX_TOKEN_SCOPE_ENV] = previous
+
+
+def run_installed_app_flow(
+    client_secrets_file: str,
+    scopes: tuple[str, ...],
+    *,
+    open_browser: bool,
+    authorization_prompt_message: str = "",
+) -> Credentials:
+    """Run the installed-app flow and accept only the exact approved scopes."""
+    flow = InstalledAppFlow.from_client_secrets_file(client_secrets_file, scopes=scopes)
+    with _relaxed_oauthlib_scope_check():
+        credentials = cast(
+            Credentials,
+            flow.run_local_server(
+                host="127.0.0.1",
+                port=0,
+                open_browser=open_browser,
+                access_type="offline",
+                prompt="consent",
+                authorization_prompt_message=authorization_prompt_message,
+            ),
+        )
+
+    granted = credentials.scopes
+    if not isinstance(granted, Iterable) or isinstance(granted, str | bytes):
+        raise GoogleOAuthScopeMismatchError()
+    granted_scopes = [scope for scope in granted if isinstance(scope, str)]
+    if canonical_scope_set(granted_scopes) != canonical_scope_set(scopes):
+        raise GoogleOAuthScopeMismatchError()
+    return credentials
+
+
 class InstalledAppGoogleOAuthAuthorizer:
     """Run Google's installed-app OAuth flow through a browser and loopback server."""
 
@@ -89,17 +164,10 @@ class InstalledAppGoogleOAuthAuthorizer:
         client_secrets_file: str,
         scopes: tuple[str, ...],
     ) -> Credentials:
-        flow = InstalledAppFlow.from_client_secrets_file(client_secrets_file, scopes=scopes)
-        return cast(
-            Credentials,
-            flow.run_local_server(
-                host="127.0.0.1",
-                port=0,
-                open_browser=True,
-                access_type="offline",
-                prompt="consent",
-                authorization_prompt_message="",
-            ),
+        return run_installed_app_flow(
+            client_secrets_file,
+            scopes,
+            open_browser=True,
         )
 
 
