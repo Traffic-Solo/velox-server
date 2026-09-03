@@ -965,7 +965,7 @@ class CalendarWorkerExecutor:
         except CalendarEventListRequestError as error:
             reason = str(error)
             return WorkerExecutionResult(
-                action=action,
+                action=_page_token_redacted_action(action),
                 status=WorkerExecutionStatus.FAILED,
                 reason=reason,
                 metadata={
@@ -979,6 +979,8 @@ class CalendarWorkerExecutor:
                     metadata={"field": error.field},
                 ),
             )
+
+        result_action = _page_token_redacted_action(action)
 
         request = CalendarProviderRequest(
             operation=capability,
@@ -1001,13 +1003,13 @@ class CalendarWorkerExecutor:
             },
         )
         provider_failure_result = self._provider_failure_result(
-            action, response, result_metadata
+            result_action, response, result_metadata
         )
         if provider_failure_result is not None:
             return provider_failure_result
 
         return self._capability_worker_result(
-            action=action,
+            action=result_action,
             response=response,
             result_metadata=result_metadata,
             capability_result=_calendar_event_list_result(response),
@@ -1131,6 +1133,28 @@ def _calendar_capability_result(
         status=WorkerExecutionStatus.SUCCEEDED,
         reason="calendar meeting context provider result",
         metadata=metadata,
+    )
+
+
+def _page_token_redacted_action(action: Action) -> Action:
+    """Return the action with the opaque page token replaced, identity preserved.
+
+    The result travels further than the request: it is handed back to callers and
+    an action payload is what an action repository would persist. Replacing the
+    token here keeps it confined to the provider request, while model_copy retains
+    the same action id, created_at and every other field, so action identity and
+    worker semantics are unchanged. An action without a token is returned as-is,
+    so every non-paginated capability keeps the exact object it was given.
+    """
+    if "page_token" not in action.payload:
+        return action
+    return action.model_copy(
+        update={
+            "payload": {
+                **action.payload,
+                "page_token": _REDACTED_QUERY_VALUE,
+            }
+        }
     )
 
 

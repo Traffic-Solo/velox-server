@@ -643,3 +643,150 @@ def test_page_token_is_confined_to_the_request_and_a_presence_flag() -> None:
     # The freshly returned token is surfaced, since a caller needs it to continue.
     assert result.metadata["next_page_token"] == SECOND_OPAQUE_TOKEN
     assert dict(requests[0].url.params)["pageToken"] == OPAQUE_TOKEN
+
+
+# --- token confinement across every result surface ---------------------------
+
+SENTINEL_TOKEN = "SENTINEL-PAGE-TOKEN-MUST-NEVER-ESCAPE-7f3a91"
+
+
+def result_surfaces(result) -> str:
+    """Every surface a caller can read off a WorkerExecutionResult."""
+    return "|".join(
+        (
+            repr(result),
+            repr(result.action),
+            repr(result.action.payload),
+            repr(result.metadata),
+            repr(result.failure),
+            repr(result.failure.metadata if result.failure is not None else None),
+            str(result.reason),
+        )
+    )
+
+
+def test_sentinel_token_reaches_the_transport_but_no_result_surface() -> None:
+    executor, requests = executor_over(
+        lambda request: httpx.Response(
+            200,
+            json={"items": [event_payload(3)], "nextPageToken": SECOND_OPAQUE_TOKEN},
+        )
+    )
+
+    result = execute(executor, list_action(page_token=SENTINEL_TOKEN))
+
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    # It reached Google exactly, unmodified.
+    assert dict(requests[0].url.params)["pageToken"] == SENTINEL_TOKEN
+    # And it appears on no surface the caller can read back.
+    assert SENTINEL_TOKEN not in result_surfaces(result)
+    assert result.action.payload["page_token"] == "<redacted>"
+    assert result.metadata["page_token_supplied"] is True
+    assert result.metadata["provider_request"]["query"]["pageToken"] == "<redacted>"
+
+
+def test_sentinel_token_is_absent_from_a_provider_failure_result() -> None:
+    executor, requests = executor_over(
+        lambda request: httpx.Response(403, json={"error": "raw-secret"})
+    )
+
+    result = execute(executor, list_action(page_token=SENTINEL_TOKEN))
+
+    assert result.status == WorkerExecutionStatus.FAILED
+    assert dict(requests[0].url.params)["pageToken"] == SENTINEL_TOKEN
+    assert SENTINEL_TOKEN not in result_surfaces(result)
+    assert "raw-secret" not in result_surfaces(result)
+
+
+@pytest.mark.parametrize(
+    "invalid_token",
+    [
+        f" {SENTINEL_TOKEN}",
+        f"{SENTINEL_TOKEN} ",
+        f"\t{SENTINEL_TOKEN}\n",
+    ],
+)
+def test_rejected_sentinel_token_is_absent_from_the_validation_failure(
+    invalid_token: str,
+) -> None:
+    def unreachable(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("invalid page token reached the provider")
+
+    executor, requests = executor_over(unreachable)
+
+    result = execute(executor, list_action(page_token=invalid_token))
+
+    assert result.status == WorkerExecutionStatus.FAILED
+    assert result.failure is not None
+    assert result.failure.metadata["field"] == "page_token"
+    # Rejected before any provider call, and the bad token is not echoed back.
+    assert requests == []
+    assert SENTINEL_TOKEN not in result_surfaces(result)
+    assert result.action.payload["page_token"] == "<redacted>"
+
+
+def test_redacting_the_token_preserves_action_identity() -> None:
+    executor, _ = executor_over(
+        lambda request: httpx.Response(200, json={"items": [event_payload(3)]})
+    )
+    action = list_action(page_token=SENTINEL_TOKEN)
+
+    result = execute(executor, action)
+
+    # Same action, with only the token value replaced.
+    assert result.action.id == action.id
+    assert result.action.created_at == action.created_at
+    assert result.action.type == action.type
+    assert result.action.target == action.target
+    assert result.action.executor_role == action.executor_role
+    assert result.action.metadata == action.metadata
+    assert {
+        key: value
+        for key, value in result.action.payload.items()
+        if key != "page_token"
+    } == {key: value for key, value in action.payload.items() if key != "page_token"}
+    # The caller's own object is never mutated in place.
+    assert action.payload["page_token"] == SENTINEL_TOKEN
+
+
+def test_first_page_result_returns_the_caller_action_untouched() -> None:
+    executor, _ = executor_over(
+        lambda request: httpx.Response(200, json={"items": [event_payload(1)]})
+    )
+    action = list_action()
+
+    result = execute(executor, action)
+
+    # No token present, so no copy is made and nothing about the action changes.
+    assert result.action is action
+    assert "page_token" not in result.action.payload
+
+
+def test_events_get_result_action_is_unchanged_by_pagination_redaction() -> None:
+    executor, _ = executor_over(
+        lambda request: httpx.Response(
+            200,
+            json={
+                "id": "calendar-event-1",
+                "summary": "Planning",
+                "start": {"dateTime": "2026-09-04T09:00:00Z"},
+                "end": {"dateTime": "2026-09-04T09:30:00Z"},
+            },
+        )
+    )
+    action = Action(
+        type="prepare_meeting",
+        target="internal-velox-event-id",
+        payload={"calendar_event_id": "calendar-event-1"},
+        executor_role=CALENDAR_EXECUTOR_ROLE,
+    )
+
+    result = executor.execute(
+        action,
+        capability="prepare_meeting",
+        account_context=ACCOUNT_CONTEXT,
+    )
+
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.action is action
+    assert result.action.payload == {"calendar_event_id": "calendar-event-1"}
