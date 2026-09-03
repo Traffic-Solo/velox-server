@@ -3,12 +3,14 @@
 import json
 from collections.abc import Mapping
 from dataclasses import asdict
+from datetime import UTC, datetime
 
 import pytest
 from apps.server.src.core.credentials import (
     CredentialAlreadyExistsError,
     CredentialMaterial,
     CredentialReference,
+    CredentialStoreBackendError,
     InMemoryCredentialStore,
 )
 from apps.server.src.integrations import google_oauth
@@ -21,7 +23,11 @@ from apps.server.src.integrations.google_oauth import (
     GoogleOAuthBootstrapService,
     GoogleOAuthConnectRequest,
     InstalledAppGoogleOAuthAuthorizer,
+    StoredGoogleCredentialsProvider,
 )
+from apps.server.src.integrations.google_provider import GoogleCredentialsProviderError
+from apps.server.src.workers.executor import WorkerExecutionFailureCategory
+from google.auth.exceptions import RefreshError, TransportError
 from google.oauth2.credentials import Credentials
 
 REFRESH_TOKEN = "refresh-token-secret"
@@ -106,6 +112,54 @@ def credential_reference() -> CredentialReference:
         namespace=GOOGLE_OAUTH_CREDENTIAL_NAMESPACE,
         account_identifier=ACCOUNT_IDENTIFIER,
     )
+
+
+def stored_credential_material(
+    *,
+    scopes: object = GOOGLE_OAUTH_SCOPES,
+    **overrides: object,
+) -> CredentialMaterial:
+    fields: dict[str, object] = {
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "refresh_token": REFRESH_TOKEN,
+        "scopes": scopes,
+    }
+    fields.update(overrides)
+    return CredentialMaterial(json.dumps(fields))
+
+
+class RecordingCredentialStore(InMemoryCredentialStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.get_calls: list[CredentialReference] = []
+        self.store_calls = 0
+
+    def store(
+        self,
+        reference: CredentialReference,
+        material: CredentialMaterial,
+        *,
+        replace: bool = False,
+    ) -> None:
+        self.store_calls += 1
+        super().store(reference, material, replace=replace)
+
+    def get(self, reference: CredentialReference) -> CredentialMaterial | None:
+        self.get_calls.append(reference)
+        return super().get(reference)
+
+
+def refresh_successfully(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    token: str = ACCESS_TOKEN,
+) -> None:
+    def refresh(credentials: Credentials, request: object) -> None:
+        credentials.token = token
+        credentials.expiry = datetime(2026, 9, 3, 20, 0, tzinfo=UTC)
+
+    monkeypatch.setattr(Credentials, "refresh", refresh)
 
 
 def bootstrap_service(
@@ -259,6 +313,200 @@ def test_stored_material_reconstructs_official_refreshable_credentials() -> None
     assert reconstructed.scopes == list(GOOGLE_OAUTH_SCOPES)
     assert reconstructed.token is None
     assert reconstructed.id_token is None
+
+
+def test_stored_credentials_provider_loads_exact_account_and_refreshes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = RecordingCredentialStore()
+    store.store(credential_reference(), stored_credential_material())
+    initial_store_calls = store.store_calls
+    refresh_successfully(monkeypatch)
+
+    credentials = StoredGoogleCredentialsProvider(store).get_credentials(
+        principal="principal-1",
+        account=ACCOUNT_IDENTIFIER,
+    )
+
+    assert store.get_calls == [credential_reference()]
+    assert credentials.access_token == ACCESS_TOKEN
+    assert credentials.principal == "principal-1"
+    assert credentials.account == ACCOUNT_IDENTIFIER
+    assert credentials.expires_at == "2026-09-03T20:00:00Z"
+    assert store.store_calls == initial_store_calls
+    persisted = store.get(credential_reference())
+    assert persisted is not None
+    assert ACCESS_TOKEN not in persisted.value
+
+
+def test_stored_credentials_provider_reconstructs_official_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = InMemoryCredentialStore()
+    store.store(credential_reference(), stored_credential_material())
+    reconstructed: list[Credentials] = []
+
+    def refresh(credentials: Credentials, request: object) -> None:
+        reconstructed.append(credentials)
+        credentials.token = ACCESS_TOKEN
+
+    monkeypatch.setattr(Credentials, "refresh", refresh)
+
+    StoredGoogleCredentialsProvider(store).get_credentials(
+        principal="principal-1",
+        account=ACCOUNT_IDENTIFIER,
+    )
+
+    assert len(reconstructed) == 1
+    assert reconstructed[0].refresh_token == REFRESH_TOKEN
+    assert reconstructed[0].client_id == CLIENT_ID
+    assert reconstructed[0].client_secret == CLIENT_SECRET
+    assert reconstructed[0].scopes == list(GOOGLE_OAUTH_SCOPES)
+
+
+@pytest.mark.parametrize(
+    ("principal", "account", "field"),
+    [
+        (None, ACCOUNT_IDENTIFIER, "principal"),
+        ("", ACCOUNT_IDENTIFIER, "principal"),
+        (" principal-1 ", ACCOUNT_IDENTIFIER, "principal"),
+        ("principal-1", None, "account"),
+        ("principal-1", "", "account"),
+        ("principal-1", " velox-account-1 ", "account"),
+    ],
+)
+def test_stored_credentials_provider_rejects_malformed_routing_identity(
+    principal: str | None,
+    account: str | None,
+    field: str,
+) -> None:
+    store = RecordingCredentialStore()
+
+    with pytest.raises(GoogleCredentialsProviderError) as raised:
+        StoredGoogleCredentialsProvider(store).get_credentials(principal, account)
+
+    assert raised.value.failure.category == WorkerExecutionFailureCategory.PERMANENT
+    assert raised.value.failure.metadata == {"field": field}
+    assert store.get_calls == []
+
+
+def test_stored_credentials_provider_fails_closed_when_credential_is_missing() -> None:
+    with pytest.raises(GoogleCredentialsProviderError) as raised:
+        StoredGoogleCredentialsProvider(InMemoryCredentialStore()).get_credentials(
+            "principal-1",
+            ACCOUNT_IDENTIFIER,
+        )
+
+    assert raised.value.failure.category == WorkerExecutionFailureCategory.PERMANENT
+    assert raised.value.failure.provider_status_code == 401
+    assert raised.value.failure.provider_reason == "reconnectRequired"
+
+
+@pytest.mark.parametrize(
+    "material",
+    [
+        CredentialMaterial("not-json"),
+        CredentialMaterial("[]"),
+        stored_credential_material(client_id=""),
+        stored_credential_material(client_secret=None),
+        stored_credential_material(refresh_token=1),
+        stored_credential_material(scopes=[]),
+        stored_credential_material(scopes=[*GOOGLE_OAUTH_SCOPES, "unexpected"]),
+        stored_credential_material(token=ACCESS_TOKEN),
+    ],
+)
+def test_stored_credentials_provider_rejects_malformed_material(
+    material: CredentialMaterial,
+) -> None:
+    store = InMemoryCredentialStore()
+    store.store(credential_reference(), material)
+
+    with pytest.raises(GoogleCredentialsProviderError) as raised:
+        StoredGoogleCredentialsProvider(store).get_credentials(
+            "principal-1",
+            ACCOUNT_IDENTIFIER,
+        )
+
+    assert raised.value.failure.category == WorkerExecutionFailureCategory.PERMANENT
+    assert raised.value.failure.provider_status_code == 401
+    assert raised.value.failure.provider_reason == "reconnectRequired"
+
+
+@pytest.mark.parametrize(
+    ("refresh_error", "category", "retryable", "status_code"),
+    [
+        (
+            RefreshError("invalid grant secret", retryable=False),
+            WorkerExecutionFailureCategory.PERMANENT,
+            False,
+            401,
+        ),
+        (
+            RefreshError("temporary secret", retryable=True),
+            WorkerExecutionFailureCategory.TRANSIENT,
+            True,
+            503,
+        ),
+        (
+            TransportError("network secret"),
+            WorkerExecutionFailureCategory.TRANSIENT,
+            True,
+            503,
+        ),
+    ],
+)
+def test_stored_credentials_provider_maps_refresh_failures_safely(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    refresh_error: Exception,
+    category: WorkerExecutionFailureCategory,
+    retryable: bool,
+    status_code: int,
+) -> None:
+    store = InMemoryCredentialStore()
+    store.store(credential_reference(), stored_credential_material())
+
+    def refresh(credentials: Credentials, request: object) -> None:
+        raise refresh_error
+
+    monkeypatch.setattr(Credentials, "refresh", refresh)
+
+    with pytest.raises(GoogleCredentialsProviderError) as raised:
+        StoredGoogleCredentialsProvider(store).get_credentials(
+            "principal-1",
+            ACCOUNT_IDENTIFIER,
+        )
+
+    assert raised.value.failure.category == category
+    assert raised.value.failure.retryable is retryable
+    assert raised.value.failure.provider_status_code == status_code
+    exposed = (
+        str(raised.value),
+        repr(raised.value),
+        repr(raised.value.__dict__),
+        caplog.text,
+    )
+    assert all("secret" not in value for value in exposed)
+    assert raised.value.__context__ is None
+    assert raised.value.__cause__ is None
+
+
+def test_stored_credentials_provider_maps_backend_failure_safely() -> None:
+    class FailingCredentialStore(InMemoryCredentialStore):
+        def get(self, reference: CredentialReference) -> CredentialMaterial | None:
+            raise CredentialStoreBackendError()
+
+    with pytest.raises(GoogleCredentialsProviderError) as raised:
+        StoredGoogleCredentialsProvider(FailingCredentialStore()).get_credentials(
+            "principal-1",
+            ACCOUNT_IDENTIFIER,
+        )
+
+    assert raised.value.failure.category == WorkerExecutionFailureCategory.TRANSIENT
+    assert raised.value.failure.retryable is True
+    assert raised.value.failure.provider_status_code == 503
+    assert raised.value.__context__ is None
+    assert raised.value.__cause__ is None
 
 
 @pytest.mark.parametrize(

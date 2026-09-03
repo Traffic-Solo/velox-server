@@ -22,7 +22,7 @@ from apps.server.src.workers.executor import (
 class GoogleCredentials:
     """Provider-facing Google credential material placeholder."""
 
-    access_token: str
+    access_token: str = field(repr=False)
     principal: str
     account: str
     token_type: str = "Bearer"
