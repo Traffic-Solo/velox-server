@@ -1,7 +1,9 @@
 """Google Calendar worker executor and deterministic provider-backed event read."""
 
+import re
 from dataclasses import dataclass, field
-from typing import Any
+from datetime import datetime
+from typing import Any, cast
 from urllib.parse import quote, unquote
 
 import httpx
@@ -39,19 +41,48 @@ CALENDAR_PREPARE_CONTEXT_CAPABILITY = WorkerCapability(
     role=CALENDAR_EXECUTOR_ROLE,
     provider="calendar",
 )
+CALENDAR_LIST_EVENTS_CAPABILITY = WorkerCapability(
+    identifier="list_calendar_events",
+    role=CALENDAR_EXECUTOR_ROLE,
+    provider="calendar",
+)
 CALENDAR_WORKER_CAPABILITIES = (
     CALENDAR_PREPARE_MEETING_CAPABILITY,
     CALENDAR_PREPARE_CONTEXT_CAPABILITY,
+    CALENDAR_LIST_EVENTS_CAPABILITY,
 )
 CALENDAR_ACCOUNT_CONTEXT = WorkerAccountContext(
     principal="velox-local-principal",
     account_identifier="calendar-local-account",
 )
+_CALENDAR_EVENT_READ_CAPABILITY_IDENTIFIERS = frozenset(
+    {
+        CALENDAR_PREPARE_MEETING_CAPABILITY.identifier,
+        CALENDAR_PREPARE_CONTEXT_CAPABILITY.identifier,
+    }
+)
+_CALENDAR_LIST_CAPABILITY_IDENTIFIERS = frozenset(
+    {CALENDAR_LIST_EVENTS_CAPABILITY.identifier}
+)
 _CALENDAR_CAPABILITY_IDENTIFIERS = frozenset(
     capability.identifier for capability in CALENDAR_WORKER_CAPABILITIES
 )
 _GOOGLE_CALENDAR_API_BASE_URL = "https://www.googleapis.com"
-_GOOGLE_CALENDAR_EVENT_PATH_PREFIX = "/calendar/v3/calendars/primary/events/"
+_GOOGLE_CALENDAR_EVENTS_PATH = "/calendar/v3/calendars/primary/events"
+_GOOGLE_CALENDAR_EVENT_PATH_PREFIX = f"{_GOOGLE_CALENDAR_EVENTS_PATH}/"
+# VELOX owns this ceiling. Google allows far larger pages, but a small bound keeps
+# one page cheap, predictable and reviewable while pagination stays unimplemented.
+CALENDAR_LIST_MIN_MAX_RESULTS = 1
+CALENDAR_LIST_MAX_MAX_RESULTS = 50
+# Canonical RFC3339 date-time with an explicit offset. RFC 3339 also permits the
+# lowercase 't'/'z' spellings; VELOX requires the uppercase canonical form so the
+# accepted set is exactly what is validated, compared and forwarded to Google.
+_RFC3339_TIMESTAMP_PATTERN = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})"
+)
+_CALENDAR_LIST_QUERY_FIELDS = frozenset(
+    {"timeMin", "timeMax", "maxResults", "singleEvents", "orderBy"}
+)
 _GOOGLE_RATE_LIMIT_REASONS = frozenset(
     {"rateLimitExceeded", "userRateLimitExceeded", "quotaExceeded"}
 )
@@ -74,6 +105,95 @@ class CalendarEvent:
     start: str
     end: str
     attendees: tuple[str, ...] = ()
+
+
+class CalendarEventListRequestError(ValueError):
+    """Safe rejection of a bounded Calendar list request, naming only the field."""
+
+    def __init__(self, message: str, *, field: str) -> None:
+        super().__init__(message)
+        self.field = field
+
+
+@dataclass(frozen=True)
+class CalendarEventListRequest:
+    """One validated bounded window for a primary-calendar event listing.
+
+    VELOX owns the bounds rather than deferring to Google: both timestamps are
+    required, canonical RFC3339 with an explicit offset, and strictly ordered,
+    and max_results must fall inside the conservative VELOX range. Values outside
+    the range are rejected instead of clamped, so a caller can never silently
+    receive a different window or page size than the one it asked for.
+    """
+
+    time_min: str
+    time_max: str
+    max_results: int
+
+    def __post_init__(self) -> None:
+        window_start = _validated_rfc3339_timestamp(self.time_min, "time_min")
+        window_end = _validated_rfc3339_timestamp(self.time_max, "time_max")
+        if window_start >= window_end:
+            raise CalendarEventListRequestError(
+                "calendar list request requires time_min earlier than time_max",
+                field="time_min",
+            )
+        # bool is an int subclass; accepting it would turn True into a page size.
+        if isinstance(self.max_results, bool) or not isinstance(self.max_results, int):
+            raise CalendarEventListRequestError(
+                "calendar list request max_results must be an integer",
+                field="max_results",
+            )
+        if not (
+            CALENDAR_LIST_MIN_MAX_RESULTS
+            <= self.max_results
+            <= CALENDAR_LIST_MAX_MAX_RESULTS
+        ):
+            raise CalendarEventListRequestError(
+                "calendar list request max_results is outside the allowed range",
+                field="max_results",
+            )
+
+    def as_query(self) -> dict[str, Any]:
+        """Return the exact bounded Google query parameters for this window.
+
+        singleEvents expands recurring instances and orderBy makes the single page
+        chronological, so the one page VELOX reads is a stable prefix of the window.
+        """
+        return {
+            "timeMin": self.time_min,
+            "timeMax": self.time_max,
+            "maxResults": str(self.max_results),
+            "singleEvents": "true",
+            "orderBy": "startTime",
+        }
+
+
+def _validated_rfc3339_timestamp(value: object, field_name: str) -> datetime:
+    """Return the parsed timestamp, rejecting blank, padded or malformed input.
+
+    fullmatch on the canonical pattern rejects padding and partial timestamps; the
+    parse then rejects values that are well-formed but impossible, such as a day
+    that does not exist in the given month.
+    """
+    if not isinstance(value, str) or not _RFC3339_TIMESTAMP_PATTERN.fullmatch(value):
+        raise CalendarEventListRequestError(
+            f"calendar list request {field_name} must be an RFC3339 timestamp",
+            field=field_name,
+        )
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        raise CalendarEventListRequestError(
+            f"calendar list request {field_name} must be an RFC3339 timestamp",
+            field=field_name,
+        ) from None
+    if parsed.tzinfo is None:
+        raise CalendarEventListRequestError(
+            f"calendar list request {field_name} must carry an explicit UTC offset",
+            field=field_name,
+        )
+    return parsed
 
 
 @dataclass(frozen=True)
@@ -127,6 +247,8 @@ class FakeCalendarTransportClient(FakeGoogleTransportClient):
         request: GoogleProviderRequest,
         credentials: GoogleCredentials,
     ) -> GoogleProviderResponse:
+        if request.operation in _CALENDAR_LIST_CAPABILITY_IDENTIFIERS:
+            return self._default_list_response(request)
         if request.operation not in _CALENDAR_CAPABILITY_IDENTIFIERS:
             return super()._default_response(request, credentials)
 
@@ -148,9 +270,46 @@ class FakeCalendarTransportClient(FakeGoogleTransportClient):
             }
         return GoogleProviderResponse(status_code=200, body=body)
 
+    def _default_list_response(
+        self,
+        request: GoogleProviderRequest,
+    ) -> GoogleProviderResponse:
+        """Return one deterministic bounded page with no pagination token."""
+        max_results = request.query.get("maxResults")
+        limit = (
+            int(max_results)
+            if isinstance(max_results, str) and max_results.isdigit()
+            else len(self._events)
+        )
+        events = tuple(
+            {
+                "event_id": event.event_id,
+                "title": event.title,
+                "start": event.start,
+                "end": event.end,
+                "attendees": event.attendees,
+            }
+            for event in tuple(self._events.values())[:limit]
+        )
+        return GoogleProviderResponse(
+            status_code=200,
+            body={
+                "external_execution_performed": False,
+                "integration": "calendar",
+                "adapter": "fake_transport",
+                "events": events,
+                "next_page_token": None,
+            },
+        )
+
 
 class HttpxCalendarTransportClient:
-    """Synchronous Google Calendar events.get transport with injected HTTP I/O."""
+    """Synchronous Google Calendar read transport with injected HTTP I/O.
+
+    Supports the single-event read and the bounded single-page event listing. The
+    listing is deliberately one page: a non-empty nextPageToken is preserved as
+    opaque provider metadata and never followed here.
+    """
 
     def __init__(
         self,
@@ -176,7 +335,7 @@ class HttpxCalendarTransportClient:
     ) -> GoogleProviderResponse:
         """Execute the supported Calendar event read and return a safe VELOX shape."""
         requested_event_id = self._requested_event_id(request)
-        if requested_event_id is None:
+        if requested_event_id is None and not self._is_bounded_list_request(request):
             return self._failure_response(
                 400,
                 WorkerExecutionFailureCategory.PERMANENT,
@@ -228,7 +387,7 @@ class HttpxCalendarTransportClient:
         assert response is not None
 
         status_code = response.status_code
-        if status_code == 404:
+        if status_code == 404 and requested_event_id is not None:
             return GoogleProviderResponse(
                 status_code=404,
                 body={
@@ -298,6 +457,24 @@ class HttpxCalendarTransportClient:
                 external_execution_performed=True,
             )
 
+        if requested_event_id is None:
+            event_list = self._parse_event_list(response)
+            if event_list is None:
+                return self._failure_response(
+                    status_code,
+                    WorkerExecutionFailureCategory.INTERNAL,
+                    "Google Calendar returned invalid event data",
+                    reason="invalidProviderResponse",
+                    external_execution_performed=True,
+                )
+            return GoogleProviderResponse(
+                status_code=status_code,
+                body={
+                    **self._safe_body(external_execution_performed=True),
+                    **event_list,
+                },
+            )
+
         event = self._parse_event(response, requested_event_id)
         if event is None:
             return self._failure_response(
@@ -316,10 +493,43 @@ class HttpxCalendarTransportClient:
             },
         )
 
+    @classmethod
+    def _is_bounded_list_request(cls, request: GoogleProviderRequest) -> bool:
+        """Report whether this is the bounded single-page primary-events listing.
+
+        The bounded window is re-validated here rather than trusted from the
+        caller: this is the last boundary before real HTTP, so an unbounded or
+        malformed listing is rejected instead of being forwarded to Google.
+        """
+        if (
+            request.operation not in _CALENDAR_LIST_CAPABILITY_IDENTIFIERS
+            or request.method != "GET"
+            or request.body is not None
+            or request.path != _GOOGLE_CALENDAR_EVENTS_PATH
+        ):
+            return False
+        query = request.query
+        if set(query) != _CALENDAR_LIST_QUERY_FIELDS:
+            return False
+        if query["singleEvents"] != "true" or query["orderBy"] != "startTime":
+            return False
+        max_results = query["maxResults"]
+        if not isinstance(max_results, str) or not max_results.isdigit():
+            return False
+        try:
+            CalendarEventListRequest(
+                time_min=query["timeMin"],
+                time_max=query["timeMax"],
+                max_results=int(max_results),
+            )
+        except CalendarEventListRequestError:
+            return False
+        return True
+
     @staticmethod
     def _requested_event_id(request: GoogleProviderRequest) -> str | None:
         if (
-            request.operation not in _CALENDAR_CAPABILITY_IDENTIFIERS
+            request.operation not in _CALENDAR_EVENT_READ_CAPABILITY_IDENTIFIERS
             or request.method != "GET"
             or request.body is not None
             or not request.path.startswith(_GOOGLE_CALENDAR_EVENT_PATH_PREFIX)
@@ -339,21 +549,65 @@ class HttpxCalendarTransportClient:
         response: httpx.Response,
         requested_event_id: str,
     ) -> dict[str, object] | None:
-        raw_event: object = None
-        parse_failed = False
-        try:
-            raw_event = response.json()
-        except Exception:
-            parse_failed = True
-        if parse_failed or not isinstance(raw_event, dict):
+        raw_event = cls._parse_json_object(response)
+        if raw_event is None:
+            return None
+        event = cls._map_event(raw_event)
+        if event is None or event["event_id"] != requested_event_id:
+            return None
+        return event
+
+    @classmethod
+    def _parse_event_list(
+        cls,
+        response: httpx.Response,
+    ) -> dict[str, object] | None:
+        """Map exactly one Google page, preserving nextPageToken without using it."""
+        raw_list = cls._parse_json_object(response)
+        if raw_list is None:
+            return None
+        raw_items = raw_list.get("items", [])
+        if not isinstance(raw_items, list):
             return None
 
+        events: list[dict[str, object]] = []
+        for raw_item in raw_items:
+            if not isinstance(raw_item, dict):
+                return None
+            event = cls._map_event(raw_item)
+            if event is None:
+                return None
+            events.append(event)
+
+        next_page_token = raw_list.get("nextPageToken")
+        if next_page_token is not None and (
+            not isinstance(next_page_token, str) or not next_page_token.strip()
+        ):
+            return None
+        return {"events": tuple(events), "next_page_token": next_page_token}
+
+    @staticmethod
+    def _parse_json_object(response: httpx.Response) -> dict[str, object] | None:
+        raw_body: object = None
+        parse_failed = False
+        try:
+            raw_body = response.json()
+        except Exception:
+            parse_failed = True
+        if parse_failed or not isinstance(raw_body, dict):
+            return None
+        return raw_body
+
+    @classmethod
+    def _map_event(cls, raw_event: dict[str, object]) -> dict[str, object] | None:
+        """Map one raw Google event onto the five allowlisted VELOX fields."""
         event_id = raw_event.get("id")
         summary = raw_event.get("summary", "")
         start = cls._event_boundary(raw_event.get("start"))
         end = cls._event_boundary(raw_event.get("end"))
         if (
-            event_id != requested_event_id
+            not isinstance(event_id, str)
+            or not event_id.strip()
             or not isinstance(summary, str)
             or start is None
             or end is None
@@ -516,6 +770,13 @@ class CalendarWorkerExecutor:
                 },
             )
 
+        if resolved_capability in _CALENDAR_LIST_CAPABILITY_IDENTIFIERS:
+            return self._execute_list_provider_request(
+                action=action,
+                capability=resolved_capability,
+                account_context=account_context,
+            )
+
         calendar_event_id_value = action.payload.get("calendar_event_id")
         if (
             not isinstance(calendar_event_id_value, str)
@@ -562,43 +823,152 @@ class CalendarWorkerExecutor:
             account_context=account_context,
         )
         response = self.provider_composition.execute(request)
-        result_metadata: dict[str, Any] = {
+        result_metadata = self._result_metadata(
+            response=response,
+            request=request,
+            capability=capability,
+            account_context=account_context,
+            extra={"calendar_event_id": calendar_event_id},
+        )
+        provider_failure_result = self._provider_failure_result(
+            action, response, result_metadata
+        )
+        if provider_failure_result is not None:
+            return provider_failure_result
+
+        return self._capability_worker_result(
+            action=action,
+            response=response,
+            result_metadata=result_metadata,
+            capability_result=_calendar_capability_result(
+                response,
+                capability=capability,
+                calendar_event_id=calendar_event_id,
+            ),
+        )
+
+    def _execute_list_provider_request(
+        self,
+        action: Action,
+        capability: str,
+        account_context: WorkerAccountContext | None,
+    ) -> WorkerExecutionResult:
+        """Execute one bounded single-page primary-calendar event listing."""
+        try:
+            # Action payloads are untyped by construction; the request contract
+            # itself is the validator, so unchecked values are handed to it as-is.
+            list_request = CalendarEventListRequest(
+                time_min=cast(str, action.payload.get("time_min")),
+                time_max=cast(str, action.payload.get("time_max")),
+                max_results=cast(int, action.payload.get("max_results")),
+            )
+        except CalendarEventListRequestError as error:
+            reason = str(error)
+            return WorkerExecutionResult(
+                action=action,
+                status=WorkerExecutionStatus.FAILED,
+                reason=reason,
+                metadata={
+                    "external_execution_performed": False,
+                    "integration": "calendar",
+                    "capability": capability,
+                },
+                failure=WorkerExecutionFailure(
+                    category=WorkerExecutionFailureCategory.PERMANENT,
+                    message=reason,
+                    metadata={"field": error.field},
+                ),
+            )
+
+        request = CalendarProviderRequest(
+            operation=capability,
+            path=_GOOGLE_CALENDAR_EVENTS_PATH,
+            query=list_request.as_query(),
+            account_context=account_context,
+        )
+        response = self.provider_composition.execute(request)
+        result_metadata = self._result_metadata(
+            response=response,
+            request=request,
+            capability=capability,
+            account_context=account_context,
+            extra={
+                "time_min": list_request.time_min,
+                "time_max": list_request.time_max,
+                "max_results": list_request.max_results,
+            },
+        )
+        provider_failure_result = self._provider_failure_result(
+            action, response, result_metadata
+        )
+        if provider_failure_result is not None:
+            return provider_failure_result
+
+        return self._capability_worker_result(
+            action=action,
+            response=response,
+            result_metadata=result_metadata,
+            capability_result=_calendar_event_list_result(response),
+        )
+
+    @staticmethod
+    def _result_metadata(
+        *,
+        response: CalendarProviderResponse,
+        request: CalendarProviderRequest,
+        capability: str,
+        account_context: WorkerAccountContext | None,
+        extra: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
             "external_execution_performed": (
                 response.body.get("external_execution_performed") is True
             ),
             "integration": "calendar",
             "capability": capability,
-            "calendar_event_id": calendar_event_id,
+            **extra,
             "account_context_used": (
                 account_context.as_metadata() if account_context is not None else None
             ),
             "provider_request": _calendar_provider_request_metadata(request),
             "provider_response": _calendar_provider_response_metadata(response),
         }
-        if response.failure is not None:
-            failure = response.failure
-            return WorkerExecutionResult(
-                action=action,
-                status=WorkerExecutionStatus.FAILED,
-                reason=failure.message,
-                metadata=result_metadata,
-                failure=WorkerExecutionFailure(
-                    category=failure.category,
-                    message=failure.message,
-                    metadata={
-                        **failure.metadata,
-                        "provider_status_code": response.status_code,
-                        "provider_reason": failure.provider_reason,
-                        "retryable": failure.retryable,
-                    },
-                ),
-            )
 
-        capability_result = _calendar_capability_result(
-            response,
-            capability=capability,
-            calendar_event_id=calendar_event_id,
+    @staticmethod
+    def _provider_failure_result(
+        action: Action,
+        response: CalendarProviderResponse,
+        result_metadata: dict[str, Any],
+    ) -> WorkerExecutionResult | None:
+        """Return the preserved provider failure result, or None when it succeeded."""
+        failure = response.failure
+        if failure is None:
+            return None
+        return WorkerExecutionResult(
+            action=action,
+            status=WorkerExecutionStatus.FAILED,
+            reason=failure.message,
+            metadata=result_metadata,
+            failure=WorkerExecutionFailure(
+                category=failure.category,
+                message=failure.message,
+                metadata={
+                    **failure.metadata,
+                    "provider_status_code": response.status_code,
+                    "provider_reason": failure.provider_reason,
+                    "retryable": failure.retryable,
+                },
+            ),
         )
+
+    @staticmethod
+    def _capability_worker_result(
+        *,
+        action: Action,
+        response: CalendarProviderResponse,
+        result_metadata: dict[str, Any],
+        capability_result: CalendarCapabilityResult,
+    ) -> WorkerExecutionResult:
         if capability_result.status != WorkerExecutionStatus.SUCCEEDED:
             return WorkerExecutionResult(
                 action=action,
@@ -647,42 +1017,98 @@ def _calendar_capability_result(
             metadata=metadata,
         )
 
-    event = response.body.get("event")
-    if not isinstance(event, dict):
+    event = _allowlisted_calendar_event(response.body.get("event"))
+    if event is None or event["event_id"] != calendar_event_id:
         return CalendarCapabilityResult(
             status=WorkerExecutionStatus.FAILED,
             reason="calendar provider returned invalid event data",
         )
+
+    metadata["event"] = event
+    return CalendarCapabilityResult(
+        status=WorkerExecutionStatus.SUCCEEDED,
+        reason="calendar meeting context provider result",
+        metadata=metadata,
+    )
+
+
+def _calendar_event_list_result(
+    response: CalendarProviderResponse,
+) -> CalendarCapabilityResult:
+    """Return one bounded page of allowlisted events plus opaque page metadata.
+
+    A non-empty nextPageToken means Google holds further results for this window.
+    It is surfaced as opaque metadata only: this slice never requests another page,
+    so a caller must treat a truncated page as truncated rather than complete.
+    """
+    events_value = response.body.get("events")
+    if not isinstance(events_value, (list, tuple)):
+        return CalendarCapabilityResult(
+            status=WorkerExecutionStatus.FAILED,
+            reason="calendar provider returned invalid event list data",
+        )
+
+    events: list[dict[str, Any]] = []
+    for event_value in events_value:
+        event = _allowlisted_calendar_event(event_value)
+        if event is None:
+            return CalendarCapabilityResult(
+                status=WorkerExecutionStatus.FAILED,
+                reason="calendar provider returned invalid event list data",
+            )
+        events.append(event)
+
+    next_page_token = response.body.get("next_page_token")
+    if next_page_token is not None and (
+        not isinstance(next_page_token, str) or not next_page_token.strip()
+    ):
+        return CalendarCapabilityResult(
+            status=WorkerExecutionStatus.FAILED,
+            reason="calendar provider returned invalid event list data",
+        )
+
+    metadata: dict[str, Any] = {
+        "events": tuple(events),
+        "event_count": len(events),
+        "next_page_token": next_page_token,
+        "has_more_pages": next_page_token is not None,
+    }
+    adapter = response.body.get("adapter")
+    if adapter == "fake_transport":
+        metadata["adapter"] = adapter
+    return CalendarCapabilityResult(
+        status=WorkerExecutionStatus.SUCCEEDED,
+        reason="calendar event list provider result",
+        metadata=metadata,
+    )
+
+
+def _allowlisted_calendar_event(event: object) -> dict[str, Any] | None:
+    """Return only the five allowlisted event fields, or None when malformed."""
+    if not isinstance(event, dict):
+        return None
     event_id = event.get("event_id")
     title = event.get("title")
     start = event.get("start")
     end = event.get("end")
     attendees = event.get("attendees")
     if (
-        event_id != calendar_event_id
+        not isinstance(event_id, str)
+        or not event_id.strip()
         or not isinstance(title, str)
         or not isinstance(start, str)
         or not isinstance(end, str)
         or not isinstance(attendees, (list, tuple))
         or not all(isinstance(attendee, str) for attendee in attendees)
     ):
-        return CalendarCapabilityResult(
-            status=WorkerExecutionStatus.FAILED,
-            reason="calendar provider returned invalid event data",
-        )
-
-    metadata["event"] = {
+        return None
+    return {
         "event_id": event_id,
         "title": title,
         "start": start,
         "end": end,
         "attendees": tuple(attendees),
     }
-    return CalendarCapabilityResult(
-        status=WorkerExecutionStatus.SUCCEEDED,
-        reason="calendar meeting context provider result",
-        metadata=metadata,
-    )
 
 
 def _calendar_provider_request_metadata(

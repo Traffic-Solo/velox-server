@@ -23,6 +23,7 @@ import os
 import sys
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -33,6 +34,7 @@ from apps.server.src.core.credentials import (
 )
 from apps.server.src.integrations.calendar import (
     CALENDAR_EXECUTOR_ROLE,
+    CALENDAR_LIST_EVENTS_CAPABILITY,
     CalendarProviderComposition,
     CalendarWorkerExecutor,
     HttpxCalendarTransportClient,
@@ -53,6 +55,10 @@ from apps.server.src.workers.executor import (
 pytestmark = pytest.mark.live_google_calendar
 
 CAPABILITY = "prepare_meeting"
+LIST_CAPABILITY = CALENDAR_LIST_EVENTS_CAPABILITY.identifier
+# A deliberately narrow read-only window and page bound for the live listing.
+LIST_WINDOW = timedelta(days=1)
+LIST_MAX_RESULTS = 5
 HTTP_TIMEOUT_SECONDS = 10.0
 # An ID that cannot collide with a real Google event ID.
 NONEXISTENT_EVENT_ID = "velox-live-smoke-definitely-nonexistent-event"
@@ -208,6 +214,32 @@ def read_event(
     )
 
 
+def list_events(
+    executor: CalendarWorkerExecutor,
+    config: LiveConfig,
+) -> WorkerExecutionResult:
+    """Perform one real read-only bounded primary-calendar events.list page."""
+    now = datetime.now(UTC).replace(microsecond=0)
+    action = Action(
+        type=LIST_CAPABILITY,
+        target="live-google-calendar-smoke",
+        payload={
+            "time_min": (now - LIST_WINDOW).isoformat().replace("+00:00", "Z"),
+            "time_max": (now + LIST_WINDOW).isoformat().replace("+00:00", "Z"),
+            "max_results": LIST_MAX_RESULTS,
+        },
+        executor_role=CALENDAR_EXECUTOR_ROLE,
+    )
+    return executor.execute(
+        action,
+        capability=LIST_CAPABILITY,
+        account_context=WorkerAccountContext(
+            principal=config.principal,
+            account_identifier=config.account_identifier,
+        ),
+    )
+
+
 def assert_no_credential_material(
     result: WorkerExecutionResult,
     secrets: tuple[str, ...],
@@ -258,5 +290,39 @@ def test_live_nonexistent_event_is_a_safe_not_found(
     assert result.status == WorkerExecutionStatus.SUCCEEDED
     assert result.metadata.get("found") is False
     assert "event" not in result.metadata
+
+    assert_no_credential_material(result, stored_secret_values)
+
+
+def test_live_bounded_primary_calendar_events_list_returns_allowlisted_events(
+    calendar_executor: CalendarWorkerExecutor,
+    live_config: LiveConfig,
+    stored_secret_values: tuple[str, ...],
+) -> None:
+    result = list_events(calendar_executor, live_config)
+
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.metadata.get("external_execution_performed") is True
+
+    events = result.metadata.get("events")
+    assert isinstance(events, tuple)
+    # The page is bounded by the VELOX-owned request, never by what Google returns.
+    assert len(events) <= LIST_MAX_RESULTS
+    assert result.metadata.get("event_count") == len(events)
+    for event in events:
+        # Only the allowlisted provider fields may cross the boundary.
+        assert set(event) == ALLOWLISTED_EVENT_FIELDS
+        assert isinstance(event["event_id"], str) and event["event_id"].strip()
+        assert isinstance(event["title"], str)
+        assert isinstance(event["start"], str) and event["start"].strip()
+        assert isinstance(event["end"], str) and event["end"].strip()
+        assert all(isinstance(attendee, str) for attendee in event["attendees"])
+
+    # A returned token stays opaque metadata; this slice never follows it.
+    next_page_token = result.metadata.get("next_page_token")
+    assert next_page_token is None or (
+        isinstance(next_page_token, str) and next_page_token.strip()
+    )
+    assert result.metadata.get("has_more_pages") is (next_page_token is not None)
 
     assert_no_credential_material(result, stored_secret_values)
