@@ -273,6 +273,55 @@ the command fails with `credential_already_exists`.
 | `duplicate_event` | sync | This Calendar event was already ingested into the current VELOX process state. |
 | `invalid_input` | both | A supplied value is blank or has surrounding whitespace. |
 
+## Opt-in automated live smoke
+
+The manual runbook above is reproducible by hand. There is also one automated
+read-only live smoke covering the same production chain
+(Keychain -> `StoredGoogleCredentialsProvider` -> refresh ->
+`HttpxCalendarTransportClient` -> primary `events.get`).
+
+It is **deselected by default** through the `live_google_calendar` marker, so
+ordinary runs and CI stay offline and deterministic. Even when selected it skips
+unless every prerequisite below is present.
+
+Supply these environment values. They are read only by the test; nothing is
+written, and no real value belongs in the repository or in a committed `.env`:
+
+| Variable | Meaning |
+| --- | --- |
+| `VELOX_LIVE_GOOGLE_PRINCIPAL` | VELOX principal to route with |
+| `VELOX_LIVE_GOOGLE_ACCOUNT_IDENTIFIER` | VELOX account identifier; also the Keychain username under `velox.google.oauth` |
+| `VELOX_LIVE_GOOGLE_CALENDAR_EVENT_ID` | a real primary-calendar event ID |
+
+Run it:
+
+```
+VELOX_LIVE_GOOGLE_PRINCIPAL=<principal> \
+VELOX_LIVE_GOOGLE_ACCOUNT_IDENTIFIER=<account-identifier> \
+VELOX_LIVE_GOOGLE_CALENDAR_EVENT_ID=<real-event-id> \
+uv run pytest -m live_google_calendar tests/test_google_calendar_live_smoke.py -q
+```
+
+Two checks run: one real `events.get` asserting the returned event carries exactly
+the allowlisted fields `event_id`, `title`, `start`, `end`, `attendees`, and one
+negative probe against a deliberately impossible event ID asserting a safe
+not-found with no fabricated event. Both assert that no stored credential
+material, `Bearer` value or `Authorization` header appears in the result.
+
+No Calendar write is ever performed.
+
+Gate behavior, all covered by deterministic tests in
+`tests/test_google_calendar_live_smoke_config.py`:
+
+- **no variables set** -> skips with a message naming the variables;
+- **some set, some missing** -> **fails**, so a half-configured live run is never
+  mistaken for "live checks are off";
+- **blank or whitespace-padded value** -> **fails**, naming only the offending
+  variable and never echoing its value;
+- **not macOS** -> skips, since the Keychain store is unavailable;
+- **no stored credential for that account identifier** -> fails, pointing at the
+  OAuth bootstrap command.
+
 ## Known benign warning on refresh
 
 Every live sync writes this line to stderr before succeeding:
