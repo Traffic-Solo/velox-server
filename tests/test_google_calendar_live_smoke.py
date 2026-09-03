@@ -455,6 +455,23 @@ def test_live_caller_driven_pagination_reads_a_real_second_page(
         if key != "pageToken"
     } == first_request["query"]
 
+    # The first page legitimately surfaces the token: it is the handoff a caller
+    # needs in order to ask for the next page at all.
+    assert first.metadata["next_page_token"] == next_page_token
+
+    # The second execution consumed that token as input, so it must not reappear
+    # on any surface it produces. Its own freshly returned token is excluded,
+    # being the legitimate handoff for a further page.
+    consumed_metadata = {
+        key: value
+        for key, value in second.metadata.items()
+        if key != "next_page_token"
+    }
+    assert next_page_token not in repr(consumed_metadata)
+    assert next_page_token not in repr(second.action)
+    assert next_page_token not in str(second.reason)
+    assert next_page_token not in repr(second.failure)
+    assert second.action.payload["page_token"] == "<redacted>"
+
     for result in (first, second):
-        assert next_page_token not in repr(result.metadata)
         assert_no_credential_material(result, stored_secret_values)
