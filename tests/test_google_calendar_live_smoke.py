@@ -59,6 +59,12 @@ LIST_CAPABILITY = CALENDAR_LIST_EVENTS_CAPABILITY.identifier
 # A deliberately narrow read-only window and page bound for the live listing.
 LIST_WINDOW = timedelta(days=1)
 LIST_MAX_RESULTS = 5
+# Pagination needs Google to genuinely truncate: a wider read-only window and the
+# smallest legal page size make a real nextPageToken likely without touching any
+# calendar data. Nothing here creates, edits or deletes an event.
+LIST_PAGINATION_WINDOW = timedelta(days=7)
+LIST_PAGINATION_MAX_RESULTS = 1
+BOUNDED_LIST_QUERY_KEYS = {"timeMin", "timeMax", "maxResults", "singleEvents", "orderBy"}
 HTTP_TIMEOUT_SECONDS = 10.0
 # An ID that cannot collide with a real Google event ID.
 NONEXISTENT_EVENT_ID = "velox-live-smoke-definitely-nonexistent-event"
@@ -240,6 +246,53 @@ def list_events(
     )
 
 
+def list_events_page(
+    executor: CalendarWorkerExecutor,
+    config: LiveConfig,
+    *,
+    time_min: str,
+    time_max: str,
+    max_results: int,
+    page_token: str | None = None,
+) -> WorkerExecutionResult:
+    """Perform exactly one real read-only bounded primary-calendar events.list page."""
+    payload: dict[str, object] = {
+        "time_min": time_min,
+        "time_max": time_max,
+        "max_results": max_results,
+    }
+    if page_token is not None:
+        payload["page_token"] = page_token
+    return executor.execute(
+        Action(
+            type=LIST_CAPABILITY,
+            target="live-google-calendar-smoke",
+            payload=payload,
+            executor_role=CALENDAR_EXECUTOR_ROLE,
+        ),
+        capability=LIST_CAPABILITY,
+        account_context=WorkerAccountContext(
+            principal=config.principal,
+            account_identifier=config.account_identifier,
+        ),
+    )
+
+
+def assert_allowlisted_page(events: object) -> tuple[str, ...]:
+    """Assert the page carries only allowlisted fields; return its event IDs."""
+    assert isinstance(events, tuple)
+    identifiers: list[str] = []
+    for event in events:
+        assert set(event) == ALLOWLISTED_EVENT_FIELDS
+        assert isinstance(event["event_id"], str) and event["event_id"].strip()
+        assert isinstance(event["title"], str)
+        assert isinstance(event["start"], str) and event["start"].strip()
+        assert isinstance(event["end"], str) and event["end"].strip()
+        assert all(isinstance(attendee, str) for attendee in event["attendees"])
+        identifiers.append(event["event_id"])
+    return tuple(identifiers)
+
+
 def assert_no_credential_material(
     result: WorkerExecutionResult,
     secrets: tuple[str, ...],
@@ -326,3 +379,82 @@ def test_live_bounded_primary_calendar_events_list_returns_allowlisted_events(
     assert result.metadata.get("has_more_pages") is (next_page_token is not None)
 
     assert_no_credential_material(result, stored_secret_values)
+
+
+def test_live_caller_driven_pagination_reads_a_real_second_page(
+    calendar_executor: CalendarWorkerExecutor,
+    live_config: LiveConfig,
+    stored_secret_values: tuple[str, ...],
+) -> None:
+    """Read a real first page, then explicitly request the real next page.
+
+    Skips only when the live calendar cannot naturally produce a nextPageToken in
+    the window. No calendar data is ever created or modified to force the result.
+    """
+    now = datetime.now(UTC).replace(microsecond=0)
+    time_min = (now - LIST_PAGINATION_WINDOW).isoformat().replace("+00:00", "Z")
+    time_max = (now + LIST_PAGINATION_WINDOW).isoformat().replace("+00:00", "Z")
+
+    first = list_events_page(
+        calendar_executor,
+        live_config,
+        time_min=time_min,
+        time_max=time_max,
+        max_results=LIST_PAGINATION_MAX_RESULTS,
+    )
+
+    assert first.status == WorkerExecutionStatus.SUCCEEDED
+    assert first.metadata.get("external_execution_performed") is True
+    assert first.metadata.get("page_token_supplied") is False
+    first_ids = assert_allowlisted_page(first.metadata.get("events"))
+    assert len(first_ids) <= LIST_PAGINATION_MAX_RESULTS
+    assert first.metadata.get("event_count") == len(first_ids)
+
+    next_page_token = first.metadata.get("next_page_token")
+    if next_page_token is None:
+        pytest.skip(
+            "live calendar returned no nextPageToken for the bounded window, so a "
+            "real second page cannot be read without altering calendar data"
+        )
+    assert isinstance(next_page_token, str) and next_page_token.strip()
+    assert first.metadata.get("has_more_pages") is True
+
+    second = list_events_page(
+        calendar_executor,
+        live_config,
+        time_min=time_min,
+        time_max=time_max,
+        max_results=LIST_PAGINATION_MAX_RESULTS,
+        page_token=next_page_token,
+    )
+
+    assert second.status == WorkerExecutionStatus.SUCCEEDED
+    assert second.metadata.get("external_execution_performed") is True
+    assert second.metadata.get("page_token_supplied") is True
+    second_ids = assert_allowlisted_page(second.metadata.get("events"))
+    assert len(second_ids) <= LIST_PAGINATION_MAX_RESULTS
+    assert second.metadata.get("event_count") == len(second_ids)
+
+    # The continuation advanced rather than replaying the first page.
+    assert second_ids
+    assert not set(first_ids) & set(second_ids)
+
+    # Both executions were one bounded read-only GET on the primary events path,
+    # differing only by the opaque token, which never reaches result metadata.
+    first_request = first.metadata["provider_request"]
+    second_request = second.metadata["provider_request"]
+    assert first_request["method"] == second_request["method"] == "GET"
+    assert first_request["path"] == second_request["path"]
+    assert first_request["body"] is None and second_request["body"] is None
+    assert set(first_request["query"]) == BOUNDED_LIST_QUERY_KEYS
+    assert set(second_request["query"]) == BOUNDED_LIST_QUERY_KEYS | {"pageToken"}
+    assert second_request["query"]["pageToken"] == "<redacted>"
+    assert {
+        key: value
+        for key, value in second_request["query"].items()
+        if key != "pageToken"
+    } == first_request["query"]
+
+    for result in (first, second):
+        assert next_page_token not in repr(result.metadata)
+        assert_no_credential_material(result, stored_secret_values)

@@ -438,7 +438,10 @@ def test_transport_rejects_an_unbounded_list_query_before_any_http_call() -> Non
     [
         {"singleEvents": "false"},
         {"orderBy": "updated"},
-        {"pageToken": "opaque-token"},
+        # pageToken is accepted from Slice 2 on; these remain outside the contract.
+        {"q": "search-term"},
+        {"syncToken": "opaque-sync-token"},
+        {"showDeleted": "true"},
     ],
 )
 def test_transport_rejects_a_list_query_outside_the_velox_contract(
