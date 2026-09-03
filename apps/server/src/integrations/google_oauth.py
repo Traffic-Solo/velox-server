@@ -147,13 +147,44 @@ def run_installed_app_flow(
             ),
         )
 
-    granted = credentials.scopes
-    if not isinstance(granted, Iterable) or isinstance(granted, str | bytes):
-        raise GoogleOAuthScopeMismatchError()
-    granted_scopes = [scope for scope in granted if isinstance(scope, str)]
-    if canonical_scope_set(granted_scopes) != canonical_scope_set(scopes):
-        raise GoogleOAuthScopeMismatchError()
+    _require_approved_grant(credentials, scopes)
     return credentials
+
+
+def _require_approved_grant(
+    credentials: Credentials,
+    requested_scopes: tuple[str, ...],
+) -> None:
+    """Fail closed unless the scopes Google actually granted are the approved set.
+
+    `Credentials.scopes` records the scopes that were *requested*
+    (`credentials_from_session` sets it from `session.scope`), so validating it
+    would compare the request against itself and prove nothing. Only
+    `granted_scopes`, populated from the `scope` field of Google's token
+    response, describes what the user actually consented to.
+
+    RFC 6749 section 5.1 permits a server to omit `scope` when the grant is
+    identical to the request, but this flow has already disabled oauthlib's own
+    mismatch enforcement, so an absent or unusable grant list leaves nothing to
+    verify against. Google always returns `scope`, so refusing to persist an
+    unverifiable grant costs nothing in practice and is deliberately stricter
+    than the RFC minimum.
+    """
+    granted = getattr(credentials, "granted_scopes", None)
+    if (
+        granted is None
+        or isinstance(granted, str | bytes)
+        or not isinstance(granted, Iterable)
+    ):
+        raise GoogleOAuthScopeMismatchError()
+
+    granted_scopes = [
+        scope for scope in granted if isinstance(scope, str) and scope.strip()
+    ]
+    if not granted_scopes:
+        raise GoogleOAuthScopeMismatchError()
+    if canonical_scope_set(granted_scopes) != canonical_scope_set(requested_scopes):
+        raise GoogleOAuthScopeMismatchError()
 
 
 class InstalledAppGoogleOAuthAuthorizer:

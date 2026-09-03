@@ -84,6 +84,7 @@ def google_credentials(
     id_token: str | None = ID_TOKEN,
     client_id: str | None = CLIENT_ID,
     client_secret: str | None = CLIENT_SECRET,
+    granted_scopes: list[str] | None = None,
 ) -> Credentials:
     return Credentials(
         token=ACCESS_TOKEN,
@@ -93,6 +94,7 @@ def google_credentials(
         client_id=client_id,
         client_secret=client_secret,
         scopes=GOOGLE_OAUTH_SCOPES,
+        granted_scopes=granted_scopes,
     )
 
 
@@ -189,7 +191,15 @@ def bootstrap_service(
 def test_installed_app_authorizer_uses_exact_approved_flow(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    credentials = google_credentials()
+    # Mirrors the real library: requested scopes in `scopes`, Google's canonical
+    # grant in `granted_scopes`.
+    credentials = google_credentials(
+        granted_scopes=[
+            "openid",
+            "https://www.googleapis.com/auth/userinfo.email",
+            "https://www.googleapis.com/auth/calendar.events.readonly",
+        ]
+    )
     flow_calls: list[tuple[str, tuple[str, ...]]] = []
     server_calls: list[dict[str, object]] = []
 
@@ -679,11 +689,23 @@ def test_invalid_explicit_input_fails_before_authorization(
     assert store.get(credential_reference()) is None
 
 
-class ScopeRecordingFlow:
-    """Return credentials whose granted scopes are controlled by the test."""
+CANONICAL_EMAIL_SCOPE = "https://www.googleapis.com/auth/userinfo.email"
+CALENDAR_READONLY_SCOPE = "https://www.googleapis.com/auth/calendar.events.readonly"
+_ABSENT = object()
 
-    granted: ClassVar[list[str] | None] = None
+
+class ScopeRecordingFlow:
+    """Mirror the real library: `scopes` is requested, `granted_scopes` is granted.
+
+    `credentials_from_session` builds Credentials with `scopes=session.scope` and
+    `granted_scopes=session.token.get("scope")`. Keeping `scopes` pinned to the
+    approved set while varying `granted_scopes` is what makes an over-grant
+    detectable; a fake that reused one value for both would hide it.
+    """
+
+    granted: ClassVar[object] = None
     relax_env_during_flow: ClassVar[str | None] = None
+    raise_in_flow: ClassVar[Exception | None] = None
 
     @classmethod
     def from_client_secrets_file(
@@ -695,6 +717,11 @@ class ScopeRecordingFlow:
         ScopeRecordingFlow.relax_env_during_flow = os.environ.get(
             "OAUTHLIB_RELAX_TOKEN_SCOPE"
         )
+        if ScopeRecordingFlow.raise_in_flow is not None:
+            raise ScopeRecordingFlow.raise_in_flow
+        extra: dict[str, object] = {}
+        if ScopeRecordingFlow.granted is not _ABSENT:
+            extra["granted_scopes"] = ScopeRecordingFlow.granted
         return Credentials(
             token=ACCESS_TOKEN,
             refresh_token=REFRESH_TOKEN,
@@ -702,40 +729,85 @@ class ScopeRecordingFlow:
             token_uri="https://oauth2.googleapis.com/token",
             client_id=CLIENT_ID,
             client_secret=CLIENT_SECRET,
-            scopes=ScopeRecordingFlow.granted,
+            # Always the requested approved set, exactly like the real library.
+            scopes=list(GOOGLE_OAUTH_SCOPES),
+            **extra,
         )
 
 
-def test_googles_canonical_email_scope_is_accepted(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Google echoes "email" back as the userinfo.email URL on every request.
-    ScopeRecordingFlow.granted = [
-        "openid",
-        "https://www.googleapis.com/auth/userinfo.email",
-        "https://www.googleapis.com/auth/calendar.events.readonly",
-    ]
-    monkeypatch.setattr(google_oauth, "InstalledAppFlow", ScopeRecordingFlow)
+@pytest.fixture(autouse=True)
+def _reset_scope_recording_flow() -> object:
+    ScopeRecordingFlow.granted = None
+    ScopeRecordingFlow.raise_in_flow = None
+    ScopeRecordingFlow.relax_env_during_flow = None
+    yield None
+    os.environ.pop("OAUTHLIB_RELAX_TOKEN_SCOPE", None)
 
-    credentials = google_oauth.run_installed_app_flow(
+
+def run_flow_with_granted(
+    monkeypatch: pytest.MonkeyPatch, granted: object
+) -> Credentials:
+    ScopeRecordingFlow.granted = granted
+    monkeypatch.setattr(google_oauth, "InstalledAppFlow", ScopeRecordingFlow)
+    return google_oauth.run_installed_app_flow(
         "/safe/client-secrets.json",
         GOOGLE_OAUTH_SCOPES,
         open_browser=False,
     )
 
+
+def test_canonical_google_email_alias_in_grant_is_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    credentials = run_flow_with_granted(
+        monkeypatch,
+        ["openid", CANONICAL_EMAIL_SCOPE, CALENDAR_READONLY_SCOPE],
+    )
+
     assert credentials.refresh_token == REFRESH_TOKEN
-    # oauthlib's verbatim scope equality must be relaxed inside the flow ...
     assert ScopeRecordingFlow.relax_env_during_flow == "1"
-    # ... and restored afterwards so the process default is not mutated.
     assert "OAUTHLIB_RELAX_TOKEN_SCOPE" not in os.environ
 
 
-def test_broader_granted_scope_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    ScopeRecordingFlow.granted = [
-        "openid",
-        "https://www.googleapis.com/auth/userinfo.email",
-        "https://www.googleapis.com/auth/calendar",
-    ]
+def test_broader_grant_is_rejected_even_though_requested_scopes_are_approved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The over-grant is only visible in granted_scopes; `scopes` still holds the
+    # approved request, so validating `scopes` would wrongly accept this.
+    with pytest.raises(google_oauth.GoogleOAuthScopeMismatchError):
+        run_flow_with_granted(
+            monkeypatch,
+            [
+                "openid",
+                CANONICAL_EMAIL_SCOPE,
+                "https://www.googleapis.com/auth/calendar",
+            ],
+        )
+
+
+def test_under_grant_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(google_oauth.GoogleOAuthScopeMismatchError):
+        run_flow_with_granted(monkeypatch, ["openid", CANONICAL_EMAIL_SCOPE])
+
+
+def test_absent_granted_scopes_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(google_oauth.GoogleOAuthScopeMismatchError):
+        run_flow_with_granted(monkeypatch, _ABSENT)
+
+
+@pytest.mark.parametrize("granted", [None, [], ["", "   "], "openid email", 42])
+def test_unusable_granted_scopes_fail_closed(
+    monkeypatch: pytest.MonkeyPatch, granted: object
+) -> None:
+    with pytest.raises(google_oauth.GoogleOAuthScopeMismatchError):
+        run_flow_with_granted(monkeypatch, granted)
+
+
+def test_requested_scopes_alone_cannot_satisfy_the_grant_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression guard for validating `scopes` instead of `granted_scopes`."""
+    ScopeRecordingFlow.granted = ["https://www.googleapis.com/auth/calendar"]
     monkeypatch.setattr(google_oauth, "InstalledAppFlow", ScopeRecordingFlow)
 
     with pytest.raises(google_oauth.GoogleOAuthScopeMismatchError):
@@ -745,17 +817,51 @@ def test_broader_granted_scope_is_rejected(monkeypatch: pytest.MonkeyPatch) -> N
             open_browser=False,
         )
 
+    # Prove the fake really did expose the approved set as the *requested* scopes,
+    # so the rejection came from the grant and not from a malformed fake.
+    ScopeRecordingFlow.granted = ["openid", CANONICAL_EMAIL_SCOPE, CALENDAR_READONLY_SCOPE]
+    accepted = google_oauth.run_installed_app_flow(
+        "/safe/client-secrets.json",
+        GOOGLE_OAUTH_SCOPES,
+        open_browser=False,
+    )
+    assert list(accepted.scopes) == list(GOOGLE_OAUTH_SCOPES)
 
-def test_missing_granted_scope_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    ScopeRecordingFlow.granted = ["openid", "https://www.googleapis.com/auth/userinfo.email"]
+
+def test_relaxation_is_restored_when_the_flow_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ScopeRecordingFlow.raise_in_flow = RuntimeError("flow exploded")
     monkeypatch.setattr(google_oauth, "InstalledAppFlow", ScopeRecordingFlow)
 
-    with pytest.raises(google_oauth.GoogleOAuthScopeMismatchError):
+    with pytest.raises(RuntimeError):
         google_oauth.run_installed_app_flow(
-            "/safe/client-secrets.json",
-            GOOGLE_OAUTH_SCOPES,
-            open_browser=False,
+            "/safe/client-secrets.json", GOOGLE_OAUTH_SCOPES, open_browser=False
         )
+
+    assert ScopeRecordingFlow.relax_env_during_flow == "1"
+    assert "OAUTHLIB_RELAX_TOKEN_SCOPE" not in os.environ
+
+
+def test_relaxation_is_restored_when_the_grant_guard_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(google_oauth.GoogleOAuthScopeMismatchError):
+        run_flow_with_granted(monkeypatch, ["openid"])
+
+    assert "OAUTHLIB_RELAX_TOKEN_SCOPE" not in os.environ
+
+
+def test_preexisting_relaxation_value_is_restored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OAUTHLIB_RELAX_TOKEN_SCOPE", "operator-set")
+
+    run_flow_with_granted(
+        monkeypatch, ["openid", CANONICAL_EMAIL_SCOPE, CALENDAR_READONLY_SCOPE]
+    )
+
+    assert os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] == "operator-set"
 
 
 def test_scope_mismatch_is_a_safe_bootstrap_failure() -> None:

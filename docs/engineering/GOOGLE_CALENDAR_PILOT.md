@@ -262,7 +262,7 @@ the command fails with `credential_already_exists`.
 | `account_mismatch` | connect | You selected the wrong Google account in the browser. Nothing was stored. Rerun and pick the expected account. |
 | `oauth_bootstrap_failed` | connect | Consent was denied or the flow did not return refresh-capable material. Confirm offline access and consent, and that the client is a Desktop app. The failure JSON carries `authorizer_error_type` when the flow itself raised, or `authorizer_credential_fields` when consent succeeded but a required field was missing. |
 | `authorizer_error_type: Warning` | connect | oauthlib rejecting Google's canonical scope aliases (it returns `email` as `.../auth/userinfo.email`). Handled: the flow relaxes oauthlib's verbatim check and verifies scope equivalence itself. If this reappears, the granted scopes genuinely differ. |
-| `authorizer_error_type: GoogleOAuthScopeMismatchError` | connect | Google granted something other than the three approved scopes. Nothing is stored. Check the consent screen selections. |
+| `authorizer_error_type: GoogleOAuthScopeMismatchError` | connect | The scopes Google actually **granted** are not the three approved scopes, or the token response carried no usable grant list at all. Nothing is stored. Untick nothing on the consent screen; if a checkbox was cleared, rerun and grant all three. |
 | `credential_missing` | verify / sync | No credential for that exact account identifier. Check for a typo, then run `connect`. |
 | `credential_malformed` | verify | Stored material has the wrong shape or non-approved scopes. Rerun `connect --replace`. |
 | `reconnect_required` | sync | Refresh token invalid, revoked or expired. Follow the reconnect procedure. |

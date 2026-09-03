@@ -29,6 +29,13 @@ GOOGLE_EMAIL = "person@example.com"
 CLIENT_SECRETS_FILE = "/safe/client-secrets.json"
 
 SECRET_VALUES = (REFRESH_TOKEN, ID_TOKEN, ACCESS_TOKEN, CLIENT_SECRET)
+# Google returns the OpenID `email` scope in canonical form, so the granted set is
+# never textually identical to the requested set.
+GRANTED_SCOPES = [
+    "openid",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/calendar.events.readonly",
+]
 
 
 class FakeAuthorizer:
@@ -50,6 +57,7 @@ class FakeAuthorizer:
             client_id=CLIENT_ID,
             client_secret=CLIENT_SECRET,
             scopes=GOOGLE_OAUTH_SCOPES,
+            granted_scopes=GRANTED_SCOPES,
         )
 
 
@@ -459,6 +467,7 @@ class RecordingFlow:
             client_id=CLIENT_ID,
             client_secret=CLIENT_SECRET,
             scopes=GOOGLE_OAUTH_SCOPES,
+            granted_scopes=GRANTED_SCOPES,
         )
 
 
@@ -595,6 +604,7 @@ class MissingRefreshTokenAuthorizer:
             client_id=CLIENT_ID,
             client_secret=CLIENT_SECRET,
             scopes=GOOGLE_OAUTH_SCOPES,
+            granted_scopes=GRANTED_SCOPES,
         )
 
 
@@ -649,3 +659,48 @@ def test_flow_failure_reports_error_type_and_no_field_map(
     failure = json.loads(capsys.readouterr().err)
     assert failure["authorizer_error_type"] == "AccessDeniedMarkerError"
     assert "authorizer_credential_fields" not in failure
+
+
+class OverGrantingFlow:
+    """Consent succeeds but Google grants a broader Calendar scope than approved."""
+
+    @classmethod
+    def from_client_secrets_file(
+        cls, client_secrets_file: str, scopes: tuple[str, ...]
+    ) -> "OverGrantingFlow":
+        return cls()
+
+    def run_local_server(self, **kwargs: object) -> Credentials:
+        return Credentials(
+            token=ACCESS_TOKEN,
+            refresh_token=REFRESH_TOKEN,
+            id_token=ID_TOKEN,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=CLIENT_ID,
+            client_secret=CLIENT_SECRET,
+            scopes=GOOGLE_OAUTH_SCOPES,
+            granted_scopes=[
+                "openid",
+                "https://www.googleapis.com/auth/userinfo.email",
+                "https://www.googleapis.com/auth/calendar",
+            ],
+        )
+
+
+def test_over_grant_is_reported_and_nothing_is_stored(
+    credential_store: InMemoryCredentialStore,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(google_oauth, "InstalledAppFlow", OverGrantingFlow)
+    monkeypatch.setattr(
+        google_oauth_cli, "GoogleIdTokenIdentityVerifier", FakeIdentityVerifier
+    )
+
+    exit_code = google_oauth_cli.main(connect_arguments())
+
+    failure = json.loads(capsys.readouterr().err)
+    assert exit_code == 1
+    assert failure["failure_code"] == "oauth_bootstrap_failed"
+    assert failure["authorizer_error_type"] == "GoogleOAuthScopeMismatchError"
+    assert credential_store.get(credential_reference()) is None
