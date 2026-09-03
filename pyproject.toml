@@ -27,6 +27,13 @@ packages = []
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+# Live smoke tests are deselected by default so ordinary runs and CI stay offline
+# and deterministic. Select them explicitly with:
+#   uv run pytest -m live_google_calendar tests/test_google_calendar_live_smoke.py
+addopts = "-m 'not live_google_calendar'"
+markers = [
+    "live_google_calendar: opt-in read-only live Google Calendar smoke. Deselected by default; also skips unless the VELOX_LIVE_GOOGLE_* environment values and a real macOS Keychain credential are present.",
+]
 
 [tool.ruff]
 target-version = "py312"
