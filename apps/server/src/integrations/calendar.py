@@ -83,6 +83,16 @@ _RFC3339_TIMESTAMP_PATTERN = re.compile(
 _CALENDAR_LIST_QUERY_FIELDS = frozenset(
     {"timeMin", "timeMax", "maxResults", "singleEvents", "orderBy"}
 )
+# A continuation page is the identical bounded query plus the opaque pageToken.
+# Google requires every other parameter to stay the same across pages, so the
+# window and ordering are never renegotiated mid-pagination.
+_CALENDAR_LIST_PAGED_QUERY_FIELDS = _CALENDAR_LIST_QUERY_FIELDS | {"pageToken"}
+# Result metadata mirrors the provider request for observability. The opaque page
+# token is replaced there rather than copied: metadata is the part most likely to
+# be logged or surfaced, and the token belongs only in the request itself.
+_REDACTED_QUERY_VALUE = "<redacted>"
+# Token format minted by the deterministic fake only. Never a Google token.
+_FAKE_CALENDAR_PAGE_TOKEN_PREFIX = "fake-calendar-page-"
 _GOOGLE_RATE_LIMIT_REASONS = frozenset(
     {"rateLimitExceeded", "userRateLimitExceeded", "quotaExceeded"}
 )
@@ -124,11 +134,18 @@ class CalendarEventListRequest:
     and max_results must fall inside the conservative VELOX range. Values outside
     the range are rejected instead of clamped, so a caller can never silently
     receive a different window or page size than the one it asked for.
+
+    page_token is opaque provider state. An absent token means the first page; a
+    present one is checked only for being a non-blank unpadded string and is
+    otherwise never parsed, interpreted, normalized, logged or persisted. One
+    request is always exactly one Google page: supplying a token does not start
+    a loop, it selects which single page this execution reads.
     """
 
     time_min: str
     time_max: str
     max_results: int
+    page_token: str | None = None
 
     def __post_init__(self) -> None:
         window_start = _validated_rfc3339_timestamp(self.time_min, "time_min")
@@ -153,20 +170,36 @@ class CalendarEventListRequest:
                 "calendar list request max_results is outside the allowed range",
                 field="max_results",
             )
+        if self.page_token is not None and (
+            not isinstance(self.page_token, str)
+            or not self.page_token
+            or self.page_token != self.page_token.strip()
+        ):
+            # The token itself is never placed in the message: a rejected token is
+            # still opaque provider state and must not leak through a failure path.
+            raise CalendarEventListRequestError(
+                "calendar list request page_token must be a non-blank unpadded string",
+                field="page_token",
+            )
 
     def as_query(self) -> dict[str, Any]:
-        """Return the exact bounded Google query parameters for this window.
+        """Return the exact bounded Google query parameters for this page.
 
         singleEvents expands recurring instances and orderBy makes the single page
         chronological, so the one page VELOX reads is a stable prefix of the window.
+        A continuation adds pageToken and changes nothing else, because Google
+        requires the rest of the query to be identical across pages.
         """
-        return {
+        query = {
             "timeMin": self.time_min,
             "timeMax": self.time_max,
             "maxResults": str(self.max_results),
             "singleEvents": "true",
             "orderBy": "startTime",
         }
+        if self.page_token is not None:
+            query["pageToken"] = self.page_token
+        return query
 
 
 def _validated_rfc3339_timestamp(value: object, field_name: str) -> datetime:
@@ -274,13 +307,30 @@ class FakeCalendarTransportClient(FakeGoogleTransportClient):
         self,
         request: GoogleProviderRequest,
     ) -> GoogleProviderResponse:
-        """Return one deterministic bounded page with no pagination token."""
+        """Return one deterministic page, issuing a token only when one is truncated.
+
+        This fake stands in for Google, so it is the side that mints and reads page
+        tokens; VELOX never interprets them. Reporting no further pages while having
+        truncated would make the fake claim a completeness it does not have.
+        """
         max_results = request.query.get("maxResults")
         limit = (
             int(max_results)
             if isinstance(max_results, str) and max_results.isdigit()
             else len(self._events)
         )
+        ordered = tuple(self._events.values())
+
+        offset = 0
+        page_token = request.query.get("pageToken")
+        if page_token is not None:
+            resolved_offset = self._page_token_offset(page_token, len(ordered))
+            if resolved_offset is None:
+                return self._invalid_page_token_response()
+            offset = resolved_offset
+
+        page = ordered[offset : offset + limit]
+        next_offset = offset + len(page)
         events = tuple(
             {
                 "event_id": event.event_id,
@@ -289,7 +339,7 @@ class FakeCalendarTransportClient(FakeGoogleTransportClient):
                 "end": event.end,
                 "attendees": event.attendees,
             }
-            for event in tuple(self._events.values())[:limit]
+            for event in page
         )
         return GoogleProviderResponse(
             status_code=200,
@@ -298,8 +348,43 @@ class FakeCalendarTransportClient(FakeGoogleTransportClient):
                 "integration": "calendar",
                 "adapter": "fake_transport",
                 "events": events,
-                "next_page_token": None,
+                "next_page_token": (
+                    f"{_FAKE_CALENDAR_PAGE_TOKEN_PREFIX}{next_offset}"
+                    if next_offset < len(ordered)
+                    else None
+                ),
             },
+        )
+
+    @staticmethod
+    def _page_token_offset(page_token: object, event_count: int) -> int | None:
+        """Return the offset a fake-issued token refers to, or None when unusable."""
+        if not isinstance(page_token, str) or not page_token.startswith(
+            _FAKE_CALENDAR_PAGE_TOKEN_PREFIX
+        ):
+            return None
+        offset = page_token.removeprefix(_FAKE_CALENDAR_PAGE_TOKEN_PREFIX)
+        if not offset.isdigit() or int(offset) > event_count:
+            return None
+        return int(offset)
+
+    @staticmethod
+    def _invalid_page_token_response() -> GoogleProviderResponse:
+        """Reject an unrecognized token the way Google rejects a bad pageToken."""
+        return GoogleProviderResponse(
+            status_code=400,
+            body={
+                "external_execution_performed": False,
+                "integration": "calendar",
+                "adapter": "fake_transport",
+                "failed": True,
+            },
+            failure=GoogleProviderFailure(
+                category=WorkerExecutionFailureCategory.PERMANENT,
+                message="Google Calendar rejected the event request",
+                provider_status_code=400,
+                provider_reason="invalidRequest",
+            ),
         )
 
 
@@ -500,6 +585,9 @@ class HttpxCalendarTransportClient:
         The bounded window is re-validated here rather than trusted from the
         caller: this is the last boundary before real HTTP, so an unbounded or
         malformed listing is rejected instead of being forwarded to Google.
+        Exactly two query shapes are accepted, the bounded first page and the
+        identical bounded query plus one opaque pageToken; anything else, including
+        an extra parameter, is rejected rather than forwarded.
         """
         if (
             request.operation not in _CALENDAR_LIST_CAPABILITY_IDENTIFIERS
@@ -509,18 +597,28 @@ class HttpxCalendarTransportClient:
         ):
             return False
         query = request.query
-        if set(query) != _CALENDAR_LIST_QUERY_FIELDS:
+        if set(query) not in (
+            _CALENDAR_LIST_QUERY_FIELDS,
+            _CALENDAR_LIST_PAGED_QUERY_FIELDS,
+        ):
             return False
         if query["singleEvents"] != "true" or query["orderBy"] != "startTime":
             return False
         max_results = query["maxResults"]
         if not isinstance(max_results, str) or not max_results.isdigit():
             return False
+        # A present-but-empty pageToken is rejected rather than treated as absent:
+        # silently degrading a continuation into a first page would restart a
+        # caller's walk from the beginning without any signal that it happened.
+        page_token = query.get("pageToken")
+        if "pageToken" in query and page_token is None:
+            return False
         try:
             CalendarEventListRequest(
                 time_min=query["timeMin"],
                 time_max=query["timeMax"],
                 max_results=int(max_results),
+                page_token=page_token,
             )
         except CalendarEventListRequestError:
             return False
@@ -861,11 +959,13 @@ class CalendarWorkerExecutor:
                 time_min=cast(str, action.payload.get("time_min")),
                 time_max=cast(str, action.payload.get("time_max")),
                 max_results=cast(int, action.payload.get("max_results")),
+                # Absent means first page; the token is forwarded, never inspected.
+                page_token=cast("str | None", action.payload.get("page_token")),
             )
         except CalendarEventListRequestError as error:
             reason = str(error)
             return WorkerExecutionResult(
-                action=action,
+                action=_page_token_redacted_action(action),
                 status=WorkerExecutionStatus.FAILED,
                 reason=reason,
                 metadata={
@@ -879,6 +979,8 @@ class CalendarWorkerExecutor:
                     metadata={"field": error.field},
                 ),
             )
+
+        result_action = _page_token_redacted_action(action)
 
         request = CalendarProviderRequest(
             operation=capability,
@@ -896,16 +998,18 @@ class CalendarWorkerExecutor:
                 "time_min": list_request.time_min,
                 "time_max": list_request.time_max,
                 "max_results": list_request.max_results,
+                # Whether this execution continued a page, never which token.
+                "page_token_supplied": list_request.page_token is not None,
             },
         )
         provider_failure_result = self._provider_failure_result(
-            action, response, result_metadata
+            result_action, response, result_metadata
         )
         if provider_failure_result is not None:
             return provider_failure_result
 
         return self._capability_worker_result(
-            action=action,
+            action=result_action,
             response=response,
             result_metadata=result_metadata,
             capability_result=_calendar_event_list_result(response),
@@ -1032,6 +1136,28 @@ def _calendar_capability_result(
     )
 
 
+def _page_token_redacted_action(action: Action) -> Action:
+    """Return the action with the opaque page token replaced, identity preserved.
+
+    The result travels further than the request: it is handed back to callers and
+    an action payload is what an action repository would persist. Replacing the
+    token here keeps it confined to the provider request, while model_copy retains
+    the same action id, created_at and every other field, so action identity and
+    worker semantics are unchanged. An action without a token is returned as-is,
+    so every non-paginated capability keeps the exact object it was given.
+    """
+    if "page_token" not in action.payload:
+        return action
+    return action.model_copy(
+        update={
+            "payload": {
+                **action.payload,
+                "page_token": _REDACTED_QUERY_VALUE,
+            }
+        }
+    )
+
+
 def _calendar_event_list_result(
     response: CalendarProviderResponse,
 ) -> CalendarCapabilityResult:
@@ -1119,7 +1245,10 @@ def _calendar_provider_request_metadata(
         "path": request.path,
         "method": request.method,
         "body": request.body,
-        "query": dict(request.query),
+        "query": {
+            key: (_REDACTED_QUERY_VALUE if key == "pageToken" else value)
+            for key, value in request.query.items()
+        },
         "account_context": (
             request.account_context.as_metadata()
             if request.account_context is not None
