@@ -81,6 +81,7 @@ Sprint 2 - Production Integration Foundations
 - Deterministic Calendar Ingress Adapter
 - Credential Store Contract and Deterministic Fake Store
 - macOS Keychain Credential Store Backend through keyring
+- Installed Google OAuth Bootstrap and Account Verification
 - Worker Runtime In-Memory Invocation Observability
 - Worker Runtime Exception Safety
 - Worker Executor Failure Contract
@@ -122,15 +123,15 @@ completed with focused regressions (`232 passed, 1 warning`), Ruff
 component map, accepted technical debt, and explicit production-integration
 exclusions.
 
-The first three Sprint 2 slices are implemented. Calendar event data now enters
+The first four Sprint 2 slices are implemented. Calendar event data now enters
 the worker through the account-aware provider composition response, and a
 vendor-neutral credential-store contract plus deterministic in-memory fake are
-available alongside a production macOS Keychain adapter through keyring.
+available alongside a production macOS Keychain adapter through keyring. A
+provider-local installed-app Google OAuth bootstrap now obtains and verifies
+refresh-capable credentials for one explicit VELOX account.
 
-Next proposed task: **installed Google OAuth bootstrap and account
-verification**. Reuse the existing credential-store contract and macOS Keychain
-adapter; do not wire Calendar or Gmail provider compositions unless that slice
-explicitly requires it.
+Next proposed task: **Real Google Calendar httpx transport for `events.get`**.
+Calendar `events.list` remains later work and is not part of that slice.
 
 ## Current Implementation Notes
 
@@ -218,6 +219,10 @@ explicitly requires it.
 - The keyring adapter preserves explicit replacement, missing read and delete, and safe backend-failure semantics through the vendor-neutral `CredentialStoreBackendError`. Backend failures expose no credential material, and the adapter is not wired into Google, Gmail or Calendar provider composition.
 - Keyring exposes no atomic create-if-absent operation, so the required no-silent-overwrite behavior uses an unavoidable check-then-write sequence. Its race remains documented technical debt rather than changing the credential-store contract in this slice.
 - macOS Keychain Credential Store Backend through keyring validation completed with focused credential-store tests (22 passed), `uv run ruff check apps tests`, `uv run mypy` (34 source files) and the full test suite (457 passed, 1 warning: existing Starlette/httpx deprecation warning).
+- `GoogleOAuthBootstrapService` is a provider-local control-plane service for one explicit VELOX account. It composes an injectable installed-app authorizer, an injectable Google identity verifier and the existing vendor-neutral `CredentialStore`; it is not wired into Calendar, Gmail, the application container, worker runtime, planner or core routing.
+- `InstalledAppGoogleOAuthAuthorizer` uses the official Google installed-app flow with the exact `openid`, `email` and Calendar events read-only scopes, a system browser, a random loopback port on `127.0.0.1`, offline access and explicit consent. `GoogleIdTokenIdentityVerifier` uses official Google ID-token verification with the OAuth client ID as audience, while the bootstrap separately requires a verified email and exact normalized match with the explicitly supplied expected email.
+- Google OAuth bootstrap fails closed before storage for missing refresh-capable credential fields, invalid or unverified identities and account mismatch. Safe provider-local failures do not retain third-party exceptions, and only refresh token, client ID, client secret and approved scopes are serialized under the `velox.google.oauth` namespace. Access tokens and ID tokens are never persisted or returned.
+- Installed Google OAuth Bootstrap and Account Verification validation completed with focused Google OAuth tests (30 passed), `uv run ruff check apps tests`, `uv run mypy` (35 source files) and the full test suite (487 passed, 1 warning: existing Starlette/httpx deprecation warning).
 
 ## Workflow
 
@@ -282,7 +287,7 @@ After every implementation slice, update this file in the same commit if the imp
 - Gmail's unqualified direct-executor aliases (`read`, `send`, `archive`) remain as compatibility inputs. Production provider declarations use canonical `WorkerCapability` values and runtime routing uses their normalized identifiers.
 - Shared Google provider composition retains separate principal/account arguments for backward-compatible direct integration tests; worker adapter execution uses only account context embedded from the matched routing result.
 - Gmail capability tests are consolidated locally in `tests/test_worker_executor.py`; no shared `tests/conftest.py` fixture has been introduced yet.
-- Real Gmail adapter, OAuth, production credential storage, HTTP transport and real Gmail API calls are not implemented yet. The vendor-neutral credential-store contract and deterministic in-memory fake are present, but no keyring or platform secret-store backend exists.
+- Real Gmail adapter, Google credential refresh integration, HTTP transport and real Gmail API calls are not implemented yet. The provider-local Calendar read-only OAuth bootstrap and macOS Keychain credential store exist but are not wired into Gmail provider composition.
 - Gmail provider boundary interfaces, fake transport bootstrap, fake credentials provider bootstrap and fake provider composition bootstrap are present behind the Gmail integration boundary. No concrete real provider implementation exists yet.
-- Google Calendar meeting context and ingress use deterministic fake provider behavior only. OAuth, credential storage, real HTTP transport and real Google Calendar API calls are not implemented.
+- Google Calendar meeting context and ingress still use deterministic fake provider behavior only. Installed OAuth bootstrap and Keychain storage are implemented but are not wired into `GoogleCredentialsProvider`; real HTTP transport and Calendar `events.get` remain the next slice, with `events.list` deferred until later.
 - Notion sync may still need reconciliation for the latest completed Google integration slices; do not claim Notion is updated unless the sync is explicitly performed.

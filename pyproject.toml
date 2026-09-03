@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi",
+    "google-auth>=2.57.0,<3",
+    "google-auth-oauthlib>=1.4.1,<2",
     "httpx",
     "keyring>=25.7.0",
     "pydantic>=2",
@@ -57,3 +59,7 @@ mypy_path = "."
 [[tool.mypy.overrides]]
 module = "tests.*"
 disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = ["google_auth_oauthlib", "google_auth_oauthlib.*"]
+ignore_missing_imports = true
