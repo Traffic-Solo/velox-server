@@ -21,6 +21,7 @@ from apps.server.src.integrations.google_oauth import (
     GOOGLE_OAUTH_SCOPES,
     GoogleIdTokenIdentityVerifier,
     GoogleOAuthAccountMismatchError,
+    GoogleOAuthAuthorizer,
     GoogleOAuthBootstrapError,
     GoogleOAuthBootstrapService,
     GoogleOAuthConnectRequest,
@@ -83,17 +84,52 @@ _FAILURE_MESSAGES = {
 class GoogleOAuthCliError(Exception):
     """Safe command failure that retains no third-party exception or secret."""
 
-    def __init__(self, code: GoogleOAuthCliFailureCode) -> None:
+    def __init__(
+        self,
+        code: GoogleOAuthCliFailureCode,
+        *,
+        authorizer_error_type: str | None = None,
+    ) -> None:
         self.code = code
+        self.authorizer_error_type = authorizer_error_type
         super().__init__(_FAILURE_MESSAGES[code])
 
     def as_dict(self) -> dict[str, object]:
         """Return a JSON-compatible failure containing only safe fields."""
-        return {
+        failure: dict[str, object] = {
             "status": "failed",
             "failure_code": self.code.value,
             "message": str(self),
         }
+        if self.authorizer_error_type is not None:
+            failure["authorizer_error_type"] = self.authorizer_error_type
+        return failure
+
+
+class DiagnosticAuthorizer:
+    """Record only the failure *type* raised by a wrapped authorizer.
+
+    The bootstrap service deliberately collapses every authorization failure into
+    one safe error, which makes a live pilot failure undiagnosable. A Python
+    exception class name cannot carry credential material, so recording it adds
+    diagnosability without widening the secret boundary. The exception itself is
+    re-raised unchanged and never retained.
+    """
+
+    def __init__(self, inner: GoogleOAuthAuthorizer) -> None:
+        self._inner = inner
+        self.error_type: str | None = None
+
+    def authorize(
+        self,
+        client_secrets_file: str,
+        scopes: tuple[str, ...],
+    ) -> Credentials:
+        try:
+            return self._inner.authorize(client_secrets_file, scopes)
+        except BaseException as error:
+            self.error_type = type(error).__name__
+            raise
 
 
 class ManualOpenGoogleOAuthAuthorizer:
@@ -172,11 +208,12 @@ def _connect(
         expected_google_email=namespace.expected_google_email,
         replace=bool(namespace.replace),
     )
-    authorizer = (
+    selected: GoogleOAuthAuthorizer = (
         ManualOpenGoogleOAuthAuthorizer()
         if bool(getattr(namespace, "no_browser", False))
         else InstalledAppGoogleOAuthAuthorizer()
     )
+    authorizer = DiagnosticAuthorizer(selected)
     service = GoogleOAuthBootstrapService(
         authorizer=authorizer,
         identity_verifier=GoogleIdTokenIdentityVerifier(),
@@ -198,7 +235,8 @@ def _connect(
         ) from None
     except GoogleOAuthBootstrapError:
         raise GoogleOAuthCliError(
-            GoogleOAuthCliFailureCode.OAUTH_BOOTSTRAP_FAILED
+            GoogleOAuthCliFailureCode.OAUTH_BOOTSTRAP_FAILED,
+            authorizer_error_type=authorizer.error_type,
         ) from None
 
     return {

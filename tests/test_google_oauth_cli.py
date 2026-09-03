@@ -519,3 +519,65 @@ def test_default_connect_mode_uses_the_browser_opening_authorizer(
     google_oauth_cli.main(connect_arguments())
 
     assert selected == ["Marker"]
+
+
+class ExplodingAuthorizer:
+    """Raise a distinctively named failure to prove the type is surfaced."""
+
+    def authorize(self, client_secrets_file: str, scopes: tuple[str, ...]) -> Credentials:
+        raise AccessDeniedMarkerError()
+
+
+class AccessDeniedMarkerError(Exception):
+    """Stand-in for an oauthlib consent-denied error."""
+
+
+def test_connect_failure_reports_authorizer_error_type_only(
+    credential_store: InMemoryCredentialStore,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        google_oauth_cli,
+        "InstalledAppGoogleOAuthAuthorizer",
+        ExplodingAuthorizer,
+    )
+    monkeypatch.setattr(
+        google_oauth_cli,
+        "GoogleIdTokenIdentityVerifier",
+        FakeIdentityVerifier,
+    )
+
+    exit_code = google_oauth_cli.main(connect_arguments())
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    failure = json.loads(captured.err)
+    assert failure["failure_code"] == "oauth_bootstrap_failed"
+    assert failure["authorizer_error_type"] == "AccessDeniedMarkerError"
+    assert credential_store.get(credential_reference()) is None
+    assert_no_secret_material(captured.out + captured.err)
+
+
+def test_successful_connect_reports_no_authorizer_error_type(
+    credential_store: InMemoryCredentialStore,
+    authorizer: FakeAuthorizer,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    google_oauth_cli.main(connect_arguments())
+
+    payload = json.loads(capsys.readouterr().out)
+    assert "authorizer_error_type" not in payload
+
+
+def test_diagnostic_authorizer_reraises_and_retains_no_exception(
+    credential_store: InMemoryCredentialStore,
+) -> None:
+    wrapper = google_oauth_cli.DiagnosticAuthorizer(ExplodingAuthorizer())
+
+    with pytest.raises(AccessDeniedMarkerError):
+        wrapper.authorize(CLIENT_SECRETS_FILE, GOOGLE_OAUTH_SCOPES)
+
+    assert wrapper.error_type == "AccessDeniedMarkerError"
+    # Only the class name is retained, never the exception object itself.
+    assert isinstance(wrapper.error_type, str)
