@@ -102,6 +102,27 @@ What happens: the system browser opens on a loopback `127.0.0.1` redirect with a
 port, requests offline access with an explicit consent prompt, and returns. There is no
 embedded browser. Select the expected Google account and grant the listed scopes.
 
+If the browser does not open automatically — `webbrowser.open` can fail silently, and a
+browser restart mid-flow loses the tab — rerun with `--no-browser`:
+
+```
+uv run python -m apps.server.src.integrations.google_oauth_cli connect \
+  --account-identifier <VELOX_ACCOUNT_IDENTIFIER> \
+  --expected-google-email <you@example.com> \
+  --client-secrets ~/.config/velox/velox-calendar-pilot-client-secret.json \
+  --no-browser
+```
+
+The authorization URL is then printed to **stderr** prefixed with
+`VELOX authorization URL: `, and you open it yourself. Stdout still carries only the
+single JSON result. The URL is not secret material — it carries the public client id,
+the loopback redirect URI, the requested scopes and a CSRF state nonce — but it is
+single-use and tied to the loopback port that run is listening on.
+
+Never reuse an authorization URL from an earlier run. Each run binds a fresh random port
+(`port=0`), so an old URL redirects to a port nothing is listening on. If a run is
+interrupted, kill it and start a new one rather than retrying the old URL.
+
 Safe expected output on success:
 
 ```json

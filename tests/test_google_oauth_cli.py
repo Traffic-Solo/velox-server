@@ -1,6 +1,7 @@
 """Deterministic tests for the explicit local Google OAuth command."""
 
 import json
+from typing import ClassVar
 
 import pytest
 from apps.server.src.core.credentials import (
@@ -428,3 +429,93 @@ def test_unavailable_store_maps_verify_failure_safely(
     captured = capsys.readouterr()
     assert exit_code == 1
     assert json.loads(captured.err)["failure_code"] == "credential_store_unavailable"
+
+
+class RecordingFlow:
+    """Capture run_local_server keyword arguments without any real OAuth work."""
+
+    last_kwargs: ClassVar[dict[str, object]] = {}
+    created_with: ClassVar[tuple[str, tuple[str, ...]] | None] = None
+
+    @classmethod
+    def from_client_secrets_file(
+        cls,
+        client_secrets_file: str,
+        scopes: tuple[str, ...],
+    ) -> "RecordingFlow":
+        cls.created_with = (client_secrets_file, scopes)
+        return cls()
+
+    def run_local_server(self, **kwargs: object) -> Credentials:
+        RecordingFlow.last_kwargs = kwargs
+        message = kwargs.get("authorization_prompt_message")
+        assert isinstance(message, str)
+        print(message.format(url="https://accounts.google.com/o/oauth2/auth?state=abc"))
+        return Credentials(
+            token=ACCESS_TOKEN,
+            refresh_token=REFRESH_TOKEN,
+            id_token=ID_TOKEN,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=CLIENT_ID,
+            client_secret=CLIENT_SECRET,
+            scopes=GOOGLE_OAUTH_SCOPES,
+        )
+
+
+def test_no_browser_mode_emits_url_to_stderr_and_never_opens_a_browser(
+    credential_store: InMemoryCredentialStore,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(google_oauth_cli, "InstalledAppFlow", RecordingFlow)
+    monkeypatch.setattr(
+        google_oauth_cli,
+        "GoogleIdTokenIdentityVerifier",
+        FakeIdentityVerifier,
+    )
+
+    exit_code = google_oauth_cli.main(connect_arguments("--no-browser"))
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    # The authorization prompt must not pollute stdout, which carries the JSON result.
+    assert json.loads(captured.out)["status"] == "succeeded"
+    assert google_oauth_cli._AUTHORIZATION_URL_PREFIX in captured.err
+    assert "https://accounts.google.com/o/oauth2/auth" in captured.err
+    assert RecordingFlow.last_kwargs["open_browser"] is False
+    assert RecordingFlow.last_kwargs["host"] == "127.0.0.1"
+    # Port 0 makes the OS pick a fresh port, so no run reuses a previous one.
+    assert RecordingFlow.last_kwargs["port"] == 0
+    assert RecordingFlow.last_kwargs["access_type"] == "offline"
+    assert RecordingFlow.last_kwargs["prompt"] == "consent"
+    assert RecordingFlow.created_with == (CLIENT_SECRETS_FILE, GOOGLE_OAUTH_SCOPES)
+    assert_no_secret_material(captured.out + captured.err)
+
+
+def test_default_connect_mode_uses_the_browser_opening_authorizer(
+    credential_store: InMemoryCredentialStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected: list[str] = []
+
+    class Marker:
+        def __init__(self) -> None:
+            selected.append(type(self).__name__)
+
+        def authorize(
+            self,
+            client_secrets_file: str,
+            scopes: tuple[str, ...],
+        ) -> Credentials:
+            raise GoogleOAuthBootstrapError()
+
+    monkeypatch.setattr(google_oauth_cli, "InstalledAppGoogleOAuthAuthorizer", Marker)
+    monkeypatch.setattr(
+        google_oauth_cli,
+        "GoogleIdTokenIdentityVerifier",
+        FakeIdentityVerifier,
+    )
+
+    google_oauth_cli.main(connect_arguments())
+
+    assert selected == ["Marker"]

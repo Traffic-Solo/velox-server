@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from collections.abc import Sequence
 from enum import StrEnum
+from typing import cast
 
 from apps.server.src.core.credentials import (
     CredentialAlreadyExistsError,
@@ -27,8 +29,14 @@ from apps.server.src.integrations.google_oauth import (
 from apps.server.src.integrations.keyring_credentials import (
     MacOSKeychainCredentialStore,
 )
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
 
 _PROGRAM_NAME = "python -m apps.server.src.integrations.google_oauth_cli"
+# Printed to stderr in --no-browser mode so the operator can open the URL
+# deliberately. The authorization URL is not secret material: it carries the
+# public client id, redirect URI, requested scopes and a CSRF state nonce.
+_AUTHORIZATION_URL_PREFIX = "VELOX authorization URL: "
 # Mirrors the material serialized by GoogleOAuthBootstrapService; the CLI only ever
 # reports presence of these keys and never their values.
 _EXPECTED_CREDENTIAL_FIELDS = frozenset(
@@ -88,6 +96,35 @@ class GoogleOAuthCliError(Exception):
         }
 
 
+class ManualOpenGoogleOAuthAuthorizer:
+    """Emit the authorization URL instead of auto-opening a browser.
+
+    `run_local_server` prints its authorization prompt to stdout. Stdout is
+    reserved for the single safe JSON result, so the prompt is redirected to
+    stderr for the duration of the flow. Loopback host and random port
+    selection are unchanged, so each run binds a fresh port.
+    """
+
+    def authorize(
+        self,
+        client_secrets_file: str,
+        scopes: tuple[str, ...],
+    ) -> Credentials:
+        flow = InstalledAppFlow.from_client_secrets_file(client_secrets_file, scopes=scopes)
+        with contextlib.redirect_stdout(sys.stderr):
+            return cast(
+                Credentials,
+                flow.run_local_server(
+                    host="127.0.0.1",
+                    port=0,
+                    open_browser=False,
+                    access_type="offline",
+                    prompt="consent",
+                    authorization_prompt_message=_AUTHORIZATION_URL_PREFIX + "{url}",
+                ),
+            )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=_PROGRAM_NAME,
@@ -110,6 +147,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="explicitly allow replacing an existing stored credential",
     )
+    connect.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="print the authorization URL to stderr instead of opening a browser",
+    )
 
     verify = subparsers.add_parser(
         "verify",
@@ -130,8 +172,13 @@ def _connect(
         expected_google_email=namespace.expected_google_email,
         replace=bool(namespace.replace),
     )
+    authorizer = (
+        ManualOpenGoogleOAuthAuthorizer()
+        if bool(getattr(namespace, "no_browser", False))
+        else InstalledAppGoogleOAuthAuthorizer()
+    )
     service = GoogleOAuthBootstrapService(
-        authorizer=InstalledAppGoogleOAuthAuthorizer(),
+        authorizer=authorizer,
         identity_verifier=GoogleIdTokenIdentityVerifier(),
         credential_store=credential_store,
     )
