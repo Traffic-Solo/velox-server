@@ -3,6 +3,7 @@
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Protocol, cast, runtime_checkable
 
 from apps.server.src.core.credentials import (
@@ -12,6 +13,13 @@ from apps.server.src.core.credentials import (
     CredentialStore,
     CredentialStoreBackendError,
 )
+from apps.server.src.integrations.google_provider import (
+    GoogleCredentials,
+    GoogleCredentialsProviderError,
+    GoogleProviderFailure,
+)
+from apps.server.src.workers.executor import WorkerExecutionFailureCategory
+from google.auth.exceptions import RefreshError, TransportError
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import id_token as google_id_token
 from google.oauth2.credentials import Credentials
@@ -22,6 +30,9 @@ GOOGLE_OAUTH_SCOPES = (
     "openid",
     "email",
     "https://www.googleapis.com/auth/calendar.events.readonly",
+)
+_STORED_GOOGLE_CREDENTIAL_FIELDS = frozenset(
+    {"client_id", "client_secret", "refresh_token", "scopes"}
 )
 
 
@@ -251,3 +262,229 @@ class GoogleOAuthBootstrapService:
         if not isinstance(email, str) or not email.strip():
             raise GoogleOAuthBootstrapError()
         return email.strip()
+
+
+class StoredGoogleCredentialsProvider:
+    """Resolve and refresh stored Google OAuth credentials for one VELOX account."""
+
+    def __init__(self, credential_store: CredentialStore) -> None:
+        self._credential_store = credential_store
+
+    def get_credentials(
+        self,
+        principal: str | None,
+        account: str | None,
+    ) -> GoogleCredentials:
+        """Return an ephemeral refreshed token for explicit VELOX routing identity."""
+        self._validate_routing_identifier(principal, "principal")
+        self._validate_routing_identifier(account, "account")
+        assert isinstance(principal, str)
+        assert isinstance(account, str)
+
+        reference = CredentialReference(
+            namespace=GOOGLE_OAUTH_CREDENTIAL_NAMESPACE,
+            account_identifier=account,
+        )
+        storage_failure: GoogleProviderFailure | None = None
+        material: CredentialMaterial | None = None
+        try:
+            material = self._credential_store.get(reference)
+        except CredentialStoreBackendError:
+            storage_failure = self._failure(
+                WorkerExecutionFailureCategory.TRANSIENT,
+                "Google credential store is unavailable",
+                retryable=True,
+                status_code=503,
+                reason="credentialStoreUnavailable",
+            )
+        except Exception:
+            storage_failure = self._failure(
+                WorkerExecutionFailureCategory.INTERNAL,
+                "Google credentials could not be resolved",
+                status_code=500,
+                reason="internalCredentialsError",
+            )
+        if storage_failure is not None:
+            raise GoogleCredentialsProviderError(storage_failure)
+        if material is None:
+            raise GoogleCredentialsProviderError(
+                self._failure(
+                    WorkerExecutionFailureCategory.PERMANENT,
+                    "Google credentials are unavailable; reconnect is required",
+                    status_code=401,
+                    reason="reconnectRequired",
+                )
+            )
+
+        credential_info = self._parse_credential_material(material.value)
+        reconstruction_failure = False
+        credentials: Credentials | None = None
+        try:
+            from_authorized_user_info = cast(
+                Callable[[Mapping[str, object]], Credentials],
+                Credentials.from_authorized_user_info,
+            )
+            credentials = from_authorized_user_info(credential_info)
+        except Exception:
+            reconstruction_failure = True
+        if reconstruction_failure or credentials is None:
+            raise GoogleCredentialsProviderError(
+                self._failure(
+                    WorkerExecutionFailureCategory.PERMANENT,
+                    "Stored Google credentials are invalid; reconnect is required",
+                    status_code=401,
+                    reason="reconnectRequired",
+                )
+            )
+
+        refresh_failure: GoogleProviderFailure | None = None
+        try:
+            refresh = cast(Callable[[GoogleAuthRequest], None], credentials.refresh)
+            refresh(GoogleAuthRequest())
+        except TransportError:
+            refresh_failure = self._failure(
+                WorkerExecutionFailureCategory.TRANSIENT,
+                "Google credential refresh is temporarily unavailable",
+                retryable=True,
+                status_code=503,
+                reason="credentialRefreshUnavailable",
+            )
+        except RefreshError as error:
+            retryable = bool(error.retryable)
+            refresh_failure = self._failure(
+                (
+                    WorkerExecutionFailureCategory.TRANSIENT
+                    if retryable
+                    else WorkerExecutionFailureCategory.PERMANENT
+                ),
+                (
+                    "Google credential refresh is temporarily unavailable"
+                    if retryable
+                    else "Google credentials are invalid; reconnect is required"
+                ),
+                retryable=retryable,
+                status_code=503 if retryable else 401,
+                reason=(
+                    "credentialRefreshUnavailable"
+                    if retryable
+                    else "reconnectRequired"
+                ),
+            )
+        except Exception:
+            refresh_failure = self._failure(
+                WorkerExecutionFailureCategory.INTERNAL,
+                "Google credentials could not be refreshed",
+                status_code=500,
+                reason="internalCredentialsError",
+            )
+        if refresh_failure is not None:
+            raise GoogleCredentialsProviderError(refresh_failure)
+
+        access_token = credentials.token
+        if not isinstance(access_token, str) or not access_token.strip():
+            raise GoogleCredentialsProviderError(
+                self._failure(
+                    WorkerExecutionFailureCategory.PERMANENT,
+                    "Google credentials are invalid; reconnect is required",
+                    status_code=401,
+                    reason="reconnectRequired",
+                )
+            )
+
+        return GoogleCredentials(
+            access_token=access_token,
+            principal=principal,
+            account=account,
+            expires_at=self._safe_expiry(credentials.expiry),
+        )
+
+    @classmethod
+    def _parse_credential_material(cls, serialized: str) -> dict[str, object]:
+        parse_failed = False
+        parsed: object = None
+        try:
+            parsed = json.loads(serialized)
+        except Exception:
+            parse_failed = True
+        if (
+            parse_failed
+            or not isinstance(parsed, dict)
+            or set(parsed) != _STORED_GOOGLE_CREDENTIAL_FIELDS
+        ):
+            cls._raise_malformed_credentials()
+
+        assert isinstance(parsed, dict)
+        for field_name in ("client_id", "client_secret", "refresh_token"):
+            value = parsed.get(field_name)
+            if not isinstance(value, str) or not value.strip():
+                cls._raise_malformed_credentials()
+
+        scopes = parsed.get("scopes")
+        if (
+            not isinstance(scopes, list)
+            or not all(isinstance(scope, str) for scope in scopes)
+            or tuple(scopes) != GOOGLE_OAUTH_SCOPES
+        ):
+            cls._raise_malformed_credentials()
+
+        return {
+            "client_id": parsed["client_id"],
+            "client_secret": parsed["client_secret"],
+            "refresh_token": parsed["refresh_token"],
+            "scopes": list(GOOGLE_OAUTH_SCOPES),
+        }
+
+    @staticmethod
+    def _validate_routing_identifier(value: object, field_name: str) -> None:
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+            or value != value.strip()
+        ):
+            raise GoogleCredentialsProviderError(
+                StoredGoogleCredentialsProvider._failure(
+                    WorkerExecutionFailureCategory.PERMANENT,
+                    f"Google credentials request has invalid {field_name}",
+                    status_code=400,
+                    reason="invalidAccountContext",
+                    metadata={"field": field_name},
+                )
+            )
+
+    @staticmethod
+    def _safe_expiry(expiry: object) -> str | None:
+        if not isinstance(expiry, datetime):
+            return None
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=UTC)
+        return expiry.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+    @staticmethod
+    def _raise_malformed_credentials() -> None:
+        raise GoogleCredentialsProviderError(
+            StoredGoogleCredentialsProvider._failure(
+                WorkerExecutionFailureCategory.PERMANENT,
+                "Stored Google credentials are invalid; reconnect is required",
+                status_code=401,
+                reason="reconnectRequired",
+            )
+        )
+
+    @staticmethod
+    def _failure(
+        category: WorkerExecutionFailureCategory,
+        message: str,
+        *,
+        retryable: bool = False,
+        status_code: int,
+        reason: str,
+        metadata: dict[str, object] | None = None,
+    ) -> GoogleProviderFailure:
+        return GoogleProviderFailure(
+            category=category,
+            message=message,
+            retryable=retryable,
+            provider_status_code=status_code,
+            provider_reason=reason,
+            metadata=metadata or {},
+        )

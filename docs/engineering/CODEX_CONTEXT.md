@@ -82,6 +82,8 @@ Sprint 2 - Production Integration Foundations
 - Credential Store Contract and Deterministic Fake Store
 - macOS Keychain Credential Store Backend through keyring
 - Installed Google OAuth Bootstrap and Account Verification
+- Stored Google OAuth Credential Refresh Resolver
+- Real Google Calendar `events.get` HTTP Transport
 - Worker Runtime In-Memory Invocation Observability
 - Worker Runtime Exception Safety
 - Worker Executor Failure Contract
@@ -123,15 +125,16 @@ completed with focused regressions (`232 passed, 1 warning`), Ruff
 component map, accepted technical debt, and explicit production-integration
 exclusions.
 
-The first four Sprint 2 slices are implemented. Calendar event data now enters
-the worker through the account-aware provider composition response, and a
-vendor-neutral credential-store contract plus deterministic in-memory fake are
-available alongside a production macOS Keychain adapter through keyring. A
-provider-local installed-app Google OAuth bootstrap now obtains and verifies
-refresh-capable credentials for one explicit VELOX account.
+The first five Sprint 2 slices are implemented. One explicit VELOX account can
+now resolve stored refresh-capable Google OAuth material, refresh an ephemeral
+access token and read one event from that account's primary Google Calendar
+through the synchronous httpx `events.get` transport. The deterministic fake
+Calendar composition remains the default; production dependencies must be
+injected explicitly.
 
-Next proposed task: **Real Google Calendar httpx transport for `events.get`**.
-Calendar `events.list` remains later work and is not part of that slice.
+The next Sprint 2 slice requires an explicit engineering decision. Calendar
+`events.list`, manual synchronization and a live smoke/pilot remain later work
+and were not included in Slice 5.
 
 ## Current Implementation Notes
 
@@ -223,6 +226,11 @@ Calendar `events.list` remains later work and is not part of that slice.
 - `InstalledAppGoogleOAuthAuthorizer` uses the official Google installed-app flow with the exact `openid`, `email` and Calendar events read-only scopes, a system browser, a random loopback port on `127.0.0.1`, offline access and explicit consent. `GoogleIdTokenIdentityVerifier` uses official Google ID-token verification with the OAuth client ID as audience, while the bootstrap separately requires a verified email and exact normalized match with the explicitly supplied expected email.
 - Google OAuth bootstrap fails closed before storage for missing refresh-capable credential fields, invalid or unverified identities and account mismatch. Safe provider-local failures do not retain third-party exceptions, and only refresh token, client ID, client secret and approved scopes are serialized under the `velox.google.oauth` namespace. Access tokens and ID tokens are never persisted or returned.
 - Installed Google OAuth Bootstrap and Account Verification validation completed with focused Google OAuth tests (30 passed), `uv run ruff check apps tests`, `uv run mypy` (35 source files) and the full test suite (487 passed, 1 warning: existing Starlette/httpx deprecation warning).
+- `StoredGoogleCredentialsProvider` resolves only the exact explicit VELOX account identifier in the existing `velox.google.oauth` namespace, validates the stored refresh-capable schema and approved scopes, reconstructs official Google credentials and refreshes them through google-auth. It returns only an ephemeral access token through the shared provider contract, preserves explicit principal/account routing identity and never writes refreshed access tokens or ID tokens to credential storage.
+- Credential storage, parsing, reconstruction and refresh failures map to safe shared Google provider failures without retaining third-party exception chains. Retryable google-auth transport/refresh failures are transient; invalid or revoked credentials require reconnect and are permanent. Refresh-token rotation persistence remains technical debt and is intentionally not implemented in this slice.
+- `HttpxCalendarTransportClient` implements only synchronous Google Calendar `events.get` against `https://www.googleapis.com` with an injected `httpx.Client`, a bounded timeout, Bearer authorization and preserved query parameters. It maps timed and all-day events into the existing VELOX event shape, treats event 404 as `found: False`, classifies required HTTP and transport failures, and exposes only allow-listed safe failure reasons.
+- Calendar transport retries and exponential backoff remain owned by VELOX bounded transient retry behavior; the adapter performs no transport-local retries or backoff. `CalendarProviderComposition()` remains deterministic and fake by default, and no production Google path is wired into `ApplicationContainer`.
+- Real Google Calendar `events.get` transport validation completed with focused Google OAuth and Calendar tests (102 passed), `uv run ruff check apps tests`, `uv run mypy` (35 source files) and the full test suite (527 passed, 1 warning: existing Starlette/httpx deprecation warning).
 
 ## Workflow
 
@@ -287,7 +295,7 @@ After every implementation slice, update this file in the same commit if the imp
 - Gmail's unqualified direct-executor aliases (`read`, `send`, `archive`) remain as compatibility inputs. Production provider declarations use canonical `WorkerCapability` values and runtime routing uses their normalized identifiers.
 - Shared Google provider composition retains separate principal/account arguments for backward-compatible direct integration tests; worker adapter execution uses only account context embedded from the matched routing result.
 - Gmail capability tests are consolidated locally in `tests/test_worker_executor.py`; no shared `tests/conftest.py` fixture has been introduced yet.
-- Real Gmail adapter, Google credential refresh integration, HTTP transport and real Gmail API calls are not implemented yet. The provider-local Calendar read-only OAuth bootstrap and macOS Keychain credential store exist but are not wired into Gmail provider composition.
+- Real Gmail adapter, Gmail credential refresh integration, HTTP transport and real Gmail API calls are not implemented yet. The provider-local Calendar read-only OAuth bootstrap and macOS Keychain credential store exist but are not wired into Gmail provider composition.
 - Gmail provider boundary interfaces, fake transport bootstrap, fake credentials provider bootstrap and fake provider composition bootstrap are present behind the Gmail integration boundary. No concrete real provider implementation exists yet.
-- Google Calendar meeting context and ingress still use deterministic fake provider behavior only. Installed OAuth bootstrap and Keychain storage are implemented but are not wired into `GoogleCredentialsProvider`; real HTTP transport and Calendar `events.get` remain the next slice, with `events.list` deferred until later.
+- Google Calendar meeting context and ingress remain wired to the deterministic fake provider by default. The stored-credential resolver and real `events.get` httpx transport require explicit production dependency injection and are not wired into `ApplicationContainer`. Calendar `events.list`, manual synchronization and a live smoke/pilot remain later work.
 - Notion sync may still need reconciliation for the latest completed Google integration slices; do not claim Notion is updated unless the sync is explicitly performed.

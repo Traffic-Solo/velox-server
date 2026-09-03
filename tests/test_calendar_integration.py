@@ -1,5 +1,6 @@
 import socket
 
+import httpx
 import pytest
 from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.integrations.calendar import (
@@ -16,6 +17,7 @@ from apps.server.src.integrations.calendar import (
     CalendarWorkerExecutor,
     FakeCalendarCredentialsProvider,
     FakeCalendarTransportClient,
+    HttpxCalendarTransportClient,
 )
 from apps.server.src.integrations.gmail import (
     GmailProviderComposition,
@@ -32,6 +34,7 @@ CALENDAR_ACCOUNT_CONTEXT = WorkerAccountContext(
     principal="principal-1",
     account_identifier="calendar-account-1",
 )
+CALENDAR_ACCESS_TOKEN = "calendar-access-token-secret"
 
 
 class UnexpectedCalendarProviderComposition(CalendarProviderComposition):
@@ -63,6 +66,32 @@ def block_external_socket_calls(monkeypatch) -> None:
 
     monkeypatch.setattr(socket, "create_connection", fail_external_call)
     monkeypatch.setattr(socket, "socket", fail_external_call)
+
+
+def calendar_credentials() -> CalendarCredentials:
+    return CalendarCredentials(
+        access_token=CALENDAR_ACCESS_TOKEN,
+        principal="principal-1",
+        account="calendar-account-1",
+    )
+
+
+def calendar_provider_request(
+    *,
+    event_id: str = "calendar-event-1",
+    query: dict[str, object] | None = None,
+) -> CalendarProviderRequest:
+    return CalendarProviderRequest(
+        operation="prepare_meeting",
+        path=f"/calendar/v3/calendars/primary/events/{event_id}",
+        query=query or {},
+    )
+
+
+def calendar_http_client(
+    handler,
+) -> httpx.Client:
+    return httpx.Client(transport=httpx.MockTransport(handler))
 
 
 def test_calendar_executor_role_is_vendor_neutral() -> None:
@@ -535,6 +564,292 @@ def test_calendar_fake_transport_returns_deterministic_response() -> None:
             "account": "calendar-account-1",
         },
     )
+
+
+def test_calendar_httpx_transport_uses_exact_get_url_query_and_authorization() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "id": "calendar-event-1",
+                "summary": "Planning",
+                "start": {"dateTime": "2026-09-04T09:00:00Z"},
+                "end": {"dateTime": "2026-09-04T09:30:00Z"},
+            },
+        )
+
+    response = HttpxCalendarTransportClient(calendar_http_client(handler)).execute(
+        calendar_provider_request(query={"timeZone": "UTC"}),
+        calendar_credentials(),
+    )
+
+    assert response.failure is None
+    assert len(requests) == 1
+    assert requests[0].method == "GET"
+    assert str(requests[0].url) == (
+        "https://www.googleapis.com/calendar/v3/calendars/primary/events/"
+        "calendar-event-1?timeZone=UTC"
+    )
+    assert requests[0].headers["Authorization"] == (
+        f"Bearer {CALENDAR_ACCESS_TOKEN}"
+    )
+    assert CALENDAR_ACCESS_TOKEN not in str(requests[0].url)
+    assert requests[0].content == b""
+
+
+@pytest.mark.parametrize(
+    ("provider_event", "expected_event"),
+    [
+        (
+            {
+                "id": "calendar-event-1",
+                "summary": "Timed planning",
+                "start": {"dateTime": "2026-09-04T09:00:00Z"},
+                "end": {"dateTime": "2026-09-04T09:30:00Z"},
+                "attendees": [
+                    {"email": "owner@example.com"},
+                    {"email": "team@example.com"},
+                ],
+            },
+            {
+                "event_id": "calendar-event-1",
+                "title": "Timed planning",
+                "start": "2026-09-04T09:00:00Z",
+                "end": "2026-09-04T09:30:00Z",
+                "attendees": ("owner@example.com", "team@example.com"),
+            },
+        ),
+        (
+            {
+                "id": "calendar-event-1",
+                "summary": "All day",
+                "start": {"date": "2026-09-04"},
+                "end": {"date": "2026-09-05"},
+            },
+            {
+                "event_id": "calendar-event-1",
+                "title": "All day",
+                "start": "2026-09-04",
+                "end": "2026-09-05",
+                "attendees": (),
+            },
+        ),
+        (
+            {
+                "id": "calendar-event-1",
+                "start": {"dateTime": "2026-09-04T09:00:00Z"},
+                "end": {"dateTime": "2026-09-04T09:30:00Z"},
+            },
+            {
+                "event_id": "calendar-event-1",
+                "title": "",
+                "start": "2026-09-04T09:00:00Z",
+                "end": "2026-09-04T09:30:00Z",
+                "attendees": (),
+            },
+        ),
+    ],
+)
+def test_calendar_httpx_transport_maps_google_event_shape(
+    provider_event: dict[str, object],
+    expected_event: dict[str, object],
+) -> None:
+    client = calendar_http_client(
+        lambda request: httpx.Response(200, json=provider_event)
+    )
+
+    response = HttpxCalendarTransportClient(client).execute(
+        calendar_provider_request(),
+        calendar_credentials(),
+    )
+
+    assert response.status_code == 200
+    assert response.failure is None
+    assert response.body["found"] is True
+    assert response.body["event"] == expected_event
+
+
+def test_calendar_httpx_transport_maps_not_found_to_existing_semantics() -> None:
+    client = calendar_http_client(
+        lambda request: httpx.Response(404, json={"error": "must-not-leak"})
+    )
+
+    response = HttpxCalendarTransportClient(client).execute(
+        calendar_provider_request(),
+        calendar_credentials(),
+    )
+
+    assert response.status_code == 404
+    assert response.failure is None
+    assert response.body["found"] is False
+    assert "must-not-leak" not in repr(response)
+
+
+@pytest.mark.parametrize(
+    ("status_code", "body", "category", "retryable", "reason"),
+    [
+        (
+            400,
+            {"error": "raw-secret"},
+            WorkerExecutionFailureCategory.PERMANENT,
+            False,
+            "invalidRequest",
+        ),
+        (
+            401,
+            {"error": "raw-secret"},
+            WorkerExecutionFailureCategory.PERMANENT,
+            False,
+            "reconnectRequired",
+        ),
+        (
+            403,
+            {
+                "error": {
+                    "errors": [
+                        {"reason": "rateLimitExceeded", "message": "raw-secret"}
+                    ]
+                }
+            },
+            WorkerExecutionFailureCategory.TRANSIENT,
+            True,
+            "rateLimitExceeded",
+        ),
+        (
+            403,
+            {
+                "error": {
+                    "errors": [{"reason": "forbidden", "message": "raw-secret"}]
+                }
+            },
+            WorkerExecutionFailureCategory.PERMANENT,
+            False,
+            "forbidden",
+        ),
+        (
+            429,
+            {"error": "raw-secret"},
+            WorkerExecutionFailureCategory.TRANSIENT,
+            True,
+            "rateLimitExceeded",
+        ),
+        (
+            500,
+            {"error": "raw-secret"},
+            WorkerExecutionFailureCategory.TRANSIENT,
+            True,
+            "providerUnavailable",
+        ),
+        (
+            503,
+            {"error": "raw-secret"},
+            WorkerExecutionFailureCategory.TRANSIENT,
+            True,
+            "providerUnavailable",
+        ),
+    ],
+)
+def test_calendar_httpx_transport_maps_provider_failures(
+    status_code: int,
+    body: dict[str, object],
+    category: WorkerExecutionFailureCategory,
+    retryable: bool,
+    reason: str,
+) -> None:
+    client = calendar_http_client(
+        lambda request: httpx.Response(status_code, json=body)
+    )
+
+    response = HttpxCalendarTransportClient(client).execute(
+        calendar_provider_request(),
+        calendar_credentials(),
+    )
+
+    assert response.status_code == status_code
+    assert response.failure is not None
+    assert response.failure.category == category
+    assert response.failure.retryable is retryable
+    assert response.failure.provider_reason == reason
+    assert "raw-secret" not in repr(response)
+    assert CALENDAR_ACCESS_TOKEN not in repr(response)
+
+
+@pytest.mark.parametrize(
+    "transport_error",
+    [
+        httpx.ConnectError("network-secret"),
+        httpx.ReadTimeout("timeout-secret"),
+    ],
+)
+def test_calendar_httpx_transport_maps_network_failures_as_transient(
+    transport_error: Exception,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise transport_error
+
+    response = HttpxCalendarTransportClient(calendar_http_client(handler)).execute(
+        calendar_provider_request(),
+        calendar_credentials(),
+    )
+
+    assert response.failure is not None
+    assert response.failure.category == WorkerExecutionFailureCategory.TRANSIENT
+    assert response.failure.retryable is True
+    assert "secret" not in repr(response)
+    assert CALENDAR_ACCESS_TOKEN not in repr(response)
+
+
+@pytest.mark.parametrize(
+    "provider_response",
+    [
+        httpx.Response(200, content=b"not-json"),
+        httpx.Response(200, json=[]),
+        httpx.Response(200, json={"id": "calendar-event-1"}),
+        httpx.Response(
+            200,
+            json={
+                "id": "different-event",
+                "start": {"date": "2026-09-04"},
+                "end": {"date": "2026-09-05"},
+            },
+        ),
+    ],
+)
+def test_calendar_httpx_transport_maps_invalid_success_as_internal(
+    provider_response: httpx.Response,
+) -> None:
+    client = calendar_http_client(lambda request: provider_response)
+
+    response = HttpxCalendarTransportClient(client).execute(
+        calendar_provider_request(),
+        calendar_credentials(),
+    )
+
+    assert response.failure is not None
+    assert response.failure.category == WorkerExecutionFailureCategory.INTERNAL
+    assert response.failure.provider_reason == "invalidProviderResponse"
+
+
+def test_calendar_httpx_transport_never_exposes_authorization(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = calendar_http_client(
+        lambda request: httpx.Response(
+            401,
+            json={"error": f"Bearer {CALENDAR_ACCESS_TOKEN}"},
+        )
+    )
+
+    response = HttpxCalendarTransportClient(client).execute(
+        calendar_provider_request(),
+        calendar_credentials(),
+    )
+
+    assert CALENDAR_ACCESS_TOKEN not in repr(response)
+    assert CALENDAR_ACCESS_TOKEN not in caplog.text
 
 
 def test_calendar_provider_composition_executes_fake_credentials_and_transport() -> None:
