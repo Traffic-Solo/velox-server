@@ -120,7 +120,7 @@ def list_http_client(handler) -> httpx.Client:
 
 
 def google_page(
-    items: list[dict[str, object]],
+    items: list[object],
     *,
     next_page_token: str | None = None,
 ) -> dict[str, object]:
@@ -492,6 +492,7 @@ def test_list_request_routes_the_explicit_principal_and_account() -> None:
                     "integration": "calendar",
                     "adapter": "fake_transport",
                     "events": (),
+                    "skipped_event_count": 0,
                     "next_page_token": None,
                 },
             )
@@ -537,15 +538,11 @@ def test_list_request_without_account_context_fails_closed() -> None:
             [TIMED_EVENT, ALL_DAY_EVENT],
             (MAPPED_TIMED_EVENT, MAPPED_ALL_DAY_EVENT),
         ),
-        (
-            [{**TIMED_EVENT, "summary": None, "attendees": None}],
-            None,
-        ),
     ],
 )
 def test_list_maps_pages_through_the_events_get_mapping(
     items: list[dict[str, object]],
-    expected_events: tuple[dict[str, object], ...] | None,
+    expected_events: tuple[dict[str, object], ...],
 ) -> None:
     executor, _ = executor_over(
         lambda request: httpx.Response(200, json=google_page(items))
@@ -553,12 +550,117 @@ def test_list_maps_pages_through_the_events_get_mapping(
 
     result = execute_list(executor)
 
-    if expected_events is None:
-        assert result.status == WorkerExecutionStatus.FAILED
-        return
     assert result.status == WorkerExecutionStatus.SUCCEEDED
     assert result.metadata["events"] == expected_events
     assert result.metadata["event_count"] == len(expected_events)
+    assert result.metadata["skipped_event_count"] == 0
+    assert result.metadata["page_complete"] is True
+
+
+def test_list_preserves_valid_siblings_when_one_item_is_malformed() -> None:
+    malformed_event = {**TIMED_EVENT, "attendees": "not-a-list"}
+    executor, _ = executor_over(
+        lambda request: httpx.Response(
+            200,
+            json=google_page([TIMED_EVENT, malformed_event, ALL_DAY_EVENT]),
+        )
+    )
+
+    result = execute_list(executor)
+
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.metadata["events"] == (MAPPED_TIMED_EVENT, MAPPED_ALL_DAY_EVENT)
+    assert result.metadata["event_count"] == 2
+    assert result.metadata["skipped_event_count"] == 1
+    assert result.metadata["page_complete"] is False
+
+
+def test_list_skips_multiple_malformed_siblings() -> None:
+    executor, _ = executor_over(
+        lambda request: httpx.Response(
+            200,
+            json=google_page(
+                [TIMED_EVENT, "not-an-object", {"summary": "missing-id"}]
+            ),
+        )
+    )
+
+    result = execute_list(executor)
+
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.metadata["events"] == (MAPPED_TIMED_EVENT,)
+    assert result.metadata["event_count"] == 1
+    assert result.metadata["skipped_event_count"] == 2
+    assert result.metadata["page_complete"] is False
+
+
+def test_list_all_malformed_items_is_a_successful_partial_page() -> None:
+    executor, _ = executor_over(
+        lambda request: httpx.Response(
+            200,
+            json=google_page(["not-an-object", {"summary": "missing-id"}]),
+        )
+    )
+
+    result = execute_list(executor)
+
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.metadata["events"] == ()
+    assert result.metadata["event_count"] == 0
+    assert result.metadata["skipped_event_count"] == 2
+    assert result.metadata["page_complete"] is False
+
+
+def test_partial_page_preserves_next_page_token_without_following_it() -> None:
+    executor, requests = executor_over(
+        lambda request: httpx.Response(
+            200,
+            json=google_page(
+                [TIMED_EVENT, "not-an-object"],
+                next_page_token="opaque-next-page-token",
+            ),
+        )
+    )
+
+    result = execute_list(executor)
+
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.metadata["events"] == (MAPPED_TIMED_EVENT,)
+    assert result.metadata["next_page_token"] == "opaque-next-page-token"
+    assert result.metadata["has_more_pages"] is True
+    assert result.metadata["page_complete"] is False
+    assert result.metadata["skipped_event_count"] == 1
+    assert len(requests) == 1
+
+
+def test_malformed_item_values_do_not_cross_the_calendar_boundary() -> None:
+    sentinel = "malformed-calendar-sentinel-must-not-leak"
+    malformed_event = {
+        "id": sentinel,
+        "summary": sentinel,
+        "start": {"dateTime": "2026-09-04T10:00:00Z"},
+        "end": {"dateTime": "2026-09-04T10:30:00Z"},
+        "attendees": sentinel,
+    }
+    executor, _ = executor_over(
+        lambda request: httpx.Response(
+            200,
+            json=google_page([TIMED_EVENT, malformed_event]),
+        )
+    )
+
+    result = execute_list(executor)
+
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.metadata["skipped_event_count"] == 1
+    exposed = (
+        repr(result),
+        repr(result.action),
+        repr(result.metadata),
+        repr(result.failure),
+        str(result.reason),
+    )
+    assert all(sentinel not in value for value in exposed)
 
 
 def test_list_preserves_all_day_and_timed_event_boundaries() -> None:
@@ -678,36 +780,9 @@ def test_malformed_next_page_token_fails_closed(next_page_token: object) -> None
         httpx.Response(200, content=b"not-json"),
         httpx.Response(200, json=[]),
         httpx.Response(200, json={"items": "not-a-list"}),
-        httpx.Response(200, json={"items": ["not-an-object"]}),
-        httpx.Response(200, json={"items": [{"summary": "no id"}]}),
-        httpx.Response(200, json={"items": [{"id": "", "start": {}, "end": {}}]}),
-        httpx.Response(
-            200,
-            json={
-                "items": [
-                    {
-                        "id": "calendar-event-1",
-                        "start": {"dateTime": "2026-09-04T09:00:00Z"},
-                    }
-                ]
-            },
-        ),
-        httpx.Response(
-            200,
-            json={
-                "items": [
-                    {
-                        "id": "calendar-event-1",
-                        "start": {"dateTime": "2026-09-04T09:00:00Z"},
-                        "end": {"dateTime": "2026-09-04T09:30:00Z"},
-                        "attendees": [{"email": ""}],
-                    }
-                ]
-            },
-        ),
     ],
 )
-def test_malformed_google_list_response_is_an_internal_failure(
+def test_structurally_invalid_google_list_response_is_an_internal_failure(
     provider_response: httpx.Response,
 ) -> None:
     response = HttpxCalendarTransportClient(
@@ -882,6 +957,8 @@ def test_fake_transport_serves_a_deterministic_bounded_page() -> None:
     assert result.metadata["external_execution_performed"] is False
     assert result.metadata["next_page_token"] is None
     assert result.metadata["has_more_pages"] is False
+    assert result.metadata["page_complete"] is True
+    assert result.metadata["skipped_event_count"] == 0
     assert set(result.metadata["events"][0]) == ALLOWLISTED_EVENT_FIELDS
 
 
@@ -921,3 +998,5 @@ def test_fake_transport_empty_event_store_returns_an_empty_page() -> None:
     assert result.status == WorkerExecutionStatus.SUCCEEDED
     assert result.metadata["events"] == ()
     assert result.metadata["event_count"] == 0
+    assert result.metadata["page_complete"] is True
+    assert result.metadata["skipped_event_count"] == 0

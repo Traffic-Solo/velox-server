@@ -315,6 +315,8 @@ def test_first_page_preserves_the_opaque_token_without_following_it() -> None:
     assert result.metadata["has_more_pages"] is True
     assert result.metadata["events"] == (mapped_event(1), mapped_event(2))
     assert result.metadata["event_count"] == 2
+    assert result.metadata["page_complete"] is True
+    assert result.metadata["skipped_event_count"] == 0
     # One page fetched, and no second request was issued on its own.
     assert len(requests) == 1
 
@@ -332,6 +334,8 @@ def test_second_page_may_itself_return_another_next_page_token() -> None:
     assert result.metadata["next_page_token"] == SECOND_OPAQUE_TOKEN
     assert result.metadata["has_more_pages"] is True
     assert result.metadata["events"] == (mapped_event(3),)
+    assert result.metadata["page_complete"] is True
+    assert result.metadata["skipped_event_count"] == 0
     assert len(requests) == 1
 
 

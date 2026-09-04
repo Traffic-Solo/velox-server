@@ -348,6 +348,7 @@ class FakeCalendarTransportClient(FakeGoogleTransportClient):
                 "integration": "calendar",
                 "adapter": "fake_transport",
                 "events": events,
+                "skipped_event_count": 0,
                 "next_page_token": (
                     f"{_FAKE_CALENDAR_PAGE_TOKEN_PREFIX}{next_offset}"
                     if next_offset < len(ordered)
@@ -671,12 +672,15 @@ class HttpxCalendarTransportClient:
             return None
 
         events: list[dict[str, object]] = []
+        skipped_event_count = 0
         for raw_item in raw_items:
             if not isinstance(raw_item, dict):
-                return None
+                skipped_event_count += 1
+                continue
             event = cls._map_event(raw_item)
             if event is None:
-                return None
+                skipped_event_count += 1
+                continue
             events.append(event)
 
         next_page_token = raw_list.get("nextPageToken")
@@ -684,7 +688,11 @@ class HttpxCalendarTransportClient:
             not isinstance(next_page_token, str) or not next_page_token.strip()
         ):
             return None
-        return {"events": tuple(events), "next_page_token": next_page_token}
+        return {
+            "events": tuple(events),
+            "skipped_event_count": skipped_event_count,
+            "next_page_token": next_page_token,
+        }
 
     @staticmethod
     def _parse_json_object(response: httpx.Response) -> dict[str, object] | None:
@@ -1163,11 +1171,10 @@ def _page_token_redacted_action(action: Action) -> Action:
 def _calendar_event_list_result(
     response: CalendarProviderResponse,
 ) -> CalendarCapabilityResult:
-    """Return one bounded page of allowlisted events plus opaque page metadata.
+    """Return one bounded page with explicit mapping completeness metadata.
 
-    A non-empty nextPageToken means Google holds further results for this window.
-    It is surfaced as opaque metadata only: this slice never requests another page,
-    so a caller must treat a truncated page as truncated rather than complete.
+    Pagination and mapping completeness are independent: a partial mapped page may
+    still carry an opaque continuation token for a caller-driven next request.
     """
     events_value = response.body.get("events")
     if not isinstance(events_value, (list, tuple)):
@@ -1186,6 +1193,13 @@ def _calendar_event_list_result(
             )
         events.append(event)
 
+    skipped_event_count = response.body.get("skipped_event_count")
+    if type(skipped_event_count) is not int or skipped_event_count < 0:
+        return CalendarCapabilityResult(
+            status=WorkerExecutionStatus.FAILED,
+            reason="calendar provider returned invalid event list data",
+        )
+
     next_page_token = response.body.get("next_page_token")
     if next_page_token is not None and (
         not isinstance(next_page_token, str) or not next_page_token.strip()
@@ -1200,6 +1214,8 @@ def _calendar_event_list_result(
         "event_count": len(events),
         "next_page_token": next_page_token,
         "has_more_pages": next_page_token is not None,
+        "page_complete": skipped_event_count == 0,
+        "skipped_event_count": skipped_event_count,
     }
     adapter = response.body.get("adapter")
     if adapter == "fake_transport":
