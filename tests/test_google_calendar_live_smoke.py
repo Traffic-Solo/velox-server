@@ -362,6 +362,8 @@ def test_live_bounded_primary_calendar_events_list_returns_allowlisted_events(
     # The page is bounded by the VELOX-owned request, never by what Google returns.
     assert len(events) <= LIST_MAX_RESULTS
     assert result.metadata.get("event_count") == len(events)
+    assert result.metadata.get("page_complete") is True
+    assert result.metadata.get("skipped_event_count") == 0
     for event in events:
         # Only the allowlisted provider fields may cross the boundary.
         assert set(event) == ALLOWLISTED_EVENT_FIELDS
@@ -409,6 +411,8 @@ def test_live_caller_driven_pagination_reads_a_real_second_page(
     first_ids = assert_allowlisted_page(first.metadata.get("events"))
     assert len(first_ids) <= LIST_PAGINATION_MAX_RESULTS
     assert first.metadata.get("event_count") == len(first_ids)
+    assert first.metadata.get("page_complete") is True
+    assert first.metadata.get("skipped_event_count") == 0
 
     next_page_token = first.metadata.get("next_page_token")
     if next_page_token is None:
@@ -434,6 +438,8 @@ def test_live_caller_driven_pagination_reads_a_real_second_page(
     second_ids = assert_allowlisted_page(second.metadata.get("events"))
     assert len(second_ids) <= LIST_PAGINATION_MAX_RESULTS
     assert second.metadata.get("event_count") == len(second_ids)
+    assert second.metadata.get("page_complete") is True
+    assert second.metadata.get("skipped_event_count") == 0
 
     # The continuation advanced rather than replaying the first page.
     assert second_ids
