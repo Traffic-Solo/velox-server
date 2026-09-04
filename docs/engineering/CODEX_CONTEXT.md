@@ -135,9 +135,19 @@ fake-by-default Calendar executor.
 
 Local validation: focused Slice 5 tests `34 passed`; Ruff clean; mypy strict
 clean across 38 source files; full pytest `825 passed, 5 deselected` with one
-existing Starlette/httpx deprecation warning; `git diff --check` clean. Live
-validation was not executed because the explicit live environment prerequisites
-were absent. No dependency was added.
+existing Starlette/httpx deprecation warning; `git diff --check` clean. No
+dependency was added.
+
+Live read-only workflow validation passed through the real Calendar composition
+using process-local Keychain credentials and no environment file. With timezone
+`Europe/Tirane`, semantic `tomorrow` resolved to local date `2025-09-21` and
+independently constructed bounds `2025-09-21T00:00:00+02:00` to
+`2025-09-22T00:00:00+02:00`. The workflow returned 1 mapped event,
+`aggregate_complete=true`, `skipped_event_count=0` and
+`termination_reason=exhausted`. Discovery used 2 Calendar GET requests and the
+workflow used 1 Calendar GET request. The exact five-field event allowlist held;
+no Calendar data was created, modified or deleted, and no provider pagination
+state or real event identifier was persisted.
 
 Next: review and merge Slice 5 before selecting a separate architecture slice
 for mapping user utterances to the semantic workflow. Generic NLP and Calendar
