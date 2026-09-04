@@ -35,6 +35,7 @@ from apps.server.src.core.credentials import (
 from apps.server.src.integrations.calendar import (
     CALENDAR_EXECUTOR_ROLE,
     CALENDAR_LIST_EVENTS_CAPABILITY,
+    CalendarEventListOrchestrator,
     CalendarProviderComposition,
     CalendarWorkerExecutor,
     HttpxCalendarTransportClient,
@@ -481,3 +482,84 @@ def test_live_caller_driven_pagination_reads_a_real_second_page(
 
     for result in (first, second):
         assert_no_credential_material(result, stored_secret_values)
+
+
+def test_live_bounded_orchestrator_aggregates_multiple_read_only_pages(
+    live_config: LiveConfig,
+    stored_secret_values: tuple[str, ...],
+) -> None:
+    """Aggregate real pages without persisting or exposing continuation tokens."""
+    calendar_methods: list[str] = []
+
+    def record_calendar_method(request: httpx.Request) -> None:
+        calendar_methods.append(request.method)
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    time_min = (now - LIST_PAGINATION_WINDOW).isoformat().replace("+00:00", "Z")
+    time_max = (now + LIST_PAGINATION_WINDOW).isoformat().replace("+00:00", "Z")
+    action = Action(
+        type=LIST_CAPABILITY,
+        target="live-google-calendar-orchestration-smoke",
+        payload={
+            "time_min": time_min,
+            "time_max": time_max,
+            "max_results": LIST_PAGINATION_MAX_RESULTS,
+            "max_pages": 3,
+        },
+        executor_role=CALENDAR_EXECUTOR_ROLE,
+    )
+
+    with httpx.Client(event_hooks={"request": [record_calendar_method]}) as client:
+        executor = CalendarWorkerExecutor(
+            provider_composition=CalendarProviderComposition(
+                credentials_provider=StoredGoogleCredentialsProvider(
+                    MacOSKeychainCredentialStore()
+                ),
+                transport_client=HttpxCalendarTransportClient(
+                    client,
+                    timeout_seconds=HTTP_TIMEOUT_SECONDS,
+                ),
+            )
+        )
+        result = CalendarEventListOrchestrator(executor).execute(
+            action,
+            account_context=WorkerAccountContext(
+                principal=live_config.principal,
+                account_identifier=live_config.account_identifier,
+            ),
+        )
+
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    if (
+        result.metadata.get("pages_fetched") == 1
+        and result.metadata.get("termination_reason") == "exhausted"
+    ):
+        pytest.skip(
+            "live calendar exhausted in one bounded page; additional pages cannot "
+            "be forced without altering calendar data"
+        )
+
+    events = result.metadata.get("events")
+    assert_allowlisted_page(events)
+    assert set(result.metadata) == {
+        "events",
+        "event_count",
+        "pages_fetched",
+        "skipped_event_count",
+        "aggregate_complete",
+        "termination_reason",
+    }
+    assert isinstance(events, tuple)
+    assert result.metadata["event_count"] == len(events)
+    assert 2 <= result.metadata["pages_fetched"] <= 3
+    assert result.metadata["skipped_event_count"] == 0
+    termination_reason = result.metadata["termination_reason"]
+    assert termination_reason in {"exhausted", "page_limit", "repeated_page_token"}
+    assert result.metadata["aggregate_complete"] is (
+        termination_reason == "exhausted"
+    )
+    assert len(calendar_methods) == result.metadata["pages_fetched"]
+    assert calendar_methods and set(calendar_methods) == {"GET"}
+    assert "page_token" not in repr(result)
+    assert "next_page_token" not in repr(result.metadata)
+    assert_no_credential_material(result, stored_secret_values)
