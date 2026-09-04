@@ -71,9 +71,11 @@ _GOOGLE_CALENDAR_API_BASE_URL = "https://www.googleapis.com"
 _GOOGLE_CALENDAR_EVENTS_PATH = "/calendar/v3/calendars/primary/events"
 _GOOGLE_CALENDAR_EVENT_PATH_PREFIX = f"{_GOOGLE_CALENDAR_EVENTS_PATH}/"
 # VELOX owns this ceiling. Google allows far larger pages, but a small bound keeps
-# one page cheap, predictable and reviewable while pagination stays unimplemented.
+# each provider request cheap and predictable while orchestration stays higher-level.
 CALENDAR_LIST_MIN_MAX_RESULTS = 1
 CALENDAR_LIST_MAX_MAX_RESULTS = 50
+CALENDAR_LIST_MIN_MAX_PAGES = 1
+CALENDAR_LIST_MAX_MAX_PAGES = 10
 # Canonical RFC3339 date-time with an explicit offset. RFC 3339 also permits the
 # lowercase 't'/'z' spellings; VELOX requires the uppercase canonical form so the
 # accepted set is exactly what is validated, compared and forwarded to Google.
@@ -200,6 +202,37 @@ class CalendarEventListRequest:
         if self.page_token is not None:
             query["pageToken"] = self.page_token
         return query
+
+
+@dataclass(frozen=True)
+class CalendarEventListOrchestrationRequest:
+    """Validated bounds for one in-process multi-page Calendar walk."""
+
+    time_min: str
+    time_max: str
+    max_results: int
+    max_pages: int
+
+    def __post_init__(self) -> None:
+        CalendarEventListRequest(
+            time_min=self.time_min,
+            time_max=self.time_max,
+            max_results=self.max_results,
+        )
+        if isinstance(self.max_pages, bool) or not isinstance(self.max_pages, int):
+            raise CalendarEventListRequestError(
+                "calendar list orchestration max_pages must be an integer",
+                field="max_pages",
+            )
+        if not (
+            CALENDAR_LIST_MIN_MAX_PAGES
+            <= self.max_pages
+            <= CALENDAR_LIST_MAX_MAX_PAGES
+        ):
+            raise CalendarEventListRequestError(
+                "calendar list orchestration max_pages is outside the allowed range",
+                field="max_pages",
+            )
 
 
 def _validated_rfc3339_timestamp(value: object, field_name: str) -> datetime:
@@ -1104,6 +1137,169 @@ class CalendarWorkerExecutor:
                 **result_metadata,
                 **capability_result.metadata,
             },
+        )
+
+
+class CalendarEventListOrchestrator:
+    """Boundedly aggregate the existing single-page Calendar list capability."""
+
+    def __init__(self, executor: CalendarWorkerExecutor | None = None) -> None:
+        self.executor = executor or CalendarWorkerExecutor()
+
+    def execute(
+        self,
+        action: Action,
+        *,
+        account_context: WorkerAccountContext | None,
+    ) -> WorkerExecutionResult:
+        """Walk from page one until exhaustion or a bounded safety condition."""
+        result_action = _page_token_redacted_action(action)
+        if "page_token" in action.payload:
+            return self._request_failure(result_action, field_name="page_token")
+
+        try:
+            request = CalendarEventListOrchestrationRequest(
+                time_min=cast(str, action.payload.get("time_min")),
+                time_max=cast(str, action.payload.get("time_max")),
+                max_results=cast(int, action.payload.get("max_results")),
+                max_pages=cast(int, action.payload.get("max_pages")),
+            )
+        except CalendarEventListRequestError as error:
+            return self._request_failure(
+                result_action,
+                field_name=error.field,
+                reason=str(error),
+            )
+
+        events: list[dict[str, Any]] = []
+        pages_fetched = 0
+        skipped_event_count = 0
+        every_page_complete = True
+        seen_page_tokens: set[str] = set()
+        page_token: str | None = None
+
+        while True:
+            page_payload: dict[str, Any] = {
+                "time_min": request.time_min,
+                "time_max": request.time_max,
+                "max_results": request.max_results,
+            }
+            if page_token is not None:
+                page_payload["page_token"] = page_token
+            page_result = self.executor.execute(
+                action.model_copy(update={"payload": page_payload}),
+                capability=CALENDAR_LIST_EVENTS_CAPABILITY.identifier,
+                account_context=account_context,
+            )
+            if page_result.status != WorkerExecutionStatus.SUCCEEDED:
+                return self._page_failure(result_action, page_result)
+
+            page_events = page_result.metadata.get("events")
+            page_event_count = page_result.metadata.get("event_count")
+            page_skipped_count = page_result.metadata.get("skipped_event_count")
+            page_complete = page_result.metadata.get("page_complete")
+            next_page_token = page_result.metadata.get("next_page_token")
+            has_more_pages = page_result.metadata.get("has_more_pages")
+            if (
+                not isinstance(page_events, tuple)
+                or not all(isinstance(event, dict) for event in page_events)
+                or type(page_event_count) is not int
+                or page_event_count != len(page_events)
+                or type(page_skipped_count) is not int
+                or page_skipped_count < 0
+                or not isinstance(page_complete, bool)
+                or page_complete is not (page_skipped_count == 0)
+                or (
+                    next_page_token is not None
+                    and (
+                        not isinstance(next_page_token, str)
+                        or not next_page_token.strip()
+                    )
+                )
+                or not isinstance(has_more_pages, bool)
+                or has_more_pages is not (next_page_token is not None)
+            ):
+                return self._invalid_page_failure(result_action)
+
+            events.extend(cast(tuple[dict[str, Any], ...], page_events))
+            pages_fetched += 1
+            skipped_event_count += page_skipped_count
+            every_page_complete = every_page_complete and page_complete
+
+            if next_page_token is None:
+                termination_reason = "exhausted"
+                break
+            if pages_fetched >= request.max_pages:
+                termination_reason = "page_limit"
+                break
+            if next_page_token in seen_page_tokens:
+                termination_reason = "repeated_page_token"
+                break
+            seen_page_tokens.add(next_page_token)
+            page_token = next_page_token
+
+        return WorkerExecutionResult(
+            action=result_action,
+            status=WorkerExecutionStatus.SUCCEEDED,
+            reason="bounded calendar event list orchestration result",
+            metadata={
+                "events": tuple(events),
+                "event_count": len(events),
+                "pages_fetched": pages_fetched,
+                "skipped_event_count": skipped_event_count,
+                "aggregate_complete": (
+                    termination_reason == "exhausted" and every_page_complete
+                ),
+                "termination_reason": termination_reason,
+            },
+        )
+
+    @staticmethod
+    def _request_failure(
+        action: Action,
+        *,
+        field_name: str,
+        reason: str = "calendar list orchestration does not accept page_token",
+    ) -> WorkerExecutionResult:
+        return WorkerExecutionResult(
+            action=action,
+            status=WorkerExecutionStatus.FAILED,
+            reason=reason,
+            failure=WorkerExecutionFailure(
+                category=WorkerExecutionFailureCategory.PERMANENT,
+                message=reason,
+                metadata={"field": field_name},
+            ),
+        )
+
+    @staticmethod
+    def _page_failure(
+        action: Action,
+        page_result: WorkerExecutionResult,
+    ) -> WorkerExecutionResult:
+        reason = page_result.reason or "calendar list orchestration page failed"
+        failure = page_result.failure or WorkerExecutionFailure(
+            category=WorkerExecutionFailureCategory.INTERNAL,
+            message=reason,
+        )
+        return WorkerExecutionResult(
+            action=action,
+            status=WorkerExecutionStatus.FAILED,
+            reason=reason,
+            failure=failure,
+        )
+
+    @staticmethod
+    def _invalid_page_failure(action: Action) -> WorkerExecutionResult:
+        reason = "calendar list orchestrator received invalid page result"
+        return WorkerExecutionResult(
+            action=action,
+            status=WorkerExecutionStatus.FAILED,
+            reason=reason,
+            failure=WorkerExecutionFailure(
+                category=WorkerExecutionFailureCategory.INTERNAL,
+                message=reason,
+            ),
         )
 
 

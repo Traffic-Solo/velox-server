@@ -14,8 +14,12 @@ from apps.server.src.core.actions import Action
 from apps.server.src.integrations.calendar import (
     CALENDAR_EXECUTOR_ROLE,
     CALENDAR_LIST_EVENTS_CAPABILITY,
+    CALENDAR_LIST_MAX_MAX_PAGES,
+    CALENDAR_LIST_MIN_MAX_PAGES,
     CalendarCredentials,
     CalendarEvent,
+    CalendarEventListOrchestrationRequest,
+    CalendarEventListOrchestrator,
     CalendarEventListRequest,
     CalendarEventListRequestError,
     CalendarProviderComposition,
@@ -36,6 +40,16 @@ TIME_MIN = "2026-09-04T00:00:00Z"
 TIME_MAX = "2026-09-05T00:00:00Z"
 MAX_RESULTS = 2
 ALLOWLISTED_EVENT_FIELDS = frozenset({"event_id", "title", "start", "end", "attendees"})
+AGGREGATE_RESULT_FIELDS = frozenset(
+    {
+        "events",
+        "event_count",
+        "pages_fetched",
+        "skipped_event_count",
+        "aggregate_complete",
+        "termination_reason",
+    }
+)
 ACCOUNT_CONTEXT = WorkerAccountContext(
     principal="principal-1",
     account_identifier="calendar-account-1",
@@ -73,6 +87,17 @@ def mapped_event(index: int) -> dict[str, object]:
     }
 
 
+def response_page(
+    items: list[object],
+    *,
+    next_page_token: str | None = None,
+) -> httpx.Response:
+    body: dict[str, object] = {"items": items}
+    if next_page_token is not None:
+        body["nextPageToken"] = next_page_token
+    return httpx.Response(200, json=body)
+
+
 def page_credentials() -> CalendarCredentials:
     return CalendarCredentials(
         access_token=PAGE_ACCESS_TOKEN,
@@ -101,6 +126,19 @@ def list_action(
     )
 
 
+def orchestration_action(
+    *,
+    max_pages: object = 3,
+    max_results: object = MAX_RESULTS,
+    page_token: object = None,
+) -> Action:
+    action = list_action(max_results=max_results)
+    payload = {**action.payload, "max_pages": max_pages}
+    if page_token is not None:
+        payload["page_token"] = page_token
+    return action.model_copy(update={"payload": payload})
+
+
 def executor_over(handler) -> tuple[CalendarWorkerExecutor, list[httpx.Request]]:
     requests: list[httpx.Request] = []
 
@@ -122,6 +160,16 @@ def execute(executor: CalendarWorkerExecutor, action: Action):
     return executor.execute(
         action,
         capability=LIST_CAPABILITY,
+        account_context=ACCOUNT_CONTEXT,
+    )
+
+
+def execute_orchestration(
+    executor: CalendarWorkerExecutor,
+    action: Action | None = None,
+):
+    return CalendarEventListOrchestrator(executor).execute(
+        action if action is not None else orchestration_action(),
         account_context=ACCOUNT_CONTEXT,
     )
 
@@ -799,3 +847,337 @@ def test_events_get_result_action_is_unchanged_by_pagination_redaction() -> None
     assert result.status == WorkerExecutionStatus.SUCCEEDED
     assert result.action is action
     assert result.action.payload == {"calendar_event_id": "calendar-event-1"}
+
+
+# --- bounded multi-page orchestration ---------------------------------------
+
+
+def test_orchestrator_exhausts_one_complete_page_with_one_provider_call() -> None:
+    executor, requests = executor_over(
+        lambda request: response_page([event_payload(1)])
+    )
+
+    result = execute_orchestration(executor)
+
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.metadata == {
+        "events": (mapped_event(1),),
+        "event_count": 1,
+        "pages_fetched": 1,
+        "skipped_event_count": 0,
+        "aggregate_complete": True,
+        "termination_reason": "exhausted",
+    }
+    assert len(requests) == 1
+
+
+def test_orchestrator_exhausts_multiple_complete_pages() -> None:
+    pages = [
+        response_page([event_payload(1), event_payload(2)], next_page_token=OPAQUE_TOKEN),
+        response_page([event_payload(3)]),
+    ]
+    executor, requests = executor_over(lambda request: pages.pop(0))
+
+    result = execute_orchestration(executor)
+
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.metadata["events"] == (
+        mapped_event(1),
+        mapped_event(2),
+        mapped_event(3),
+    )
+    assert result.metadata["event_count"] == 3
+    assert result.metadata["pages_fetched"] == 2
+    assert result.metadata["skipped_event_count"] == 0
+    assert result.metadata["aggregate_complete"] is True
+    assert result.metadata["termination_reason"] == "exhausted"
+    assert len(requests) == 2
+
+
+def test_orchestrator_advances_past_an_empty_intermediate_page() -> None:
+    pages = [
+        response_page([], next_page_token=OPAQUE_TOKEN),
+        response_page([event_payload(1)]),
+    ]
+    executor, requests = executor_over(lambda request: pages.pop(0))
+
+    result = execute_orchestration(executor)
+
+    assert result.metadata["events"] == (mapped_event(1),)
+    assert result.metadata["event_count"] == 1
+    assert result.metadata["pages_fetched"] == 2
+    assert result.metadata["aggregate_complete"] is True
+    assert result.metadata["termination_reason"] == "exhausted"
+    assert len(requests) == 2
+
+
+def test_orchestrator_continues_after_one_partial_intermediate_page() -> None:
+    pages = [
+        response_page(
+            [event_payload(1), "malformed-item"],
+            next_page_token=OPAQUE_TOKEN,
+        ),
+        response_page([event_payload(2)]),
+    ]
+    executor, requests = executor_over(lambda request: pages.pop(0))
+
+    result = execute_orchestration(executor)
+
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.metadata["events"] == (mapped_event(1), mapped_event(2))
+    assert result.metadata["event_count"] == 2
+    assert result.metadata["pages_fetched"] == 2
+    assert result.metadata["skipped_event_count"] == 1
+    assert result.metadata["aggregate_complete"] is False
+    assert result.metadata["termination_reason"] == "exhausted"
+    assert len(requests) == 2
+
+
+def test_orchestrator_accumulates_multiple_partial_pages() -> None:
+    pages = [
+        response_page(
+            ["malformed-one", event_payload(1)],
+            next_page_token=OPAQUE_TOKEN,
+        ),
+        response_page([event_payload(2), {"summary": "malformed-two"}]),
+    ]
+    executor, requests = executor_over(lambda request: pages.pop(0))
+
+    result = execute_orchestration(executor)
+
+    assert result.metadata["events"] == (mapped_event(1), mapped_event(2))
+    assert result.metadata["event_count"] == 2
+    assert result.metadata["pages_fetched"] == 2
+    assert result.metadata["skipped_event_count"] == 2
+    assert result.metadata["aggregate_complete"] is False
+    assert result.metadata["termination_reason"] == "exhausted"
+    assert len(requests) == 2
+
+
+def test_orchestrator_continues_after_an_all_malformed_partial_page() -> None:
+    pages = [
+        response_page(
+            ["malformed-one", {"summary": "malformed-two"}],
+            next_page_token=OPAQUE_TOKEN,
+        ),
+        response_page([event_payload(1)]),
+    ]
+    executor, requests = executor_over(lambda request: pages.pop(0))
+
+    result = execute_orchestration(executor)
+
+    assert result.metadata["events"] == (mapped_event(1),)
+    assert result.metadata["event_count"] == 1
+    assert result.metadata["pages_fetched"] == 2
+    assert result.metadata["skipped_event_count"] == 2
+    assert result.metadata["aggregate_complete"] is False
+    assert result.metadata["termination_reason"] == "exhausted"
+    assert len(requests) == 2
+
+
+def test_orchestrator_max_pages_one_stops_at_the_page_limit() -> None:
+    executor, requests = executor_over(
+        lambda request: response_page(
+            [event_payload(1)],
+            next_page_token=OPAQUE_TOKEN,
+        )
+    )
+
+    result = execute_orchestration(
+        executor,
+        orchestration_action(max_pages=1),
+    )
+
+    assert result.metadata["events"] == (mapped_event(1),)
+    assert result.metadata["pages_fetched"] == 1
+    assert result.metadata["aggregate_complete"] is False
+    assert result.metadata["termination_reason"] == "page_limit"
+    assert len(requests) == 1
+
+
+def test_orchestrator_never_exceeds_max_pages_when_next_token_remains() -> None:
+    pages = [
+        response_page([event_payload(1)], next_page_token=OPAQUE_TOKEN),
+        response_page([event_payload(2)], next_page_token=SECOND_OPAQUE_TOKEN),
+    ]
+    executor, requests = executor_over(lambda request: pages.pop(0))
+
+    result = execute_orchestration(
+        executor,
+        orchestration_action(max_pages=2),
+    )
+
+    assert result.metadata["events"] == (mapped_event(1), mapped_event(2))
+    assert result.metadata["pages_fetched"] == 2
+    assert result.metadata["aggregate_complete"] is False
+    assert result.metadata["termination_reason"] == "page_limit"
+    assert len(requests) == 2
+
+
+def test_orchestrator_stops_when_the_first_continuation_token_repeats() -> None:
+    pages = [
+        response_page([event_payload(1)], next_page_token=OPAQUE_TOKEN),
+        response_page([event_payload(2)], next_page_token=OPAQUE_TOKEN),
+    ]
+    executor, requests = executor_over(lambda request: pages.pop(0))
+
+    result = execute_orchestration(executor)
+
+    assert result.metadata["events"] == (mapped_event(1), mapped_event(2))
+    assert result.metadata["pages_fetched"] == 2
+    assert result.metadata["aggregate_complete"] is False
+    assert result.metadata["termination_reason"] == "repeated_page_token"
+    assert len(requests) == 2
+
+
+def test_orchestrator_stops_when_an_earlier_token_repeats_later() -> None:
+    pages = [
+        response_page([event_payload(1)], next_page_token=OPAQUE_TOKEN),
+        response_page([event_payload(2)], next_page_token=SECOND_OPAQUE_TOKEN),
+        response_page([event_payload(3)], next_page_token=OPAQUE_TOKEN),
+    ]
+    executor, requests = executor_over(lambda request: pages.pop(0))
+
+    result = execute_orchestration(
+        executor,
+        orchestration_action(max_pages=4),
+    )
+
+    assert result.metadata["events"] == (
+        mapped_event(1),
+        mapped_event(2),
+        mapped_event(3),
+    )
+    assert result.metadata["pages_fetched"] == 3
+    assert result.metadata["aggregate_complete"] is False
+    assert result.metadata["termination_reason"] == "repeated_page_token"
+    assert len(requests) == 3
+
+
+def test_orchestrator_fails_whole_walk_when_page_one_fails() -> None:
+    executor, requests = executor_over(
+        lambda request: httpx.Response(429, json={"error": "provider-secret"})
+    )
+
+    result = execute_orchestration(executor)
+
+    assert result.status == WorkerExecutionStatus.FAILED
+    assert result.failure is not None
+    assert result.failure.category == WorkerExecutionFailureCategory.TRANSIENT
+    assert result.metadata == {}
+    assert len(requests) == 1
+    assert "provider-secret" not in repr(result)
+
+
+def test_orchestrator_discards_earlier_pages_when_a_later_page_fails() -> None:
+    pages = [
+        response_page([event_payload(1)], next_page_token=OPAQUE_TOKEN),
+        httpx.Response(503, json={"error": "later-provider-secret"}),
+    ]
+    executor, requests = executor_over(lambda request: pages.pop(0))
+
+    result = execute_orchestration(executor)
+
+    assert result.status == WorkerExecutionStatus.FAILED
+    assert result.failure is not None
+    assert result.failure.category == WorkerExecutionFailureCategory.TRANSIENT
+    assert result.metadata == {}
+    assert len(requests) == 2
+    assert "events" not in result.metadata
+    assert "later-provider-secret" not in repr(result)
+
+
+def test_orchestrator_preserves_page_order_duplicates_and_event_allowlist() -> None:
+    pages = [
+        response_page(
+            [event_payload(2), event_payload(1)],
+            next_page_token=OPAQUE_TOKEN,
+        ),
+        response_page([event_payload(1), event_payload(3)]),
+    ]
+    executor, _ = executor_over(lambda request: pages.pop(0))
+
+    result = execute_orchestration(executor)
+
+    assert result.metadata["events"] == (
+        mapped_event(2),
+        mapped_event(1),
+        mapped_event(1),
+        mapped_event(3),
+    )
+    assert result.metadata["event_count"] == 4
+    assert set(result.metadata) == AGGREGATE_RESULT_FIELDS
+    for event in result.metadata["events"]:
+        assert set(event) == ALLOWLISTED_EVENT_FIELDS
+
+
+@pytest.mark.parametrize("max_pages", [None, True, False, 0, 11, 1.0, "2"])
+def test_orchestration_rejects_invalid_max_pages_before_provider_execution(
+    max_pages: object,
+) -> None:
+    def unreachable(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("invalid max_pages reached the provider")
+
+    executor, requests = executor_over(unreachable)
+
+    result = execute_orchestration(
+        executor,
+        orchestration_action(max_pages=max_pages),
+    )
+
+    assert result.status == WorkerExecutionStatus.FAILED
+    assert result.failure is not None
+    assert result.failure.category == WorkerExecutionFailureCategory.PERMANENT
+    assert result.failure.metadata["field"] == "max_pages"
+    assert requests == []
+
+
+@pytest.mark.parametrize(
+    "max_pages",
+    [CALENDAR_LIST_MIN_MAX_PAGES, CALENDAR_LIST_MAX_MAX_PAGES],
+)
+def test_orchestration_accepts_max_pages_bounds(max_pages: int) -> None:
+    request = CalendarEventListOrchestrationRequest(
+        time_min=TIME_MIN,
+        time_max=TIME_MAX,
+        max_results=MAX_RESULTS,
+        max_pages=max_pages,
+    )
+
+    assert request.max_pages == max_pages
+
+
+def test_orchestration_rejects_a_caller_supplied_initial_page_token() -> None:
+    def unreachable(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("caller page_token reached the provider")
+
+    executor, requests = executor_over(unreachable)
+
+    result = execute_orchestration(
+        executor,
+        orchestration_action(page_token=SENTINEL_TOKEN),
+    )
+
+    assert result.status == WorkerExecutionStatus.FAILED
+    assert result.failure is not None
+    assert result.failure.metadata["field"] == "page_token"
+    assert requests == []
+    assert SENTINEL_TOKEN not in result_surfaces(result)
+
+
+def test_orchestration_never_exposes_intermediate_page_tokens() -> None:
+    pages = [
+        response_page([event_payload(1)], next_page_token=SENTINEL_TOKEN),
+        response_page([event_payload(2)]),
+    ]
+    executor, requests = executor_over(lambda request: pages.pop(0))
+
+    result = execute_orchestration(executor)
+
+    assert result.status == WorkerExecutionStatus.SUCCEEDED
+    assert result.metadata["events"] == (mapped_event(1), mapped_event(2))
+    assert len(requests) == 2
+    assert requests[1].url.params["pageToken"] == SENTINEL_TOKEN
+    assert SENTINEL_TOKEN not in result_surfaces(result)
+    assert "page_token" not in result.action.payload
+    assert "next_page_token" not in result.metadata
