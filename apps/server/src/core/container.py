@@ -34,7 +34,11 @@ from apps.server.src.core.permission import (
 from apps.server.src.core.planner import BasePlanner, Planner
 from apps.server.src.integrations.calendar import (
     CALENDAR_ACCOUNT_CONTEXT,
+    CalendarEventListOrchestrator,
     CalendarWorkerExecutor,
+)
+from apps.server.src.integrations.calendar_agenda import (
+    CalendarTomorrowAgendaWorkflow,
 )
 from apps.server.src.integrations.calendar_ingress import (
     CalendarEventNormalizer,
@@ -90,6 +94,12 @@ class ApplicationContainer:
         self.calendar_worker_executor = CalendarWorkerExecutor()
         self.worker_executor_registry.register_manifest(
             self.calendar_worker_executor.provider_manifest
+        )
+        self.calendar_event_list_orchestrator = CalendarEventListOrchestrator(
+            self.calendar_worker_executor
+        )
+        self.calendar_tomorrow_agenda_workflow = CalendarTomorrowAgendaWorkflow(
+            self.calendar_event_list_orchestrator
         )
         self.worker_execution_observer = InMemoryWorkerExecutionObserver()
         self.worker_runtime = WorkerRuntime(
