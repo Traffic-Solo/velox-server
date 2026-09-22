@@ -118,40 +118,23 @@ Sprint 3 - Bounded Google Calendar Event Listing
 
 ## Current Next Slice
 
-Sprint 3 Slice 5 adds `CalendarTomorrowAgendaWorkflow` above the existing
-`CalendarEventListOrchestrator`. It accepts only the already-recognized semantic
-intent `tomorrow`, an explicit VELOX `WorkerAccountContext`, an exact IANA
-timezone and an aware reference datetime. It converts the reference instant to
-the requested timezone, constructs the next two local civil midnights
-independently, and delegates their explicit RFC3339 bounds with workflow-owned
-limits `max_results=50` and `max_pages=10`.
+Sprint 3 Slice 7 adds `POST /calendar/agenda` for structured semantic commands.
+The request requires `intent`, explicit `account_context.principal` and
+`account_context.account_identifier`, and an IANA `timezone`. Extra fields,
+including client-supplied `now`, are rejected. The endpoint reuses the existing
+bearer-token dependency and its configured-token/local-development behavior.
 
-The workflow returns only intent, timezone, local date, exact bounds, unchanged
-allowlisted events, event count, aggregate completeness, skipped count and
-termination reason. It exposes no page token or provider metadata. The planner
-and HTTP API remain unchanged; generic natural-language interpretation is still
-deferred. The container composes the workflow over its existing deterministic,
-fake-by-default Calendar executor.
+The HTTP adapter invokes only the container-owned `CalendarAgendaCommandService`
+and returns the existing `CalendarTomorrowAgendaResult`. The command service owns
+its injected aware clock; production composition uses UTC wall-clock time.
+Recognized request validation failures return a fixed 422 response; execution,
+clock and unexpected failures return a fixed 500 response. Raw exception details
+are neither returned nor logged by the adapter. Failures never become empty
+agendas. Calendar composition remains deterministic and fake by default.
 
-Local validation: focused Slice 5 tests `34 passed`; Ruff clean; mypy strict
-clean across 38 source files; full pytest `825 passed, 5 deselected` with one
-existing Starlette/httpx deprecation warning; `git diff --check` clean. No
-dependency was added.
-
-Live read-only workflow validation passed through the real Calendar composition
-using process-local Keychain credentials and no environment file. With timezone
-`Europe/Tirane`, semantic `tomorrow` resolved to local date `2025-09-21` and
-independently constructed bounds `2025-09-21T00:00:00+02:00` to
-`2025-09-22T00:00:00+02:00`. The workflow returned 1 mapped event,
-`aggregate_complete=true`, `skipped_event_count=0` and
-`termination_reason=exhausted`. Discovery used 2 Calendar GET requests and the
-workflow used 1 Calendar GET request. The exact five-field event allowlist held;
-no Calendar data was created, modified or deleted, and no provider pagination
-state or real event identifier was persisted.
-
-Next: review and merge Slice 5 before selecting a separate architecture slice
-for mapping user utterances to the semantic workflow. Generic NLP and Calendar
-sync-token work remain deferred.
+NLP, additional intents, planner/event-ingress changes, chat/voice, Calendar writes,
+OAuth changes and synchronization remain out of scope. Select the next slice
+separately; this adapter introduces no new architectural decision or technical debt.
 
 ## Current Implementation Notes
 
