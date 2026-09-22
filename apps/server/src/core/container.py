@@ -1,5 +1,6 @@
 """Application service container."""
 
+from datetime import UTC, datetime
 from uuid import UUID
 
 from apps.server.src.core.action_lifecycle_manager import ActionLifecycleManager
@@ -39,6 +40,9 @@ from apps.server.src.integrations.calendar import (
 )
 from apps.server.src.integrations.calendar_agenda import (
     CalendarTomorrowAgendaWorkflow,
+)
+from apps.server.src.integrations.calendar_agenda_command import (
+    CalendarAgendaCommandService,
 )
 from apps.server.src.integrations.calendar_ingress import (
     CalendarEventNormalizer,
@@ -100,6 +104,10 @@ class ApplicationContainer:
         )
         self.calendar_tomorrow_agenda_workflow = CalendarTomorrowAgendaWorkflow(
             self.calendar_event_list_orchestrator
+        )
+        self.calendar_agenda_command_service = CalendarAgendaCommandService(
+            self.calendar_tomorrow_agenda_workflow,
+            clock=lambda: datetime.now(UTC),
         )
         self.worker_execution_observer = InMemoryWorkerExecutionObserver()
         self.worker_runtime = WorkerRuntime(
