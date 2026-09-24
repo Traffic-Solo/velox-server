@@ -54,8 +54,14 @@ Actions:
 - No-op execution paths report `skipped`, never `succeeded`.
 - Transient worker failures are retried a bounded number of times;
   permanent failures are terminal.
-- No integration performs external calls yet: Gmail/Calendar are
-  deterministic in-memory fakes behind provider boundaries (see ADR-0001).
+- Gmail and Calendar use deterministic fake composition by default.
+  Calendar live reads are explicit/opt-in: set `VELOX_CALENDAR_AGENDA_LIVE=true`
+  to execute `POST /calendar/agenda` against Google using existing macOS Keychain
+  credentials. The flag defaults to `false`; live mode requires a native macOS
+  runtime with those credentials and explicit account context in each request.
+  It adds no Calendar writes or OAuth scopes. Other manual/live Calendar read
+  tools also require explicit invocation; see the
+  [Calendar pilot runbook](docs/engineering/GOOGLE_CALENDAR_PILOT.md).
 
 ## Development
 

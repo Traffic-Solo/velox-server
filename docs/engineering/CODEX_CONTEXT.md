@@ -118,23 +118,28 @@ Sprint 3 - Bounded Google Calendar Event Listing
 
 ## Current Next Slice
 
-Sprint 3 Slice 7 adds `POST /calendar/agenda` for structured semantic commands.
-The request requires `intent`, explicit `account_context.principal` and
-`account_context.account_identifier`, and an IANA `timezone`. Extra fields,
-including client-supplied `now`, are rejected. The endpoint reuses the existing
-bearer-token dependency and its configured-token/local-development behavior.
+Sprint 3 Slice 8 adds explicit live Calendar agenda runtime composition.
+`VELOX_CALENDAR_AGENDA_LIVE=true` opts the server into real read-only execution;
+the default remains deterministic fake composition for offline development/tests.
+The reusable `live_calendar_agenda_command_service` context manager in
+`apps/server/src/integrations/calendar_agenda_runtime.py` composes
+`StoredGoogleCredentialsProvider`, `MacOSKeychainCredentialStore`,
+`HttpxCalendarTransportClient`, and the existing executor, list orchestrator,
+workflow and command service. It owns and closes its HTTP client on normal exit,
+construction failure and execution failure. Callers must use the service only
+inside the context. Application lifespan installs it for agenda commands and
+restores the previous service before closing the client.
+`calendar_agenda_command.py` contains only the provider-neutral semantic command
+boundary. The existing opt-in live smoke includes one tomorrow agenda command
+through the production factory; it remains deselected from normal tests/CI.
 
-The HTTP adapter invokes only the container-owned `CalendarAgendaCommandService`
-and returns the existing `CalendarTomorrowAgendaResult`. The command service owns
-its injected aware clock; production composition uses UTC wall-clock time.
-Recognized request validation failures return a fixed 422 response; execution,
-clock and unexpected failures return a fixed 500 response. Raw exception details
-are neither returned nor logged by the adapter. Failures never become empty
-agendas. Calendar composition remains deterministic and fake by default.
-
-NLP, additional intents, planner/event-ingress changes, chat/voice, Calendar writes,
-OAuth changes and synchronization remain out of scope. Select the next slice
-separately; this adapter introduces no new architectural decision or technical debt.
+`POST /calendar/agenda` remains unchanged and calls only the command service.
+Account context is still explicit per request; UTC wall-clock time belongs to
+the command service. Existing safe validation and execution failure mapping is
+preserved. Live mode requires the existing macOS Keychain credentials; it does
+not bootstrap OAuth, discover accounts or fall back to fake execution on failure.
+No scopes, writes, sync, planner, NLP, chat or voice behavior were added.
+Select the next slice separately.
 
 ## Current Implementation Notes
 
@@ -312,7 +317,7 @@ After every implementation slice, update this file in the same commit if the imp
 - Gmail capability tests are consolidated locally in `tests/test_worker_executor.py`; no shared `tests/conftest.py` fixture has been introduced yet.
 - Real Gmail adapter, Gmail credential refresh integration, HTTP transport and real Gmail API calls are not implemented yet. The provider-local Calendar read-only OAuth bootstrap and macOS Keychain credential store exist but are not wired into Gmail provider composition.
 - Gmail provider boundary interfaces, fake transport bootstrap, fake credentials provider bootstrap and fake provider composition bootstrap are present behind the Gmail integration boundary. No concrete real provider implementation exists yet.
-- Google Calendar meeting context, listing, orchestration and the tomorrow agenda remain wired to the deterministic fake provider by default. Stored credentials and real Calendar HTTP transport still require explicit production dependency injection and are not wired into `ApplicationContainer`.
+- Google Calendar remains deterministic and fake by default. The agenda command path supports explicit live composition through `VELOX_CALENDAR_AGENDA_LIVE`; other container Calendar paths remain fake.
 - `google-auth` logs `Not all requested scopes were granted ... missing scopes email` on every refresh. Refresh and `events.get` succeed; the warning is the same canonical-alias mismatch surfacing in a third-party logger. Silencing it would require storing canonical scope URLs or filtering that logger, so it is left as documented noise.
 - Opt-in automated read-only Calendar live smoke coverage exists, but it requires explicit environment values and macOS Keychain credentials and remains deselected from default tests.
 - Refresh-token rotation persistence remains unimplemented; a rotated refresh token is not written back to the Keychain.
