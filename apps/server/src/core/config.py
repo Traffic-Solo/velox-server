@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     """Bearer token required for mutating API endpoints. None disables auth
     (local development only — set a token before exposing the server)."""
 
+    calendar_agenda_live: bool = False
+    """Opt in to stored Google credentials and live read-only agenda execution."""
+
     log_level: str = "INFO"
     """Root logging level: DEBUG, INFO, WARNING, ERROR or CRITICAL."""
 

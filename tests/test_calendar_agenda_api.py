@@ -4,8 +4,10 @@ from collections.abc import Iterator
 from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any, cast
+from unittest.mock import patch
 
 import pytest
+from apps.server.src import main
 from apps.server.src.core.config import get_settings
 from apps.server.src.core.container import ApplicationContainer, get_container
 from apps.server.src.integrations.calendar_agenda import (
@@ -192,3 +194,25 @@ def test_real_command_service_success_is_deterministic(
     assert response.json()["local_date"] == "2026-03-29"
     assert response.json()["time_min"] == RESULT.time_min
     assert response.json()["time_max"] == RESULT.time_max
+
+
+@pytest.mark.parametrize("live", [False, True])
+def test_application_lifespan_opt_in_and_restoration(
+    monkeypatch: pytest.MonkeyPatch, live: bool,
+) -> None:
+    monkeypatch.setenv("VELOX_CALENDAR_AGENDA_LIVE", str(live).lower())
+    get_settings.cache_clear()
+    container = ApplicationContainer()
+    previous = container.calendar_agenda_command_service
+    spy = RecordingCommandService()
+    with (
+        patch.object(main, "get_container", return_value=container),
+        patch.object(main, "live_calendar_agenda_command_service") as factory,
+    ):
+        factory.return_value.__enter__.return_value = spy
+        with TestClient(app):
+            assert container.calendar_agenda_command_service is (spy if live else previous)
+        assert container.calendar_agenda_command_service is previous
+        assert factory.call_count == int(live)
+        assert factory.return_value.__exit__.call_count == int(live)
+    get_settings.cache_clear()

@@ -3,10 +3,13 @@
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import cast
+from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
 
+import httpx
 import pytest
 from apps.server.src.core.container import ApplicationContainer
+from apps.server.src.integrations import calendar_agenda_command as composition
 from apps.server.src.integrations.calendar_agenda import (
     CalendarAgendaWorkflowError,
     CalendarTomorrowAgendaRequest,
@@ -17,10 +20,12 @@ from apps.server.src.integrations.calendar_agenda_command import (
     CalendarAgendaCommandRequest,
     CalendarAgendaCommandService,
 )
+from apps.server.src.integrations.google_provider import GoogleCredentials
 from apps.server.src.workers.executor import (
     WorkerAccountContext,
     WorkerExecutionFailureCategory,
 )
+from keyring.backends import macOS
 
 ACCOUNT = WorkerAccountContext(principal="principal", account_identifier="account")
 NOW = datetime(2026, 3, 28, 23, tzinfo=ZoneInfo("Europe/Tirane"))
@@ -153,3 +158,78 @@ def test_command_over_existing_workflow_preserves_tomorrow_dst_bounds() -> None:
     assert result == expected
     assert result.time_min == RESULT.time_min
     assert result.time_max == RESULT.time_max
+
+
+@pytest.mark.parametrize("status", [200, 401, 403, 429, 500])
+def test_live_composition_is_offline_and_closes_client(status: int) -> None:
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(status, json={"items": [], "secret": "provider-secret"})
+
+    client = httpx.Client(transport=httpx.MockTransport(respond))
+    backend = Mock(spec=macOS.Keyring, priority=1)
+    with (
+        patch.object(composition.httpx, "Client", return_value=client),
+        patch("keyring.get_keyring", return_value=backend),
+        patch.object(composition.StoredGoogleCredentialsProvider, "get_credentials",
+                     return_value=GoogleCredentials("test-token", "principal", "account"))
+        as credentials,
+        patch.object(composition, "CalendarProviderComposition",
+                     wraps=composition.CalendarProviderComposition) as provider,
+    ):
+        with composition.live_calendar_agenda_command_service(clock=lambda: NOW) as live:
+            wired = provider.call_args.kwargs
+            assert isinstance(wired["credentials_provider"],
+                              composition.StoredGoogleCredentialsProvider)
+            assert isinstance(wired["credentials_provider"]._credential_store,
+                              composition.MacOSKeychainCredentialStore)
+            assert isinstance(wired["transport_client"], composition.HttpxCalendarTransportClient)
+            assert not client.is_closed
+            if status == 200:
+                assert live.execute(command()) == RESULT
+            else:
+                with pytest.raises(CalendarAgendaWorkflowError) as caught:
+                    live.execute(command())
+                assert "provider-secret" not in str(caught.value)
+                assert caught.value.category is not None
+            credentials.assert_called_once_with(principal="principal", account="account")
+            assert len(requests) == 1
+            assert requests[0].method == "GET"
+            assert requests[0].url.path.endswith("/calendars/primary/events")
+        assert client.is_closed
+
+
+@pytest.mark.parametrize("construction_failure", [True, False])
+def test_live_composition_closes_on_construction_or_caller_failure(
+    construction_failure: bool,
+) -> None:
+    client = httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200)))
+    with (
+        patch.object(composition.httpx, "Client", return_value=client),
+        patch.object(composition, "MacOSKeychainCredentialStore",
+                     side_effect=RuntimeError("failure") if construction_failure else None),
+        pytest.raises(RuntimeError, match="failure"),
+        composition.live_calendar_agenda_command_service(),
+    ):
+        raise RuntimeError("failure")
+    assert client.is_closed
+
+
+def test_live_missing_credentials_fails_before_transport() -> None:
+    transport = Mock(side_effect=AssertionError("HTTP must not run"))
+    client = httpx.Client(transport=httpx.MockTransport(transport))
+    backend = Mock(spec=macOS.Keyring, priority=1)
+    backend.get_password.return_value = None
+    with (
+        patch.object(composition.httpx, "Client", return_value=client),
+        patch("keyring.get_keyring", return_value=backend),
+        composition.live_calendar_agenda_command_service(clock=lambda: NOW) as live,
+        pytest.raises(CalendarAgendaWorkflowError) as caught,
+    ):
+        live.execute(command())
+    assert caught.value.category == WorkerExecutionFailureCategory.PERMANENT
+    assert client.is_closed
+    transport.assert_not_called()
+    assert backend.get_password.call_args.args[1] == "account"
