@@ -1,13 +1,13 @@
 # Google Calendar Live Pilot Runbook
 
-Operational runbook for the Sprint 2 controlled local pilot: connect one real Google
-account and synchronize one real primary-calendar event through the existing VELOX
-event, planning, permission and routing boundaries.
+Operational runbook for the real Google Calendar integration. It covers the original
+single-event sync pilot plus the Sprint 3 live agenda-query path through the local
+Ollama semantic resolver.
 
 This document is operational. Architecture lives in Notion; implementation state lives
 in `docs/engineering/CODEX_CONTEXT.md`.
 
-## Scope of this pilot
+## Scope of original single-event pilot
 
 In scope:
 
@@ -17,9 +17,10 @@ In scope:
 - primary calendar only;
 - read-only `events.get` for one explicit event ID.
 
-Out of scope (do not attempt through this runbook): `events.list`, background sync,
-polling, push/webhooks, Calendar writes, Gmail, multi-account discovery, public OAuth,
-UI, durable sync cursors, automatic worker-runtime execution.
+Out of scope: background sync, polling, push/webhooks, Calendar writes, Gmail,
+multi-account discovery, public OAuth, UI, durable sync cursors, and automatic
+worker-runtime execution. Bounded read-only `events.list` and the free-form
+tomorrow-agenda query are now supported and documented below.
 
 ## Secret-handling rules
 
@@ -346,3 +347,109 @@ debt instead.
 No default test opens a browser, contacts Google, uses the real Keychain, or requires
 real credentials. `uv run pytest -q` is safe to run at any time. Everything in this
 runbook is manual and opt-in.
+
+
+## Sprint 3 — Free-form local Ollama agenda pilot
+
+This path is read-only and opt-in. It proves the production chain:
+
+`free-form user text -> local Ollama -> tomorrow intent -> Calendar agenda workflow ->
+stored Google credential -> real primary-calendar events.list`.
+
+### Local prerequisites
+
+- macOS with the existing Google credential in Keychain.
+- Ollama installed and running locally.
+- A local model that supports the structured-output request. The completed Sprint 3
+  pilot used `qwen3:4b-instruct`.
+- Repository dependencies installed with `uv sync --group dev`.
+
+Verify the Google credential without printing secret material:
+
+```bash
+uv run python -m apps.server.src.integrations.google_oauth_cli verify \
+  --account-identifier <VELOX_ACCOUNT_IDENTIFIER>
+```
+
+A successful verification reports `credential_present=true`,
+`material_parses=true`, `refresh_token_present=true`, and
+`persisted_forbidden_fields=[]`.
+
+### Local configuration
+
+Use a local uncommitted `.env`:
+
+```env
+VELOX_CALENDAR_AGENDA_LIVE=true
+VELOX_CALENDAR_AGENDA_RESOLVER=ollama
+VELOX_OLLAMA_BASE_URL=http://127.0.0.1:11434
+VELOX_OLLAMA_MODEL=qwen3:4b-instruct
+```
+
+The Ollama base URL is intentionally loopback-only. `.env` is gitignored and must
+never contain Google credential material.
+
+### Resolver-only verification
+
+Before involving Google, verify the production resolver composition:
+
+```bash
+uv run python - <<'PY'
+from apps.server.src.integrations.calendar_agenda_runtime import calendar_agenda_intent_resolver
+
+with calendar_agenda_intent_resolver() as resolver:
+    print(type(resolver).__name__)
+    print(resolver.resolve("що там у мене по планах завтра"))
+PY
+```
+
+Expected semantic result:
+
+```text
+OllamaCalendarAgendaIntentResolver
+tomorrow
+```
+
+### Full API pilot
+
+Run VELOX natively on macOS so the process can access the login Keychain:
+
+```bash
+uv run uvicorn apps.server.src.main:app --host 127.0.0.1 --port 8000
+```
+
+In another terminal:
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+Then send the free-form query:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/calendar/agenda/query \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "text": "що там у мене по планах завтра",
+    "account_context": {
+      "principal": "<VELOX_PRINCIPAL>",
+      "account_identifier": "<VELOX_ACCOUNT_IDENTIFIER>"
+    },
+    "timezone": "Europe/Tirane"
+  }'
+```
+
+Success means:
+- Ollama returns a schema-valid `tomorrow` classification;
+- VELOX delegates through the existing Calendar agenda command path;
+- the Keychain credential refreshes successfully;
+- Google Calendar `events.list` returns successfully;
+- VELOX returns HTTP 200 with the bounded agenda contract;
+- no Calendar write occurs.
+
+An empty result such as `event_count=0` is a successful agenda when
+`aggregate_complete=true` and `termination_reason=exhausted`.
+
+The known `google-auth` warning about canonical `email` scope naming may still be
+printed during refresh. Judge the run by the request/result status; the completed
+Sprint 3 pilot refreshed successfully and returned HTTP 200 despite that warning.

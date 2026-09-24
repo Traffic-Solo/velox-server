@@ -13,7 +13,14 @@ This file is the canonical repository handoff for Codex engineering sessions.
 
 ## Current Sprint
 
-Sprint 3 - Bounded Google Calendar Event Listing
+Sprint 3 - CLOSED
+
+Final Sprint 3 runtime head before closure documentation: `21acccee5ec6d53d91644e2f11b886815c4dc576`.
+
+Sprint 3 closed after the full local free-form Calendar agenda pilot succeeded:
+natural Ukrainian text -> local Ollama classification -> existing Calendar agenda
+command path -> real Google Calendar read. No active Sprint 3 slice remains.
+Any further Calendar intent expansion belongs to a separately scoped Sprint 4.
 
 ## Quality Gates
 
@@ -115,33 +122,20 @@ Sprint 3 - Bounded Google Calendar Event Listing
 - API Hardening (bearer auth, duplicate event rejection, pagination, event/lifecycle GET endpoints, no internal error leaks)
 - Infrastructure Polish (Docker healthcheck, .env.example, README rewrite)
 - Post-Remediation Verification (independent gate re-run, adversarial approval-bypass tests, handoff contradiction cleanup)
+- Bounded Free-form Calendar Agenda Ingress
+- Local Ollama Calendar Agenda Intent Resolver
+- Full Free-form Ollama -> Live Google Calendar Agenda Pilot
 
 ## Current Next Slice
 
-Sprint 3 Slice 9 adds bounded free-form Calendar agenda ingress through
-`POST /calendar/agenda/query`. The request carries user text plus explicit
-account context and timezone. The existing structured `POST /calendar/agenda`
-endpoint remains unchanged.
+No active slice.
 
-`CalendarAgendaIntentResolver` is the provider-neutral semantic resolution Role.
-`ApplicationContainer` owns the current implementation,
-`BoundedCalendarAgendaIntentResolver`, so the HTTP adapter depends on the Role
-instead of constructing a concrete resolver. The bounded implementation recognizes
-only the approved Ukrainian and English “tomorrow agenda” phrases after trim,
-casefold and terminal-punctuation normalization, and resolves them to the existing
-`tomorrow` command intent.
+Do not continue Sprint 3 with Slice 11. The next implementation work must begin only
+after an explicit Sprint 4 scope decision. Candidate work such as additional Calendar
+intents, refresh-token rotation persistence, warning cleanup, Gmail production adapters,
+or broader semantic routing remains deferred until selected into Sprint 4.
 
-Blank text fails with the fixed safe validation response; non-blank unsupported
-text fails with the fixed safe semantic response. Resolved queries delegate only
-through the existing `CalendarAgendaCommandService`, preserving explicit account
-context, timezone handling, safe execution failures and the existing live/fake
-Calendar runtime behavior.
-
-No LLM/model provider, generic chat endpoint, fuzzy NLP, additional Calendar
-intents, planner/event-ingress changes, account discovery, OAuth changes or
-Calendar writes are part of this slice.
-
-## Current Slice 10
+## Final Slice 10
 
 Slice 10 adds an opt-in local Ollama implementation of the existing
 `CalendarAgendaIntentResolver` Role. Bounded resolution remains the default.
@@ -156,8 +150,10 @@ structured-agenda, live Calendar, OAuth and Keychain behavior remains unchanged.
 
 ## Current Implementation Notes
 
+- Sprint 3 final live pilot: on macOS with Ollama 0.34.4 and `qwen3:4b-instruct`, the production resolver composition selected `OllamaCalendarAgendaIntentResolver`; the Ukrainian query asking about plans for tomorrow resolved to `tomorrow`; the API `POST /calendar/agenda/query` then refreshed the stored Google credential from macOS Keychain and executed a real primary-calendar `events.list` for `Europe/Tirane`. Google and VELOX both returned HTTP 200. The observed agenda was complete and empty (`event_count=0`, `aggregate_complete=true`, `termination_reason=exhausted`). No Calendar write occurred.
+- The first direct local-model pilot exposed an underspecified system prompt: the model returned structured `unsupported` for a natural Ukrainian tomorrow paraphrase. PR #21 refined the semantic definition of `tomorrow`; the same class of query then returned structured `tomorrow`. The adapter remains model-based and does not hardcode a deterministic paraphrase list.
 - The API is hardened: when `VELOX_API_TOKEN` is set, every route on the events router requires `Authorization: Bearer <token>` (root `/` and `/health` stay open); `POST /events` rejects duplicate event ids with 409 (idempotency guard); `GET /events` is paginated (`limit` <= 1000, `offset`); `GET /events/{id}` and `GET /events/{id}/lifecycle` exist (registered after `/events/pending` and `/events/schema`, so keep static routes above parameterized ones); processing failures return a generic 500 detail and log the real error server-side.
-- Settings live in `apps/server/src/core/config.py` (`Settings` via pydantic-settings, cached `get_settings()`). All env vars use the `VELOX_` prefix and can come from `.env`: `VELOX_API_TOKEN` (bearer token; None disables auth for local dev), `VELOX_LOG_LEVEL`, `VELOX_MAX_TRANSIENT_RETRIES`, and `VELOX_CALENDAR_AGENDA_LIVE` (explicit opt-in live Calendar agenda reads). Never hardcode these or commit secrets. Logging is configured in `main.py` via `apps/server/src/core/log.py`; permission denials/engine crashes and worker no-executor fallbacks, skips, retries and executor exceptions are logged with action ids. New code paths with operational significance must log.
+- Settings live in `apps/server/src/core/config.py` (`Settings` via pydantic-settings, cached `get_settings()`). All env vars use the `VELOX_` prefix and can come from `.env`: `VELOX_API_TOKEN` (bearer token; None disables auth for local dev), `VELOX_LOG_LEVEL`, `VELOX_MAX_TRANSIENT_RETRIES`, `VELOX_CALENDAR_AGENDA_LIVE` (explicit opt-in live Calendar agenda reads), `VELOX_CALENDAR_AGENDA_RESOLVER` (bounded or ollama), `VELOX_OLLAMA_BASE_URL` (loopback-only), and `VELOX_OLLAMA_MODEL` (required for ollama mode). Never hardcode these or commit secrets. Logging is configured in `main.py` via `apps/server/src/core/log.py`; permission denials/engine crashes and worker no-executor fallbacks, skips, retries and executor exceptions are logged with action ids. New code paths with operational significance must log.
 - Gmail and Calendar share one provider boundary: `apps/server/src/integrations/google_provider.py` defines `GoogleCredentials`, `GoogleProviderRequest/Response/Failure`, `GoogleCredentialsProvider`, `GoogleTransportClient`, `FakeGoogleCredentialsProvider(service=...)`, `FakeGoogleTransportClient(service=...)` and `GoogleProviderComposition(service=...)`. Gmail/Calendar modules keep their public names (`GmailCredentials`, `FakeCalendarTransportClient`, `CalendarProviderComposition`, etc.) as aliases or thin service-bound subclasses. A future Google service integration must reuse this boundary instead of copying it.
 - Gmail read and archive require an explicit `payload.message_id`. There is no fallback to `action.target` because the planner stores the source event id in `target`, which is never a Gmail message id; missing message_id maps to a PERMANENT `WorkerExecutionFailure`.
 - Failed events can be replayed: the event lifecycle allows failed -> processing, failed events stay in the pending inbox, and POST /events/{id}/process retries them. Transient worker failures are consumed by `WorkerRuntime`: a FAILED lifecycle state with a TRANSIENT failure category is re-queued (FAILED -> QUEUED -> APPROVED, re-using the original approval) with `transient_retry_count` metadata, bounded by `max_transient_retries` (default 3). PERMANENT and INTERNAL failures are terminal. `WorkerInvocationResult.queue_empty` now reports the actual queue emptiness after the batch.
@@ -323,7 +319,6 @@ After every implementation slice, update this file in the same commit if the imp
 
 - Open-source Harvest exists in Notion, but no real repositories have been evaluated yet.
 - Apple Ecosystem Strategy references ADRs that are not yet created.
-- Engineering Board in Notion may still need reconciliation with current repository state.
 - Gmail read, send and archive capabilities use deterministic in-memory fake data only. Executor resolution supports explicit capability-provider routing and returns `SKIPPED` through `NoOpWorkerExecutor` when no registered handler matches.
 - Gmail's unqualified direct-executor aliases (`read`, `send`, `archive`) remain as compatibility inputs. Production provider declarations use canonical `WorkerCapability` values and runtime routing uses their normalized identifiers.
 - Shared Google provider composition retains separate principal/account arguments for backward-compatible direct integration tests; worker adapter execution uses only account context embedded from the matched routing result.
@@ -334,4 +329,3 @@ After every implementation slice, update this file in the same commit if the imp
 - `google-auth` logs `Not all requested scopes were granted ... missing scopes email` on every refresh. Refresh and `events.get` succeed; the warning is the same canonical-alias mismatch surfacing in a third-party logger. Silencing it would require storing canonical scope URLs or filtering that logger, so it is left as documented noise.
 - Opt-in automated read-only Calendar live smoke coverage exists, but it requires explicit environment values and macOS Keychain credentials and remains deselected from default tests.
 - Refresh-token rotation persistence remains unimplemented; a rotated refresh token is not written back to the Keychain.
-- Notion sync may still need reconciliation for the latest completed Google integration slices; do not claim Notion is updated unless the sync is explicitly performed.
