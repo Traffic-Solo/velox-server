@@ -32,9 +32,14 @@ class OllamaCalendarAgendaIntentResolver:
     """Classify Calendar agenda text through a bounded local Ollama client."""
 
     _SYSTEM_PROMPT = (
-        "Classify only Calendar agenda intent. Do not answer the user's question. "
-        "Do not perform actions. Do not infer account identity. Do not produce "
-        "Calendar or provider data. Return only the structured classification."
+        "You are an intent classifier for a Calendar assistant. "
+        "Return intent=tomorrow when the user asks about their schedule, plans, "
+        "meetings, availability, or calendar for tomorrow, in any language or natural "
+        "paraphrase. Return intent=unsupported for any other request, including today, "
+        "another date, creating or changing events, or non-calendar questions. "
+        "Do not answer the user's question. Do not perform actions. Do not infer account "
+        "identity. Do not produce Calendar or provider data. Return only the structured "
+        "classification."
     )
 
     def __init__(
