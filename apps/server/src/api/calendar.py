@@ -3,7 +3,7 @@
 import logging
 from typing import Annotated
 
-from apps.server.src.api.events import require_api_token
+from apps.server.src.api.dependencies import require_api_token
 from apps.server.src.core.container import ApplicationContainer, get_container
 from apps.server.src.integrations.calendar_agenda import (
     CalendarAgendaWorkflowError,
