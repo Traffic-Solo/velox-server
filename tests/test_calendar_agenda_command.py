@@ -27,6 +27,13 @@ from apps.server.src.workers.executor import (
 )
 from keyring.backends import macOS
 
+
+class OfflineKeyring(macOS.Keyring):
+    """Avoid evaluating the platform-dependent priority descriptor in mock specs."""
+
+    priority = 1
+
+
 ACCOUNT = WorkerAccountContext(principal="principal", account_identifier="account")
 NOW = datetime(2026, 3, 28, 23, tzinfo=ZoneInfo("Europe/Tirane"))
 RESULT = CalendarTomorrowAgendaResult(
@@ -169,7 +176,7 @@ def test_live_composition_is_offline_and_closes_client(status: int) -> None:
         return httpx.Response(status, json={"items": [], "secret": "provider-secret"})
 
     client = httpx.Client(transport=httpx.MockTransport(respond))
-    backend = Mock(spec=macOS.Keyring, priority=1)
+    backend = Mock(spec=OfflineKeyring, priority=1)
     with (
         patch.object(composition.httpx, "Client", return_value=client),
         patch("keyring.get_keyring", return_value=backend),
@@ -220,7 +227,7 @@ def test_live_composition_closes_on_construction_or_caller_failure(
 def test_live_missing_credentials_fails_before_transport() -> None:
     transport = Mock(side_effect=AssertionError("HTTP must not run"))
     client = httpx.Client(transport=httpx.MockTransport(transport))
-    backend = Mock(spec=macOS.Keyring, priority=1)
+    backend = Mock(spec=OfflineKeyring, priority=1)
     backend.get_password.return_value = None
     with (
         patch.object(composition.httpx, "Client", return_value=client),
