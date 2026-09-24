@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import httpx
 import pytest
 from apps.server.src.core.container import ApplicationContainer
-from apps.server.src.integrations import calendar_agenda_command as composition
+from apps.server.src.integrations import calendar_agenda_runtime as composition
 from apps.server.src.integrations.calendar_agenda import (
     CalendarAgendaWorkflowError,
     CalendarTomorrowAgendaRequest,

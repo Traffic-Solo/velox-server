@@ -121,13 +121,17 @@ Sprint 3 - Bounded Google Calendar Event Listing
 Sprint 3 Slice 8 adds explicit live Calendar agenda runtime composition.
 `VELOX_CALENDAR_AGENDA_LIVE=true` opts the server into real read-only execution;
 the default remains deterministic fake composition for offline development/tests.
-The reusable `live_calendar_agenda_command_service` context manager composes
+The reusable `live_calendar_agenda_command_service` context manager in
+`apps/server/src/integrations/calendar_agenda_runtime.py` composes
 `StoredGoogleCredentialsProvider`, `MacOSKeychainCredentialStore`,
 `HttpxCalendarTransportClient`, and the existing executor, list orchestrator,
 workflow and command service. It owns and closes its HTTP client on normal exit,
 construction failure and execution failure. Callers must use the service only
 inside the context. Application lifespan installs it for agenda commands and
 restores the previous service before closing the client.
+`calendar_agenda_command.py` contains only the provider-neutral semantic command
+boundary. The existing opt-in live smoke includes one tomorrow agenda command
+through the production factory; it remains deselected from normal tests/CI.
 
 `POST /calendar/agenda` remains unchanged and calls only the command service.
 Account context is still explicit per request; UTC wall-clock time belongs to

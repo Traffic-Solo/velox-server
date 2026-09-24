@@ -6,7 +6,7 @@ from apps.server.src.api.events import router as events_router
 from apps.server.src.core.config import get_settings
 from apps.server.src.core.container import get_container
 from apps.server.src.core.log import configure_logging
-from apps.server.src.integrations.calendar_agenda_command import (
+from apps.server.src.integrations.calendar_agenda_runtime import (
     live_calendar_agenda_command_service,
 )
 from fastapi import FastAPI

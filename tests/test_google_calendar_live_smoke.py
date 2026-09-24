@@ -40,6 +40,10 @@ from apps.server.src.integrations.calendar import (
     CalendarWorkerExecutor,
     HttpxCalendarTransportClient,
 )
+from apps.server.src.integrations.calendar_agenda_command import CalendarAgendaCommandRequest
+from apps.server.src.integrations.calendar_agenda_runtime import (
+    live_calendar_agenda_command_service,
+)
 from apps.server.src.integrations.google_oauth import (
     GOOGLE_OAUTH_CREDENTIAL_NAMESPACE,
     StoredGoogleCredentialsProvider,
@@ -563,3 +567,40 @@ def test_live_bounded_orchestrator_aggregates_multiple_read_only_pages(
     assert "page_token" not in repr(result)
     assert "next_page_token" not in repr(result.metadata)
     assert_no_credential_material(result, stored_secret_values)
+
+
+def test_live_agenda_command_through_production_composition(
+    live_config: LiveConfig,
+    stored_secret_values: tuple[str, ...],
+) -> None:
+    """Read tomorrow's agenda with existing credentials and the production factory."""
+    now = datetime.now(UTC)
+    with live_calendar_agenda_command_service(clock=lambda: now) as service:
+        result = service.execute(
+            CalendarAgendaCommandRequest(
+                intent="tomorrow",
+                account_context=WorkerAccountContext(
+                    principal=live_config.principal,
+                    account_identifier=live_config.account_identifier,
+                ),
+                timezone="UTC",
+            ),
+        )
+
+    assert result.intent == "tomorrow"
+    assert result.timezone == "UTC"
+    assert result.local_date == (now.date() + timedelta(days=1)).isoformat()
+    assert datetime.fromisoformat(result.time_max) - datetime.fromisoformat(
+        result.time_min
+    ) == timedelta(days=1)
+    assert_allowlisted_page(result.events)
+    assert result.event_count == len(result.events)
+    assert result.termination_reason in {"exhausted", "page_limit", "repeated_page_token"}
+    assert result.aggregate_complete is (
+        result.termination_reason == "exhausted" and result.skipped_event_count == 0
+    )
+    blob = repr(result)
+    leaked_secret = any(secret and secret in blob for secret in stored_secret_values)
+    assert not leaked_secret, "stored credential material appeared in the agenda"
+    leaked_marker = any(token in blob for token in FORBIDDEN_SUBSTRINGS)
+    assert not leaked_marker, "credential markers appeared in the agenda"
