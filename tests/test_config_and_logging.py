@@ -35,6 +35,15 @@ def test_settings_read_velox_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.max_transient_retries == 5
 
 
+def test_ollama_resolver_requires_explicit_model() -> None:
+    with pytest.raises(ValueError, match="VELOX_OLLAMA_MODEL"):
+        Settings(
+            _env_file=None,
+            calendar_agenda_resolver="ollama",
+            ollama_model=" ",
+        )
+
+
 def test_permission_engine_exception_is_logged_not_swallowed(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

@@ -12,6 +12,10 @@ class CalendarAgendaIntentResolutionError(ValueError):
     """Raised when a non-blank Calendar agenda query is not supported."""
 
 
+class CalendarAgendaIntentResolverExecutionError(RuntimeError):
+    """Raised when a configured resolver cannot safely classify a query."""
+
+
 class CalendarAgendaIntentResolver(Protocol):
     """Resolve bounded user text to an existing Calendar agenda intent."""
 
