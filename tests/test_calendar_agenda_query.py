@@ -15,6 +15,7 @@ from apps.server.src.integrations.calendar_agenda_query import (
     BoundedCalendarAgendaIntentResolver,
     CalendarAgendaIntentResolutionError,
     CalendarAgendaIntentResolver,
+    CalendarAgendaIntentResolverExecutionError,
     CalendarAgendaQueryValidationError,
 )
 from apps.server.src.main import app
@@ -67,12 +68,19 @@ def test_resolver_has_no_provider_or_runtime_dependencies() -> None:
 
 
 class RecordingIntentResolver:
-    def __init__(self, intent: str = "tomorrow") -> None:
+    def __init__(
+        self,
+        intent: str = "tomorrow",
+        error: Exception | None = None,
+    ) -> None:
         self.intent = intent
+        self.error = error
         self.calls: list[str] = []
 
     def resolve(self, text: str) -> str:
         self.calls.append(text)
+        if self.error is not None:
+            raise self.error
         return self.intent
 
 
@@ -179,6 +187,25 @@ def test_query_uses_container_owned_resolver(
     assert resolver.calls == ["delegate this text"]
     assert len(spy.calls) == 1
     assert spy.calls[0].intent == "tomorrow"
+
+
+def test_query_resolver_execution_failure_is_fixed_safe_500(
+    client: TestClient, container: ApplicationContainer,
+) -> None:
+    secret = "secret local model detail"
+    resolver = RecordingIntentResolver(
+        error=CalendarAgendaIntentResolverExecutionError(secret),
+    )
+    container.calendar_agenda_intent_resolver = resolver
+    spy = install_spy(container)
+
+    response = client.post("/calendar/agenda/query", json=query_payload())
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "calendar agenda query resolution failed"}
+    assert secret not in response.text
+    assert resolver.calls == [query_payload()["text"]]
+    assert spy.calls == []
 
 
 def test_query_preserves_safe_execution_error_behavior(

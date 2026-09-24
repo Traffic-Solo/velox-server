@@ -4,7 +4,7 @@ from collections.abc import Iterator
 from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any, cast
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from apps.server.src import main
@@ -204,15 +204,23 @@ def test_application_lifespan_opt_in_and_restoration(
     get_settings.cache_clear()
     container = ApplicationContainer()
     previous = container.calendar_agenda_command_service
+    previous_resolver = container.calendar_agenda_intent_resolver
     spy = RecordingCommandService()
+    resolver_spy = Mock()
     with (
         patch.object(main, "get_container", return_value=container),
         patch.object(main, "live_calendar_agenda_command_service") as factory,
+        patch.object(main, "calendar_agenda_intent_resolver") as resolver_factory,
     ):
         factory.return_value.__enter__.return_value = spy
+        resolver_factory.return_value.__enter__.return_value = resolver_spy
         with TestClient(app):
             assert container.calendar_agenda_command_service is (spy if live else previous)
+            assert container.calendar_agenda_intent_resolver is resolver_spy
         assert container.calendar_agenda_command_service is previous
+        assert container.calendar_agenda_intent_resolver is previous_resolver
         assert factory.call_count == int(live)
         assert factory.return_value.__exit__.call_count == int(live)
+        assert resolver_factory.call_count == 1
+        assert resolver_factory.return_value.__exit__.call_count == 1
     get_settings.cache_clear()

@@ -88,10 +88,10 @@ class OllamaCalendarAgendaIntentResolver:
             classification = OllamaCalendarAgendaClassification.model_validate_json(
                 envelope.message.content,
             )
-        except Exception as error:
+        except Exception:
             raise CalendarAgendaIntentResolverExecutionError(
                 "calendar agenda query resolution failed",
-            ) from error
+            ) from None
         if classification.intent == "unsupported":
             raise CalendarAgendaIntentResolutionError(
                 "calendar agenda query is unsupported",
