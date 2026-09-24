@@ -4,8 +4,8 @@ import logging
 from typing import Annotated, Any
 from uuid import UUID
 
+from apps.server.src.api.dependencies import require_api_token
 from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionStatus
-from apps.server.src.core.config import get_settings
 from apps.server.src.core.container import get_container
 from apps.server.src.core.events import (
     DuplicateEventError,
@@ -15,24 +15,10 @@ from apps.server.src.core.events import (
     IntegrationRouteContext,
     UniversalEvent,
 )
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
-
-
-def require_api_token(
-    authorization: Annotated[str | None, Header()] = None,
-) -> None:
-    """Require a bearer token on every API route when VELOX_API_TOKEN is set."""
-    expected_token = get_settings().api_token
-    if expected_token is None:
-        return
-    if authorization != f"Bearer {expected_token}":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="missing or invalid bearer token",
-        )
 
 
 router = APIRouter(tags=["events"], dependencies=[Depends(require_api_token)])
