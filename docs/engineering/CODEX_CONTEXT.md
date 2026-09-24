@@ -118,33 +118,33 @@ Sprint 3 - Bounded Google Calendar Event Listing
 
 ## Current Next Slice
 
-Sprint 3 Slice 8 adds explicit live Calendar agenda runtime composition.
-`VELOX_CALENDAR_AGENDA_LIVE=true` opts the server into real read-only execution;
-the default remains deterministic fake composition for offline development/tests.
-The reusable `live_calendar_agenda_command_service` context manager in
-`apps/server/src/integrations/calendar_agenda_runtime.py` composes
-`StoredGoogleCredentialsProvider`, `MacOSKeychainCredentialStore`,
-`HttpxCalendarTransportClient`, and the existing executor, list orchestrator,
-workflow and command service. It owns and closes its HTTP client on normal exit,
-construction failure and execution failure. Callers must use the service only
-inside the context. Application lifespan installs it for agenda commands and
-restores the previous service before closing the client.
-`calendar_agenda_command.py` contains only the provider-neutral semantic command
-boundary. The existing opt-in live smoke includes one tomorrow agenda command
-through the production factory; it remains deselected from normal tests/CI.
+Sprint 3 Slice 9 adds bounded free-form Calendar agenda ingress through
+`POST /calendar/agenda/query`. The request carries user text plus explicit
+account context and timezone. The existing structured `POST /calendar/agenda`
+endpoint remains unchanged.
 
-`POST /calendar/agenda` remains unchanged and calls only the command service.
-Account context is still explicit per request; UTC wall-clock time belongs to
-the command service. Existing safe validation and execution failure mapping is
-preserved. Live mode requires the existing macOS Keychain credentials; it does
-not bootstrap OAuth, discover accounts or fall back to fake execution on failure.
-No scopes, writes, sync, planner, NLP, chat or voice behavior were added.
-Select the next slice separately.
+`CalendarAgendaIntentResolver` is the provider-neutral semantic resolution Role.
+`ApplicationContainer` owns the current implementation,
+`BoundedCalendarAgendaIntentResolver`, so the HTTP adapter depends on the Role
+instead of constructing a concrete resolver. The bounded implementation recognizes
+only the approved Ukrainian and English “tomorrow agenda” phrases after trim,
+casefold and terminal-punctuation normalization, and resolves them to the existing
+`tomorrow` command intent.
+
+Blank text fails with the fixed safe validation response; non-blank unsupported
+text fails with the fixed safe semantic response. Resolved queries delegate only
+through the existing `CalendarAgendaCommandService`, preserving explicit account
+context, timezone handling, safe execution failures and the existing live/fake
+Calendar runtime behavior.
+
+No LLM/model provider, generic chat endpoint, fuzzy NLP, additional Calendar
+intents, planner/event-ingress changes, account discovery, OAuth changes or
+Calendar writes are part of this slice.
 
 ## Current Implementation Notes
 
 - The API is hardened: when `VELOX_API_TOKEN` is set, every route on the events router requires `Authorization: Bearer <token>` (root `/` and `/health` stay open); `POST /events` rejects duplicate event ids with 409 (idempotency guard); `GET /events` is paginated (`limit` <= 1000, `offset`); `GET /events/{id}` and `GET /events/{id}/lifecycle` exist (registered after `/events/pending` and `/events/schema`, so keep static routes above parameterized ones); processing failures return a generic 500 detail and log the real error server-side.
-- Settings live in `apps/server/src/core/config.py` (`Settings` via pydantic-settings, cached `get_settings()`). All env vars use the `VELOX_` prefix and can come from `.env`: `VELOX_API_TOKEN` (bearer token; None disables auth for local dev), `VELOX_LOG_LEVEL`, `VELOX_MAX_TRANSIENT_RETRIES`. Never hardcode these or commit secrets. Logging is configured in `main.py` via `apps/server/src/core/log.py`; permission denials/engine crashes and worker no-executor fallbacks, skips, retries and executor exceptions are logged with action ids. New code paths with operational significance must log.
+- Settings live in `apps/server/src/core/config.py` (`Settings` via pydantic-settings, cached `get_settings()`). All env vars use the `VELOX_` prefix and can come from `.env`: `VELOX_API_TOKEN` (bearer token; None disables auth for local dev), `VELOX_LOG_LEVEL`, `VELOX_MAX_TRANSIENT_RETRIES`, and `VELOX_CALENDAR_AGENDA_LIVE` (explicit opt-in live Calendar agenda reads). Never hardcode these or commit secrets. Logging is configured in `main.py` via `apps/server/src/core/log.py`; permission denials/engine crashes and worker no-executor fallbacks, skips, retries and executor exceptions are logged with action ids. New code paths with operational significance must log.
 - Gmail and Calendar share one provider boundary: `apps/server/src/integrations/google_provider.py` defines `GoogleCredentials`, `GoogleProviderRequest/Response/Failure`, `GoogleCredentialsProvider`, `GoogleTransportClient`, `FakeGoogleCredentialsProvider(service=...)`, `FakeGoogleTransportClient(service=...)` and `GoogleProviderComposition(service=...)`. Gmail/Calendar modules keep their public names (`GmailCredentials`, `FakeCalendarTransportClient`, `CalendarProviderComposition`, etc.) as aliases or thin service-bound subclasses. A future Google service integration must reuse this boundary instead of copying it.
 - Gmail read and archive require an explicit `payload.message_id`. There is no fallback to `action.target` because the planner stores the source event id in `target`, which is never a Gmail message id; missing message_id maps to a PERMANENT `WorkerExecutionFailure`.
 - Failed events can be replayed: the event lifecycle allows failed -> processing, failed events stay in the pending inbox, and POST /events/{id}/process retries them. Transient worker failures are consumed by `WorkerRuntime`: a FAILED lifecycle state with a TRANSIENT failure category is re-queued (FAILED -> QUEUED -> APPROVED, re-using the original approval) with `transient_retry_count` metadata, bounded by `max_transient_retries` (default 3). PERMANENT and INTERNAL failures are terminal. `WorkerInvocationResult.queue_empty` now reports the actual queue emptiness after the batch.
