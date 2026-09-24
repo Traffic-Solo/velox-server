@@ -1,5 +1,5 @@
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 
 from apps.server.src.api.calendar import router as calendar_router
 from apps.server.src.api.events import router as events_router
@@ -7,6 +7,7 @@ from apps.server.src.core.config import get_settings
 from apps.server.src.core.container import get_container
 from apps.server.src.core.log import configure_logging
 from apps.server.src.integrations.calendar_agenda_runtime import (
+    calendar_agenda_intent_resolver,
     live_calendar_agenda_command_service,
 )
 from fastapi import FastAPI
@@ -19,17 +20,22 @@ SERVICE_VERSION = "0.0.1"
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     """Install the opt-in live agenda service only while its client is open."""
-    if not get_settings().calendar_agenda_live:
-        yield
-        return
     container = get_container()
     previous_service = container.calendar_agenda_command_service
-    with live_calendar_agenda_command_service() as service:
-        container.calendar_agenda_command_service = service
-        try:
+    previous_resolver = container.calendar_agenda_intent_resolver
+    try:
+        with ExitStack() as stack:
+            if get_settings().calendar_agenda_live:
+                container.calendar_agenda_command_service = stack.enter_context(
+                    live_calendar_agenda_command_service()
+                )
+            container.calendar_agenda_intent_resolver = stack.enter_context(
+                calendar_agenda_intent_resolver()
+            )
             yield
-        finally:
-            container.calendar_agenda_command_service = previous_service
+    finally:
+        container.calendar_agenda_command_service = previous_service
+        container.calendar_agenda_intent_resolver = previous_resolver
 
 
 app = FastAPI(title=SERVICE_NAME, version=SERVICE_VERSION, lifespan=lifespan)

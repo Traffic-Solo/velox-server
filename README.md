@@ -62,6 +62,10 @@ Actions:
   It adds no Calendar writes or OAuth scopes. Other manual/live Calendar read
   tools also require explicit invocation; see the
   [Calendar pilot runbook](docs/engineering/GOOGLE_CALENDAR_PILOT.md).
+  Free-form `POST /calendar/agenda/query` uses the bounded resolver by default.
+  Set `VELOX_CALENDAR_AGENDA_RESOLVER=ollama` with an explicit
+  `VELOX_OLLAMA_MODEL` to opt in to local-only Ollama classification; the
+  configured base URL must use a loopback host.
 
 ## Development
 

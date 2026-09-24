@@ -141,6 +141,19 @@ No LLM/model provider, generic chat endpoint, fuzzy NLP, additional Calendar
 intents, planner/event-ingress changes, account discovery, OAuth changes or
 Calendar writes are part of this slice.
 
+## Current Slice 10
+
+Slice 10 adds an opt-in local Ollama implementation of the existing
+`CalendarAgendaIntentResolver` Role. Bounded resolution remains the default.
+`VELOX_CALENDAR_AGENDA_RESOLVER=ollama` requires an explicit
+`VELOX_OLLAMA_MODEL` and a loopback-only `VELOX_OLLAMA_BASE_URL`; classification
+uses Ollama `/api/chat` with a strict `tomorrow`/`unsupported` JSON schema.
+The Ollama client is composed and owned by the FastAPI lifespan, while the API
+continues to use only the resolver owned by `ApplicationContainer`. Resolver
+transport, model, provider and prompt failures map to the fixed safe 500
+response `calendar agenda query resolution failed`. Existing bounded,
+structured-agenda, live Calendar, OAuth and Keychain behavior remains unchanged.
+
 ## Current Implementation Notes
 
 - The API is hardened: when `VELOX_API_TOKEN` is set, every route on the events router requires `Authorization: Bearer <token>` (root `/` and `/health` stay open); `POST /events` rejects duplicate event ids with 409 (idempotency guard); `GET /events` is paginated (`limit` <= 1000, `offset`); `GET /events/{id}` and `GET /events/{id}/lifecycle` exist (registered after `/events/pending` and `/events/schema`, so keep static routes above parameterized ones); processing failures return a generic 500 detail and log the real error server-side.

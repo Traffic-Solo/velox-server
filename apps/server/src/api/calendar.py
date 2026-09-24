@@ -14,6 +14,7 @@ from apps.server.src.integrations.calendar_agenda_command import (
 )
 from apps.server.src.integrations.calendar_agenda_query import (
     CalendarAgendaIntentResolutionError,
+    CalendarAgendaIntentResolverExecutionError,
     CalendarAgendaQueryValidationError,
 )
 from apps.server.src.workers.executor import WorkerAccountContext
@@ -117,6 +118,11 @@ def calendar_agenda_query(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="unsupported calendar agenda query",
+        ) from None
+    except CalendarAgendaIntentResolverExecutionError:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="calendar agenda query resolution failed",
         ) from None
     return _execute_calendar_agenda(
         CalendarAgendaCommandRequest(
