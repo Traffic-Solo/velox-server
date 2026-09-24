@@ -7,7 +7,7 @@ Ollama semantic resolver.
 This document is operational. Architecture lives in Notion; implementation state lives
 in `docs/engineering/CODEX_CONTEXT.md`.
 
-## Scope of this pilot
+## Scope of original single-event pilot
 
 In scope:
 
