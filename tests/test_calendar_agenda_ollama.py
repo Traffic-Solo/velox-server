@@ -75,6 +75,11 @@ def test_valid_tomorrow_result_sends_native_chat_request() -> None:
     assert sent["stream"] is False
     assert sent["options"]["temperature"] == 0
     assert sent["format"]["properties"]["intent"]["enum"] == ["tomorrow", "unsupported"]
+    assert sent["messages"][1] == {"role": "user", "content": "які зустрічі завтра"}
+    system_prompt = sent["messages"][0]["content"]
+    assert "schedule, plans, meetings, availability, or calendar for tomorrow" in system_prompt
+    assert "any language or natural paraphrase" in system_prompt
+    assert "today, another date, creating or changing events" in system_prompt
 
 
 def test_unsupported_result_uses_safe_semantic_error() -> None:
