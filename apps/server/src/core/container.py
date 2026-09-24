@@ -44,6 +44,10 @@ from apps.server.src.integrations.calendar_agenda import (
 from apps.server.src.integrations.calendar_agenda_command import (
     CalendarAgendaCommandService,
 )
+from apps.server.src.integrations.calendar_agenda_query import (
+    BoundedCalendarAgendaIntentResolver,
+    CalendarAgendaIntentResolver,
+)
 from apps.server.src.integrations.calendar_ingress import (
     CalendarEventNormalizer,
     CalendarIngressAdapter,
@@ -108,6 +112,9 @@ class ApplicationContainer:
         self.calendar_agenda_command_service = CalendarAgendaCommandService(
             self.calendar_tomorrow_agenda_workflow,
             clock=lambda: datetime.now(UTC),
+        )
+        self.calendar_agenda_intent_resolver: CalendarAgendaIntentResolver = (
+            BoundedCalendarAgendaIntentResolver()
         )
         self.worker_execution_observer = InMemoryWorkerExecutionObserver()
         self.worker_runtime = WorkerRuntime(

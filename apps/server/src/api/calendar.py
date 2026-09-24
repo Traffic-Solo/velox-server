@@ -13,8 +13,8 @@ from apps.server.src.integrations.calendar_agenda_command import (
     CalendarAgendaCommandRequest,
 )
 from apps.server.src.integrations.calendar_agenda_query import (
-    BoundedCalendarAgendaIntentResolver,
     CalendarAgendaIntentResolutionError,
+    CalendarAgendaQueryValidationError,
 )
 from apps.server.src.workers.executor import WorkerAccountContext
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -107,7 +107,12 @@ def calendar_agenda_query(
 ) -> CalendarTomorrowAgendaResult:
     """Resolve a bounded query, then delegate the recognized command."""
     try:
-        intent = BoundedCalendarAgendaIntentResolver().resolve(request.text)
+        intent = container.calendar_agenda_intent_resolver.resolve(request.text)
+    except CalendarAgendaQueryValidationError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="invalid calendar agenda query",
+        ) from None
     except CalendarAgendaIntentResolutionError:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

@@ -15,6 +15,7 @@ from apps.server.src.integrations.calendar_agenda_query import (
     BoundedCalendarAgendaIntentResolver,
     CalendarAgendaIntentResolutionError,
     CalendarAgendaIntentResolver,
+    CalendarAgendaQueryValidationError,
 )
 from apps.server.src.main import app
 from apps.server.src.workers.executor import WorkerAccountContext
@@ -48,14 +49,31 @@ def test_bounded_resolver_supports_normalized_phrases(text: str) -> None:
     assert resolver.resolve(text) == "tomorrow"
 
 
-@pytest.mark.parametrize("text", ["", "   ", "what is on my calendar today?"])
-def test_bounded_resolver_rejects_blank_and_unsupported_text(text: str) -> None:
-    with pytest.raises(CalendarAgendaIntentResolutionError):
+@pytest.mark.parametrize("text", ["", "   "])
+def test_bounded_resolver_rejects_blank_text(text: str) -> None:
+    with pytest.raises(CalendarAgendaQueryValidationError):
         BoundedCalendarAgendaIntentResolver().resolve(text)
+
+
+def test_bounded_resolver_rejects_unsupported_text() -> None:
+    with pytest.raises(CalendarAgendaIntentResolutionError):
+        BoundedCalendarAgendaIntentResolver().resolve(
+            "what is on my calendar today?"
+        )
 
 
 def test_resolver_has_no_provider_or_runtime_dependencies() -> None:
     assert "google" not in BoundedCalendarAgendaIntentResolver.__module__
+
+
+class RecordingIntentResolver:
+    def __init__(self, intent: str = "tomorrow") -> None:
+        self.intent = intent
+        self.calls: list[str] = []
+
+    def resolve(self, text: str) -> str:
+        self.calls.append(text)
+        return self.intent
 
 
 class RecordingCommandService:
@@ -123,8 +141,8 @@ def test_query_delegates_intent_and_explicit_context(
     assert forwarded.timezone == "Europe/Tirane"
 
 
-@pytest.mark.parametrize("text", ["", "unsupported request"])
-def test_query_rejects_unsupported_text_without_service_call(
+@pytest.mark.parametrize("text", ["", "   "])
+def test_query_rejects_blank_text_without_service_call(
     client: TestClient, container: ApplicationContainer, text: str,
 ) -> None:
     spy = install_spy(container)
@@ -132,8 +150,35 @@ def test_query_rejects_unsupported_text_without_service_call(
     body["text"] = text
     response = client.post("/calendar/agenda/query", json=body)
     assert response.status_code == 422
+    assert response.json() == {"detail": "invalid calendar agenda query"}
+    assert spy.calls == []
+
+
+def test_query_rejects_unsupported_text_without_service_call(
+    client: TestClient, container: ApplicationContainer,
+) -> None:
+    spy = install_spy(container)
+    body = query_payload()
+    body["text"] = "unsupported request"
+    response = client.post("/calendar/agenda/query", json=body)
+    assert response.status_code == 422
     assert response.json() == {"detail": "unsupported calendar agenda query"}
     assert spy.calls == []
+
+
+def test_query_uses_container_owned_resolver(
+    client: TestClient, container: ApplicationContainer,
+) -> None:
+    resolver = RecordingIntentResolver()
+    container.calendar_agenda_intent_resolver = resolver
+    spy = install_spy(container)
+    body = query_payload()
+    body["text"] = "delegate this text"
+    response = client.post("/calendar/agenda/query", json=body)
+    assert response.status_code == 200
+    assert resolver.calls == ["delegate this text"]
+    assert len(spy.calls) == 1
+    assert spy.calls[0].intent == "tomorrow"
 
 
 def test_query_preserves_safe_execution_error_behavior(

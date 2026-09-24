@@ -4,8 +4,12 @@ from collections.abc import Mapping
 from typing import Protocol
 
 
+class CalendarAgendaQueryValidationError(ValueError):
+    """Raised when a free-form Calendar agenda query is structurally invalid."""
+
+
 class CalendarAgendaIntentResolutionError(ValueError):
-    """Raised when a free-form Calendar agenda query is not supported."""
+    """Raised when a non-blank Calendar agenda query is not supported."""
 
 
 class CalendarAgendaIntentResolver(Protocol):
@@ -13,6 +17,7 @@ class CalendarAgendaIntentResolver(Protocol):
 
     def resolve(self, text: str) -> str:
         """Return a supported semantic Calendar agenda intent."""
+        ...
 
 
 class BoundedCalendarAgendaIntentResolver:
@@ -28,7 +33,11 @@ class BoundedCalendarAgendaIntentResolver:
     def resolve(self, text: str) -> str:
         """Resolve supported text without calling any provider or runtime."""
         normalized = text.strip().casefold().rstrip(self._TERMINAL_PUNCTUATION).strip()
-        if not normalized or normalized not in self._PHRASES:
+        if not normalized:
+            raise CalendarAgendaQueryValidationError(
+                "calendar agenda query text is required",
+            )
+        if normalized not in self._PHRASES:
             raise CalendarAgendaIntentResolutionError(
                 "calendar agenda query is unsupported",
             )
