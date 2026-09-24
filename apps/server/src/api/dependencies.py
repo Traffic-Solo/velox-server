@@ -13,7 +13,7 @@ def require_api_token(
     expected_token = get_settings().api_token
     if expected_token is None:
         return
-    if authorization != "******":
+    if authorization != f"Bearer {expected_token}":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="missing or invalid bearer token",
