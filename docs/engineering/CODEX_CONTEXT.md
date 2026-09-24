@@ -15,7 +15,7 @@ This file is the canonical repository handoff for Codex engineering sessions.
 
 Sprint 3 - CLOSED
 
-Final Sprint 3 main: `21acccee5ec6d53d91644e2f11b886815c4dc576`.
+Final Sprint 3 runtime head before closure documentation: `21acccee5ec6d53d91644e2f11b886815c4dc576`.
 
 Sprint 3 closed after the full local free-form Calendar agenda pilot succeeded:
 natural Ukrainian text -> local Ollama classification -> existing Calendar agenda
