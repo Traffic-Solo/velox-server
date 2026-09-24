@@ -135,7 +135,7 @@ after an explicit Sprint 4 scope decision. Candidate work such as additional Cal
 intents, refresh-token rotation persistence, warning cleanup, Gmail production adapters,
 or broader semantic routing remains deferred until selected into Sprint 4.
 
-## Current Slice 10
+## Final Slice 10
 
 Slice 10 adds an opt-in local Ollama implementation of the existing
 `CalendarAgendaIntentResolver` Role. Bounded resolution remains the default.
