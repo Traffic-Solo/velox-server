@@ -1,5 +1,8 @@
 import socket
+from dataclasses import FrozenInstanceError
+from typing import Any, NoReturn
 
+import pytest
 from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.integrations.gmail import (
     GMAIL_WORKER_CAPABILITIES,
@@ -7,6 +10,7 @@ from apps.server.src.integrations.gmail import (
     FakeGmailTransportClient,
     GmailArchiveCapability,
     GmailArchiveRequest,
+    GmailCapabilityResult,
     GmailCredentials,
     GmailCredentialsProvider,
     GmailCredentialsProviderError,
@@ -84,7 +88,7 @@ GMAIL_MESSAGE_ID = "gmail-message-1"
 def gmail_content_action(
     action_type: str,
     target: str = GMAIL_MESSAGE_ID,
-    payload: dict | None = None,
+    payload: dict[str, Any] | None = None,
 ) -> Action:
     return Action(
         type=action_type,
@@ -94,15 +98,17 @@ def gmail_content_action(
     )
 
 
-def block_external_socket_calls(monkeypatch) -> None:
-    def fail_external_call(*args, **kwargs):
+def block_external_socket_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_external_call(*args: object, **kwargs: object) -> NoReturn:
         raise AssertionError("external API call attempted")
 
     monkeypatch.setattr(socket, "create_connection", fail_external_call)
     monkeypatch.setattr(socket, "socket", fail_external_call)
 
 
-def assert_succeeded_without_external_execution(result) -> None:
+def assert_succeeded_without_external_execution(
+    result: WorkerExecutionResult | GmailCapabilityResult,
+) -> None:
     """Assert no failure and no external execution (SKIPPED is valid for no-ops)."""
     assert result.status in {
         WorkerExecutionStatus.SUCCEEDED,
@@ -111,7 +117,9 @@ def assert_succeeded_without_external_execution(result) -> None:
     assert result.metadata["external_execution_performed"] is False
 
 
-def assert_gmail_in_memory_metadata(result, capability: str) -> None:
+def assert_gmail_in_memory_metadata(
+    result: WorkerExecutionResult | GmailCapabilityResult, capability: str,
+) -> None:
     assert result.metadata["integration"] == "gmail"
     assert result.metadata["capability"] == capability
     assert result.metadata["adapter"] == "in_memory"
@@ -226,7 +234,8 @@ def test_provider_manifest_is_immutable() -> None:
         account_context=TEST_ACCOUNT_CONTEXT,
     )
 
-    assert manifest.__dataclass_params__.frozen is True
+    with pytest.raises(FrozenInstanceError):
+        manifest.executor = SuccessfulExecutor()  # type: ignore[misc]
 
 
 def test_worker_executor_registry_rejects_duplicate_manifest_atomically() -> None:
@@ -579,7 +588,7 @@ def test_gmail_fake_transport_can_simulate_provider_failure() -> None:
     assert response.failure == failure
 
 
-def test_gmail_fake_transport_makes_no_external_api_calls(monkeypatch) -> None:
+def test_gmail_fake_transport_makes_no_external_api_calls(monkeypatch: pytest.MonkeyPatch) -> None:
     block_external_socket_calls(monkeypatch)
     credentials = GmailCredentials(
         access_token="fake-token",
@@ -793,7 +802,9 @@ def test_gmail_provider_composition_returns_transport_failure_safely() -> None:
     assert response.failure == failure
 
 
-def test_gmail_provider_composition_makes_no_external_api_calls(monkeypatch) -> None:
+def test_gmail_provider_composition_makes_no_external_api_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     block_external_socket_calls(monkeypatch)
     composition = GmailProviderComposition()
     request = GmailProviderRequest(
@@ -917,7 +928,7 @@ def test_gmail_worker_executor_returns_safe_placeholder_result() -> None:
     }
 
 
-def test_gmail_worker_executor_makes_no_external_api_calls(monkeypatch) -> None:
+def test_gmail_worker_executor_makes_no_external_api_calls(monkeypatch: pytest.MonkeyPatch) -> None:
     block_external_socket_calls(monkeypatch)
     action = gmail_content_action("summarize_email")
     executor = GmailWorkerExecutor()
@@ -927,7 +938,7 @@ def test_gmail_worker_executor_makes_no_external_api_calls(monkeypatch) -> None:
     assert_succeeded_without_external_execution(result)
 
 
-def test_gmail_capabilities_make_no_external_api_calls(monkeypatch) -> None:
+def test_gmail_capabilities_make_no_external_api_calls(monkeypatch: pytest.MonkeyPatch) -> None:
     block_external_socket_calls(monkeypatch)
     executor = GmailWorkerExecutor()
 
@@ -1785,7 +1796,7 @@ def test_worker_executor_registry_non_string_capability_provider_fails_closed() 
 
 def test_worker_executor_registry_invalid_provider_does_not_auto_select_provider() -> None:
     fallback_executor = NoOpWorkerExecutor()
-    route_executor = SuccessfulExecutor()
+    route_executor: WorkerExecutor = SuccessfulExecutor()
     registry = WorkerExecutorRegistry(fallback_executor=fallback_executor)
     registry.register_capability(
         WorkerCapability(
@@ -1902,4 +1913,3 @@ def test_worker_executor_registry_missing_capability_handler_never_succeeds() ->
     assert resolution.registered is False
     assert resolution.routing_reason == "no_handler"
     assert result.status == WorkerExecutionStatus.SKIPPED
-    assert result.status != WorkerExecutionStatus.SUCCEEDED

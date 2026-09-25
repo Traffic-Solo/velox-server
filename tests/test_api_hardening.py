@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
-from apps.server.src.core.config import get_settings
+from apps.server.src.core.config import Settings, get_settings
 from apps.server.src.core.container import get_container
 from apps.server.src.core.events import UniversalEvent
 from apps.server.src.main import app
@@ -45,6 +45,34 @@ def api_token(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
 
 def test_endpoints_are_open_when_no_token_configured() -> None:
     assert client.get("/events").status_code == 200
+
+
+@pytest.mark.parametrize("blank", ["", " ", "\t\n"])
+def test_blank_api_token_setting_is_unset(
+    monkeypatch: pytest.MonkeyPatch, blank: str,
+) -> None:
+    monkeypatch.setenv("VELOX_API_TOKEN", blank)
+
+    assert Settings().api_token is None
+
+
+def test_non_blank_api_token_setting_is_kept_verbatim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VELOX_API_TOKEN", " padded-token ")
+
+    assert Settings().api_token == " padded-token "
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_endpoints_are_open_when_token_is_blank(
+    monkeypatch: pytest.MonkeyPatch, blank: str,
+) -> None:
+    monkeypatch.setenv("VELOX_API_TOKEN", blank)
+    get_settings.cache_clear()
+
+    assert client.get("/events").status_code == 200
+    assert client.post("/events", json=_event_payload()).status_code != 401
 
 
 def test_api_requires_bearer_token_when_configured(api_token: str) -> None:

@@ -2,10 +2,10 @@
 
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from datetime import UTC, datetime
-from typing import ClassVar
+from typing import ClassVar, cast
 
 import pytest
 from apps.server.src.core.credentials import (
@@ -30,7 +30,17 @@ from apps.server.src.integrations.google_oauth import (
 from apps.server.src.integrations.google_provider import GoogleCredentialsProviderError
 from apps.server.src.workers.executor import WorkerExecutionFailureCategory
 from google.auth.exceptions import RefreshError, TransportError
+from google.oauth2 import id_token as google_id_token
 from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+
+# google-auth leaves these constructors unannotated; pin the types used here.
+new_credentials = cast(Callable[..., Credentials], Credentials)
+credentials_from_info = cast(
+    Callable[[Mapping[str, object]], Credentials], Credentials.from_authorized_user_info,
+)
+refresh_error = cast(Callable[..., RefreshError], RefreshError)
+transport_error = cast(Callable[..., TransportError], TransportError)
 
 REFRESH_TOKEN = "refresh-token-secret"
 ID_TOKEN = "id-token-secret"
@@ -86,7 +96,7 @@ def google_credentials(
     client_secret: str | None = CLIENT_SECRET,
     granted_scopes: list[str] | None = None,
 ) -> Credentials:
-    return Credentials(
+    return new_credentials(
         token=ACCESS_TOKEN,
         refresh_token=refresh_token,
         id_token=id_token,
@@ -216,7 +226,7 @@ def test_installed_app_authorizer_uses_exact_approved_flow(
         return FakeInstalledAppFlow()
 
     monkeypatch.setattr(
-        google_oauth.InstalledAppFlow,
+        InstalledAppFlow,
         "from_client_secrets_file",
         staticmethod(from_client_secrets_file),
     )
@@ -258,7 +268,7 @@ def test_identity_verifier_uses_official_verification_with_audience(
         return claims
 
     monkeypatch.setattr(
-        google_oauth.google_id_token,
+        google_id_token,
         "verify_oauth2_token",
         verify_oauth2_token,
     )
@@ -317,7 +327,7 @@ def test_stored_material_reconstructs_official_refreshable_credentials() -> None
     material = store.get(credential_reference())
     assert material is not None
 
-    reconstructed = Credentials.from_authorized_user_info(json.loads(material.value))
+    reconstructed = credentials_from_info(json.loads(material.value))
 
     assert reconstructed.refresh_token == REFRESH_TOKEN
     assert reconstructed.client_id == CLIENT_ID
@@ -448,19 +458,19 @@ def test_stored_credentials_provider_rejects_malformed_material(
     ("refresh_error", "category", "retryable", "status_code"),
     [
         (
-            RefreshError("invalid grant secret", retryable=False),
+            refresh_error("invalid grant secret", retryable=False),
             WorkerExecutionFailureCategory.PERMANENT,
             False,
             401,
         ),
         (
-            RefreshError("temporary secret", retryable=True),
+            refresh_error("temporary secret", retryable=True),
             WorkerExecutionFailureCategory.TRANSIENT,
             True,
             503,
         ),
         (
-            TransportError("network secret"),
+            transport_error("network secret"),
             WorkerExecutionFailureCategory.TRANSIENT,
             True,
             503,
@@ -722,7 +732,7 @@ class ScopeRecordingFlow:
         extra: dict[str, object] = {}
         if ScopeRecordingFlow.granted is not _ABSENT:
             extra["granted_scopes"] = ScopeRecordingFlow.granted
-        return Credentials(
+        return new_credentials(
             token=ACCESS_TOKEN,
             refresh_token=REFRESH_TOKEN,
             id_token=ID_TOKEN,

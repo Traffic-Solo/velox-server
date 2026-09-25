@@ -1,4 +1,5 @@
 from dataclasses import FrozenInstanceError
+from typing import cast
 from unittest.mock import Mock
 
 import pytest
@@ -47,7 +48,7 @@ def test_calendar_normalizer_copies_mapping_into_calendar_event() -> None:
     raw = raw_calendar_event()
     original = {
         **raw,
-        "attendees": list(raw["attendees"]),  # type: ignore[arg-type]
+        "attendees": list(cast(list[object], raw["attendees"])),
     }
 
     event = normalizer.normalize(raw)
@@ -142,8 +143,8 @@ def test_normalization_failure_does_not_call_workflow() -> None:
     )
 
     with pytest.raises(NormalizationError):
-        adapter.ingest(  # type: ignore[arg-type]
-            "not a mapping",
+        adapter.ingest(
+            "not a mapping",  # type: ignore[arg-type]
             integration_route=calendar_route(),
         )
 

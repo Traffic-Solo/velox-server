@@ -377,7 +377,13 @@ A successful verification reports `credential_present=true`,
 
 ### Local configuration
 
-Use a local uncommitted `.env`:
+Keep `.env` on the safe defaults from `.env.example` so ordinary local runs stay
+fake and deterministic. Put the pilot settings in a separate gitignored
+`.env.live`:
+
+```bash
+cp .env.live.example .env.live
+```
 
 ```env
 VELOX_CALENDAR_AGENDA_LIVE=true
@@ -386,15 +392,19 @@ VELOX_OLLAMA_BASE_URL=http://127.0.0.1:11434
 VELOX_OLLAMA_MODEL=qwen3:4b-instruct
 ```
 
-The Ollama base URL is intentionally loopback-only. `.env` is gitignored and must
-never contain Google credential material.
+Load it only for pilot commands with `uv run --env-file .env.live ...`. Values
+loaded this way are process environment variables, which take precedence over
+`.env`, so the opt-in lasts for that command only. At startup the server logs a
+warning naming each enabled opt-in. The Ollama base URL is intentionally
+loopback-only. Neither `.env` nor `.env.live` may contain Google credential
+material.
 
 ### Resolver-only verification
 
 Before involving Google, verify the production resolver composition:
 
 ```bash
-uv run python - <<'PY'
+uv run --env-file .env.live python - <<'PY'
 from apps.server.src.integrations.calendar_agenda_runtime import calendar_agenda_intent_resolver
 
 with calendar_agenda_intent_resolver() as resolver:
@@ -415,7 +425,7 @@ tomorrow
 Run VELOX natively on macOS so the process can access the login Keychain:
 
 ```bash
-uv run uvicorn apps.server.src.main:app --host 127.0.0.1 --port 8000
+uv run --env-file .env.live uvicorn apps.server.src.main:app --host 127.0.0.1 --port 8000
 ```
 
 In another terminal:

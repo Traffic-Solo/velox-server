@@ -27,7 +27,7 @@ Any further Calendar intent expansion belongs to a separately scoped Sprint 4.
 
 ## Quality Gates
 
-- CI runs on every push and pull request to main: `uv run ruff check apps tests`, `uv run mypy` (strict), `uv run pytest -q`.
+- CI runs on every push and pull request to main: `uv run ruff check apps tests`, `uv run mypy` (strict; `apps/server/src` and `tests`, with no test-specific relaxation), `uv run pytest -q`.
 - All three gates must pass before any commit is pushed. Run them locally before committing.
 - Dev tooling is installed with `uv sync --group dev`.
 
@@ -169,6 +169,8 @@ structured-agenda, live Calendar, OAuth and Keychain behavior remains unchanged.
 - The first direct local-model pilot exposed an underspecified system prompt: the model returned structured `unsupported` for a natural Ukrainian tomorrow paraphrase. PR #21 refined the semantic definition of `tomorrow`; the same class of query then returned structured `tomorrow`. The adapter remains model-based and does not hardcode a deterministic paraphrase list.
 - The API is hardened: when `VELOX_API_TOKEN` is set, every route on the events router requires `Authorization: Bearer <token>` (root `/` and `/health` stay open); `POST /events` rejects duplicate event ids with 409 (idempotency guard); `GET /events` is paginated (`limit` <= 1000, `offset`); `GET /events/{id}` and `GET /events/{id}/lifecycle` exist (registered after `/events/pending` and `/events/schema`, so keep static routes above parameterized ones); processing failures return a generic 500 detail and log the real error server-side.
 - Settings live in `apps/server/src/core/config.py` (`Settings` via pydantic-settings, cached `get_settings()`). All env vars use the `VELOX_` prefix and can come from `.env`: `VELOX_API_TOKEN` (bearer token; None disables auth for local dev), `VELOX_LOG_LEVEL`, `VELOX_MAX_TRANSIENT_RETRIES`, `VELOX_CALENDAR_AGENDA_LIVE` (explicit opt-in live Calendar agenda reads), `VELOX_CALENDAR_AGENDA_RESOLVER` (bounded or ollama), `VELOX_OLLAMA_BASE_URL` (loopback-only), and `VELOX_OLLAMA_MODEL` (required for ollama mode). Never hardcode these or commit secrets. Logging is configured in `main.py` via `apps/server/src/core/log.py`; permission denials/engine crashes and worker no-executor fallbacks, skips, retries and executor exceptions are logged with action ids. New code paths with operational significance must log.
+- Local configuration: `.env` stays on `.env.example` defaults (fake Calendar, bounded resolver). Live pilot values live in a gitignored `.env.live` (template `.env.live.example`) loaded explicitly with `uv run --env-file .env.live ...`; process environment values take precedence over `.env`. Application startup logs a warning naming `VELOX_CALENDAR_AGENDA_LIVE` and/or `VELOX_CALENDAR_AGENDA_RESOLVER` whenever either opt-in is active. `tests/conftest.py` isolates every test from `.env` and ambient `VELOX_*` settings; tests opt in only through explicit `monkeypatch.setenv`.
+- The dev dependency group includes `httpx2`, which Starlette 1.3 `TestClient` prefers; without it Starlette falls back to `httpx` with a `StarletteDeprecationWarning`. Production transports continue to use `httpx`.
 - Gmail and Calendar share one provider boundary: `apps/server/src/integrations/google_provider.py` defines `GoogleCredentials`, `GoogleProviderRequest/Response/Failure`, `GoogleCredentialsProvider`, `GoogleTransportClient`, `FakeGoogleCredentialsProvider(service=...)`, `FakeGoogleTransportClient(service=...)` and `GoogleProviderComposition(service=...)`. Gmail/Calendar modules keep their public names (`GmailCredentials`, `FakeCalendarTransportClient`, `CalendarProviderComposition`, etc.) as aliases or thin service-bound subclasses. A future Google service integration must reuse this boundary instead of copying it.
 - Gmail read and archive require an explicit `payload.message_id`. There is no fallback to `action.target` because the planner stores the source event id in `target`, which is never a Gmail message id; missing message_id maps to a PERMANENT `WorkerExecutionFailure`.
 - Failed events can be replayed: the event lifecycle allows failed -> processing, failed events stay in the pending inbox, and POST /events/{id}/process retries them. Transient worker failures are consumed by `WorkerRuntime`: a FAILED lifecycle state with a TRANSIENT failure category is re-queued (FAILED -> QUEUED -> APPROVED, re-using the original approval) with `transient_retry_count` metadata, bounded by `max_transient_retries` (default 3). PERMANENT and INTERNAL failures are terminal. `WorkerInvocationResult.queue_empty` now reports the actual queue emptiness after the batch.
@@ -332,24 +334,26 @@ After every implementation slice, update this file in the same commit if the imp
 
 ## Technical Debt
 
+- Gmail's unqualified direct-executor aliases (`read`, `send`, `archive`) remain as compatibility inputs. Production provider declarations use canonical `WorkerCapability` values and runtime routing uses their normalized identifiers.
+- Shared Google provider composition retains separate principal/account arguments for backward-compatible direct integration tests; worker adapter execution uses only account context embedded from the matched routing result.
+- Refresh-token rotation persistence remains unimplemented; a rotated refresh token is not written back to the Keychain.
+- `tests/test_worker_executor.py` keeps Gmail capability fixtures module-local; `tests/conftest.py` holds only suite-wide settings isolation.
+
+## Known Limitations
+
+- Google Calendar remains deterministic and fake by default. The agenda command path supports explicit live composition through `VELOX_CALENDAR_AGENDA_LIVE`; other container Calendar paths remain fake.
+- Opt-in automated read-only Calendar live smoke coverage exists, but it requires explicit environment values and macOS Keychain credentials and remains deselected from default tests.
+- `google-auth` logs `Not all requested scopes were granted ... missing scopes email` on every refresh. Refresh and `events.get` succeed; the warning is the same canonical-alias mismatch surfacing in a third-party logger. Silencing it would require storing canonical scope URLs or filtering that logger, so it is left as documented noise.
+- The gitignored local `.env` is developer-owned and cannot be enforced by the repository. Keep it on `.env.example` defaults, load live pilot values only through `uv run --env-file .env.live ...`, and check the startup warnings that name each enabled Calendar agenda opt-in.
+
+## Deferred Capabilities / Architecture Gaps
+
 - Semantic dispatch is vendor-neutral, but production ingress/resolver and the
   container's request/result types remain Calendar-specific. Only tomorrow agenda
   is registered; generic ingress, additional intents and other production handlers
   are not implemented. Existing planner, approval and worker paths are unchanged.
-- `tests/conftest.py` isolates every test from the local `.env` and ambient `VELOX_*`
-  settings; a gitignored live-pilot `.env` previously enabled live Calendar/Keychain
-  composition in default runs. Tests opt in only through explicit `monkeypatch.setenv`.
-- `uv run mypy apps tests` reports 75 pre-existing strict errors in 18 test files
-  (also on `main`); CI type-checks only `apps` via `uv run mypy`.
-- Open-source Harvest exists in Notion, but no real repositories have been evaluated yet.
-- Apple Ecosystem Strategy references ADRs that are not yet created.
 - Gmail read, send and archive capabilities use deterministic in-memory fake data only. Executor resolution supports explicit capability-provider routing and returns `SKIPPED` through `NoOpWorkerExecutor` when no registered handler matches.
-- Gmail's unqualified direct-executor aliases (`read`, `send`, `archive`) remain as compatibility inputs. Production provider declarations use canonical `WorkerCapability` values and runtime routing uses their normalized identifiers.
-- Shared Google provider composition retains separate principal/account arguments for backward-compatible direct integration tests; worker adapter execution uses only account context embedded from the matched routing result.
-- Gmail capability tests are consolidated locally in `tests/test_worker_executor.py`; no shared `tests/conftest.py` fixture has been introduced yet.
 - Real Gmail adapter, Gmail credential refresh integration, HTTP transport and real Gmail API calls are not implemented yet. The provider-local Calendar read-only OAuth bootstrap and macOS Keychain credential store exist but are not wired into Gmail provider composition.
 - Gmail provider boundary interfaces, fake transport bootstrap, fake credentials provider bootstrap and fake provider composition bootstrap are present behind the Gmail integration boundary. No concrete real provider implementation exists yet.
-- Google Calendar remains deterministic and fake by default. The agenda command path supports explicit live composition through `VELOX_CALENDAR_AGENDA_LIVE`; other container Calendar paths remain fake.
-- `google-auth` logs `Not all requested scopes were granted ... missing scopes email` on every refresh. Refresh and `events.get` succeed; the warning is the same canonical-alias mismatch surfacing in a third-party logger. Silencing it would require storing canonical scope URLs or filtering that logger, so it is left as documented noise.
-- Opt-in automated read-only Calendar live smoke coverage exists, but it requires explicit environment values and macOS Keychain credentials and remains deselected from default tests.
-- Refresh-token rotation persistence remains unimplemented; a rotated refresh token is not written back to the Keychain.
+- Open-source Harvest exists in Notion, but no real repositories have been evaluated yet.
+- Apple Ecosystem Strategy references ADRs that are not yet created.

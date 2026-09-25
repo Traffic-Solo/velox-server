@@ -17,6 +17,10 @@ docker compose up --build
 
 Configuration is read from environment variables with the `VELOX_` prefix,
 or from a local `.env` file (see `.env.example`). Never commit `.env`.
+Keep `.env` on the safe defaults; live Calendar pilot settings belong in a
+separate gitignored `.env.live` (see `.env.live.example`) loaded explicitly with
+`uv run --env-file .env.live ...`. Startup logs a warning whenever a live or
+non-default Calendar agenda path is enabled.
 
 When `VELOX_API_TOKEN` is set, every API route (except `/` and `/health`)
 requires an `Authorization: Bearer <token>` header.

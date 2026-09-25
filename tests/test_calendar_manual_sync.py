@@ -1,10 +1,13 @@
 import json
 import socket
 
+import httpx
 import pytest
+from apps.server.src.core.actions import Action
 from apps.server.src.core.container import ApplicationContainer
 from apps.server.src.integrations import calendar_manual_sync
 from apps.server.src.integrations.calendar import (
+    CALENDAR_EXECUTOR_ROLE,
     CalendarCredentials,
     CalendarCredentialsProviderError,
     CalendarProviderComposition,
@@ -464,11 +467,11 @@ def test_safe_success_result_omits_provider_payload_and_secrets() -> None:
 
 def test_default_calendar_executor_behavior_remains_fake() -> None:
     executor = CalendarWorkerExecutor()
-    action = calendar_manual_sync.Action(
+    action = Action(
         type="prepare_meeting",
         target="event-1",
         payload={"calendar_event_id": "calendar-event-1"},
-        executor_role=calendar_manual_sync.CALENDAR_EXECUTOR_ROLE,
+        executor_role=CALENDAR_EXECUTOR_ROLE,
     )
 
     result = executor.execute(
@@ -495,7 +498,7 @@ def test_application_container_startup_uses_no_network_or_production_credentials
         "MacOSKeychainCredentialStore",
         fail_external_call,
     )
-    monkeypatch.setattr(calendar_manual_sync.httpx, "Client", fail_external_call)
+    monkeypatch.setattr(httpx, "Client", fail_external_call)
 
     container = ApplicationContainer()
 

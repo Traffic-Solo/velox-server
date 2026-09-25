@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 from unittest.mock import Mock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from apps.server.src.core.action_lifecycle_manager import ActionLifecycleManager
@@ -23,6 +23,7 @@ from apps.server.src.core.events import (
     EventStore,
     EventWorkflowService,
     IntegrationRouteContext,
+    ProcessedEvent,
     RuleBasedEventClassifier,
     UniversalEvent,
 )
@@ -34,7 +35,7 @@ from apps.server.src.core.planner import Planner
 
 
 class MixedPermissionPlanner:
-    def plan(self, processed_event) -> list[Action]:
+    def plan(self, processed_event: ProcessedEvent) -> list[Action]:
         return [
             Action(
                 type="review_pull_request",
@@ -68,14 +69,14 @@ def create_workflow(
     EventWorkflowService,
     EventStore,
     EventInbox,
-    dict,
+    dict[UUID, EventLifecycleState],
     EventProcessingPipeline,
     PermissionEngineRuntime,
     ActionQueue,
 ]:
     repository = EventStore()
     inbox = EventInbox()
-    lifecycle_states: dict = {}
+    lifecycle_states: dict[UUID, EventLifecycleState] = {}
     pipeline = EventProcessingPipeline(
         classifier=RuleBasedEventClassifier(),
         context_resolver=BaseContextResolver(),

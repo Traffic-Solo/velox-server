@@ -1,7 +1,8 @@
 """Deterministic tests for the explicit local Google OAuth command."""
 
 import json
-from typing import ClassVar
+from collections.abc import Callable
+from typing import ClassVar, cast
 
 import pytest
 from apps.server.src.core.credentials import (
@@ -18,6 +19,9 @@ from apps.server.src.integrations.google_oauth import (
     GoogleOAuthBootstrapError,
 )
 from google.oauth2.credentials import Credentials
+
+# google-auth leaves these constructors unannotated; pin the types used here.
+new_credentials = cast(Callable[..., Credentials], Credentials)
 
 REFRESH_TOKEN = "refresh-token-secret"
 ID_TOKEN = "id-token-secret"
@@ -49,7 +53,7 @@ class FakeAuthorizer:
         self.calls.append((client_secrets_file, scopes))
         if self.failure is not None:
             raise self.failure
-        return Credentials(
+        return new_credentials(
             token=ACCESS_TOKEN,
             refresh_token=REFRESH_TOKEN,
             id_token=ID_TOKEN,
@@ -459,7 +463,7 @@ class RecordingFlow:
         message = kwargs.get("authorization_prompt_message")
         assert isinstance(message, str)
         print(message.format(url="https://accounts.google.com/o/oauth2/auth?state=abc"))
-        return Credentials(
+        return new_credentials(
             token=ACCESS_TOKEN,
             refresh_token=REFRESH_TOKEN,
             id_token=ID_TOKEN,
@@ -596,7 +600,7 @@ class MissingRefreshTokenAuthorizer:
     """Return credentials that completed consent but carry no refresh token."""
 
     def authorize(self, client_secrets_file: str, scopes: tuple[str, ...]) -> Credentials:
-        return Credentials(
+        return new_credentials(
             token=ACCESS_TOKEN,
             refresh_token=None,
             id_token=ID_TOKEN,
@@ -671,7 +675,7 @@ class OverGrantingFlow:
         return cls()
 
     def run_local_server(self, **kwargs: object) -> Credentials:
-        return Credentials(
+        return new_credentials(
             token=ACCESS_TOKEN,
             refresh_token=REFRESH_TOKEN,
             id_token=ID_TOKEN,

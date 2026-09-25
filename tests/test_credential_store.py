@@ -6,8 +6,10 @@ import socket
 import subprocess
 import urllib.request
 from collections.abc import Callable
+from typing import cast
 
 import keyring
+import keyring.backends.null
 import pytest
 from apps.server.src.core.credentials import (
     CredentialAlreadyExistsError,
@@ -315,7 +317,11 @@ def test_default_keyring_selection_fails_closed_for_non_macos_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def unexpected_backend() -> keyring.backend.KeyringBackend:
-        return keyring.backends.null.Keyring()
+        # keyring leaves backend constructors unannotated.
+        new_null_keyring = cast(
+            Callable[[], keyring.backend.KeyringBackend], keyring.backends.null.Keyring,
+        )
+        return new_null_keyring()
 
     monkeypatch.setattr(keyring, "get_keyring", unexpected_backend)
 

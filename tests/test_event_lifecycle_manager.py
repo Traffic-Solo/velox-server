@@ -1,10 +1,14 @@
 from uuid import uuid4
 
 import pytest
-from apps.server.src.core.events import EventLifecycleManager, EventLifecycleState
+from apps.server.src.core.events import (
+    EventLifecycleManager,
+    EventLifecycleState,
+    EventStatus,
+)
 
 
-def create_state(status: str) -> EventLifecycleState:
+def create_state(status: EventStatus) -> EventLifecycleState:
     return EventLifecycleState(event_id=uuid4(), status=status)
 
 

@@ -16,7 +16,7 @@ from apps.server.src.workers.runtime import WorkerRuntime
 
 
 def test_settings_defaults() -> None:
-    settings = Settings(_env_file=None)
+    settings = Settings()
 
     assert settings.api_token is None
     assert settings.log_level == "INFO"
@@ -28,7 +28,7 @@ def test_settings_read_velox_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VELOX_LOG_LEVEL", "DEBUG")
     monkeypatch.setenv("VELOX_MAX_TRANSIENT_RETRIES", "5")
 
-    settings = Settings(_env_file=None)
+    settings = Settings()
 
     assert settings.api_token == "secret-token"
     assert settings.log_level == "DEBUG"
@@ -38,7 +38,6 @@ def test_settings_read_velox_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_ollama_resolver_requires_explicit_model() -> None:
     with pytest.raises(ValueError, match="VELOX_OLLAMA_MODEL"):
         Settings(
-            _env_file=None,
             calendar_agenda_resolver="ollama",
             ollama_model=" ",
         )
