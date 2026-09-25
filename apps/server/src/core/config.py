@@ -7,7 +7,7 @@ be committed to the repository or stored in Notion.
 
 from functools import lru_cache
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,6 +23,14 @@ class Settings(BaseSettings):
     api_token: str | None = None
     """Bearer token required for mutating API endpoints. None disables auth
     (local development only — set a token before exposing the server)."""
+
+    @field_validator("api_token")
+    @classmethod
+    def blank_api_token_disables_auth(cls, value: str | None) -> str | None:
+        """Treat an empty or whitespace-only token as unset; keep others verbatim."""
+        if value is None or not value.strip():
+            return None
+        return value
 
     calendar_agenda_live: bool = False
     """Opt in to stored Google credentials and live read-only agenda execution."""
