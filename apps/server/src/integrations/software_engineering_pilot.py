@@ -8,13 +8,15 @@ The run goes through the normal application path only: ``TaskDelegator`` ->
 ``PermissionEngineRuntime`` (held for approval) -> explicit operator approval via
 ``approve_pending_action`` -> ``WorkerRuntime`` -> the registered provider. The
 worker changes files only in a new isolated worktree; the canonical checkout is
-not modified, and nothing is committed, pushed or merged.
+not modified, and nothing is committed, pushed or merged. Afterwards VELOX shows a
+bounded review of the worktree and asks once whether to keep or discard it.
 """
 
 import argparse
 import sys
 from collections.abc import Callable, Sequence
 from typing import TextIO
+from uuid import UUID
 
 from apps.server.src.core.actions import ExecutorRole
 from apps.server.src.core.approval_decisions import approve_pending_action
@@ -26,6 +28,11 @@ from apps.server.src.core.delegation import (
 )
 from apps.server.src.integrations.software_engineering import (
     SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
+)
+from apps.server.src.integrations.software_engineering_work_product import (
+    SoftwareEngineeringWorkProductService,
+    WorkProductDisposition,
+    WorkProductIdentityError,
 )
 
 _REPORTED_FIELDS = (
@@ -126,7 +133,85 @@ def main(
     for key in _REPORTED_FIELDS:
         if key in metadata:
             print(f"{key}: {metadata[key]}", file=out)
+    work_products = container.software_engineering_work_products
+    if work_products is not None:
+        _review_and_dispose(work_products, delegation.action_id, read_line, out)
     return 0 if observation.status == "succeeded" else 1
+
+
+def _review_and_dispose(
+    work_products: SoftwareEngineeringWorkProductService,
+    action_id: UUID,
+    read_line: Callable[[], str],
+    out: TextIO,
+) -> None:
+    """Show the VELOX-owned review, then apply exactly one explicit disposition."""
+    try:
+        review = work_products.review(action_id)
+    except WorkProductIdentityError as error:
+        print(f"No reviewable worktree for this action ({error}).", file=out)
+        return
+    print(
+        "",
+        "=== VELOX work-product review ===",
+        f"Worktree: {review.worktree_path}",
+        f"Branch: {review.branch}",
+        f"Changed files: {', '.join(review.changed_files) or '(none)'}",
+        f"Untracked files (content not shown): {', '.join(review.untracked_files) or '(none)'}",
+        f"Canonical checkout clean: {review.canonical_clean}",
+        "--- diff --stat ---",
+        review.diff_stat.rstrip() or "(no tracked changes)",
+        "--- diff ---",
+        review.diff.rstrip() or "(no tracked changes)",
+        sep="\n",
+        file=out,
+    )
+    if review.diff_truncated:
+        print(f"[diff truncated to {len(review.diff)} characters]", file=out)
+    print("Type keep to preserve the worktree, discard to remove it:", file=out)
+    answer = read_line().strip()
+    if answer == WorkProductDisposition.KEEP.value:
+        disposition = WorkProductDisposition.KEEP
+    elif answer == WorkProductDisposition.DISCARD.value:
+        disposition = WorkProductDisposition.DISCARD
+    else:
+        print(
+            "No disposition applied; the worktree and branch are preserved:",
+            f"  {review.worktree_path}",
+            f"  {review.branch}",
+            sep="\n",
+            file=out,
+        )
+        return
+    try:
+        result = work_products.apply(action_id, disposition)
+    except WorkProductIdentityError as error:
+        print(f"Disposition refused ({error}); nothing was changed.", file=out)
+        return
+    if disposition is WorkProductDisposition.KEEP:
+        print(
+            "Kept. Worktree and branch remain for later review:",
+            f"  {result.worktree_path}",
+            f"  {result.branch}",
+            sep="\n",
+            file=out,
+        )
+    elif result.succeeded:
+        print(
+            "Discarded. Removed the isolated worktree and its local branch; "
+            "the canonical checkout is unchanged.",
+            file=out,
+        )
+    else:
+        remaining = ", ".join(result.remaining) or "none"
+        print(
+            f"Discard incomplete. Remaining: {remaining}. "
+            f"Canonical checkout unchanged: {result.canonical_unchanged}.",
+            f"  {result.worktree_path}",
+            f"  {result.branch}",
+            sep="\n",
+            file=out,
+        )
 
 
 if __name__ == "__main__":

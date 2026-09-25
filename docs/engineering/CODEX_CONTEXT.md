@@ -20,6 +20,7 @@ Slice 2 adds the vendor-neutral semantic resolver Role with typed intent output.
 Slice 3 adds the domain-neutral `POST /semantic/query` ingress.
 Slice 4 adds the vendor-neutral `TaskDelegator` boundary (no worker execution).
 Slice 5 adds the opt-in Claude Code provider for the Software Engineering Role.
+Slice 6 adds VELOX-owned review and keep/discard disposition of worker worktrees.
 Sprint 3 remains closed; its final runtime and live-pilot evidence follow.
 
 Final Sprint 3 runtime head before closure documentation: `21acccee5ec6d53d91644e2f11b886815c4dc576`.
@@ -337,11 +338,14 @@ Operator pilot entrypoint: `integrations/software_engineering_pilot.py` delegate
 task, requires the operator to type the action id to approve it, then runs
 `WorkerRuntime` once and prints the observed provider, status and safe metadata.
 
-Live pilot status: NOT RUN. The implementation session ran inside Claude Code, so no
-nested real Claude Code task was started; all coverage uses a deterministic fake
-`ProcessRunner`, plus real-subprocess tests of the runner (Python interpreter only)
-and of worktree isolation against a temporary git repository. Manual prompt relay has
-not been eliminated until the pilot below succeeds through VELOX.
+Live pilot status: SUCCESS (operator-run from a normal Terminal after PR #28 merged,
+action `2a6a126c-e847-4139-bfb1-9d06a1ef1784`). One bounded engineering task went
+TaskDelegator -> typed approval -> ActionQueue -> WorkerRuntime -> Claude Code in an
+isolated worktree -> structured result, with no prompt copied by hand. Manual prompt
+relay to Claude Code is therefore eliminated for bounded, explicitly defined
+engineering tasks; initiating the task and approving it remain manual operator steps.
+The pilot's worktree was removed by hand and its leftover local branch (no unique
+commits, no worktree) was deleted during Slice 6 preparation.
 
 Live pilot procedure (after merge, from a normal Terminal outside Claude Code, with
 Claude Code already logged in):
@@ -354,8 +358,8 @@ git switch main && git pull --ff-only
 #   VELOX_SOFTWARE_ENGINEERING_WORKSPACE=/absolute/path/to/velox-server
 uv run --env-file .env.live python -m apps.server.src.integrations.software_engineering_pilot \
   --objective "<one bounded change>" --target velox-server
-# Type the printed action id to approve. Review the worktree afterwards, then remove it:
-#   git worktree remove <worktree_path> && git branch -D velox/se-<action-id>
+# Type the printed action id to approve.
+# The pilot then shows a VELOX review of the worktree and asks: keep or discard.
 ```
 
 Slice 5 validation: `uv run ruff check .` and `uv run ruff check apps tests` passed;
@@ -364,9 +368,60 @@ Slice 5 validation: `uv run ruff check .` and `uv run ruff check apps tests` pas
 worker executor/approval/events API tests 236 passed; `uv run pytest` 1088 passed,
 6 deselected, 0 warnings; `git diff --check` passed (after the hardening commit).
 
-Next highest-priority slice: run and record the live Software Engineering pilot
-through VELOX, then add operator-visible review/cleanup of worker worktrees
-(inspect diff, discard or keep branch) before any Goal Planner work.
+Sprint 4 Slice 6: `integrations/software_engineering_work_product.py` adds the
+provider-neutral `SoftwareEngineeringWorkProductService`, composed with the provider
+by `configured_software_engineering()` over one shared `TrustedGitWorkspace` and
+exposed as `ApplicationContainer.software_engineering_work_products` (None when
+disabled). The Claude Code executor is unchanged apart from using the new canonical
+identity method `TrustedGitWorkspace.expected_worktree(action_id)`, which
+`create_worktree`, the executor's permission-rule check and the service all share:
+`<parent>/.<repo>-velox-worktrees/se-<action-uuid>` on `velox/se-<action-uuid>`.
+
+Identity: `review(action_id)` and `apply(action_id, disposition)` take only the Action
+UUID; no path or branch is ever accepted from metadata, operator or model input. Each
+call validates the trusted repository, requires the derived directory to exist and
+not to equal or sit inside the canonical checkout, requires git's
+`worktree list --porcelain` to list the canonical checkout as the main worktree and
+the derived path exactly once on `refs/heads/velox/se-<action-uuid>`, and requires
+`rev-parse --show-toplevel` in the derived path to be that path. Any mismatch raises
+`WorkProductIdentityError` before anything is read or changed.
+
+`WorkProductReview`: action id, worktree path, branch, changed files (porcelain v1,
+untracked included), untracked file names (content never read), `git diff
+--no-ext-diff --no-textconv --no-color --stat HEAD` (clipped to 4000 characters),
+the textual diff against `HEAD` clipped to a deterministic character limit (default
+20000) with `diff_truncated`, `dirty`, `canonical_clean` and `canonical_unchanged`.
+Only git status/diff output is used; no file is opened, so gitignored files such as
+`.env` never appear.
+
+`WorkProductDisposition`: `KEEP` re-verifies identity and changes nothing. `DISCARD`
+re-verifies identity, refuses if the branch has commits not in the canonical `HEAD`,
+runs `git worktree remove --force <derived path>` (forced because worker changes are
+intentionally uncommitted; only for the verified derived worktree), then `git branch
+-D velox/se-<action-uuid>` only if the worktree is gone, and then verifies the path
+and branch are absent and canonical status is unchanged. `WorkProductDispositionResult`
+reports `worktree_present`, `branch_present`, `canonical_unchanged`, `remaining` and
+`succeeded`, so partial cleanup is explicit. No push, remote deletion or reset.
+
+Pilot UX: after the worker result, the pilot prints the review (worktree, branch,
+changed and untracked files, canonical cleanliness, diff stat, bounded diff and a
+truncation notice), then asks exactly once "Type keep to preserve the worktree,
+discard to remove it:". `keep` preserves and prints both identifiers; `discard`
+cleans up and confirms, or reports what remains; anything else applies no disposition
+and prints the preserved identifiers. If no verifiable worktree exists (for example a
+run that failed before creating one) the pilot says so and skips the question.
+
+Slice 6 validation: `uv run ruff check .` and `uv run ruff check apps tests` passed;
+`uv run mypy`, `uv run mypy apps tests` and `uv run mypy --platform linux` passed
+(103 source files each); focused review/cleanup tests 22 passed (real temporary git
+repositories; pilot tests use real git with a fake Claude CLI); focused Software
+Engineering/delegation/worker runtime/executor/approval/events tests 258 passed;
+`uv run pytest` 1110 passed, 6 deselected, 0 warnings; `git diff --check` passed.
+
+Next highest-priority slice: promotion of a kept work product behind its own explicit
+approval (VELOX-owned commit on the `velox/se-*` branch, push and a draft PR), so a
+reviewed change reaches GitHub without manual git steps. Goal Planner and Codex stay
+deferred.
 
 ## Final Slice 10
 
@@ -577,11 +632,14 @@ After every implementation slice, update this file in the same commit if the imp
 - `TaskDelegator` callers are limited to tests and the Software Engineering pilot
   entrypoint; there is no Goal Planner and no public delegation endpoint.
 - Software Engineering: one provider (Claude Code) and one capability
-  (`code.implement`); no Codex adapter, provider ranking or review/cleanup workflow.
-  Worker worktrees and `velox/se-*` branches are left for manual review and removal.
-  Bash permission rules are prefix rules, not a sandbox; the canonical-checkout check
-  and the absence of any git write rule are the independent safeguards, and pushing
-  is not technically blocked at the OS level. The live pilot has not run.
+  (`code.implement`); no Codex adapter or provider ranking. Kept work products stay
+  as local worktrees and branches; there is no promotion (commit/push/PR) yet, and
+  review shows untracked file names but not their content. Review/disposition runs
+  only in the pilot process that executed the task (stores are in-memory), though the
+  service itself only needs the Action UUID. Bash permission rules are prefix rules,
+  not a sandbox; the canonical-checkout check and the absence of any git write rule
+  are the independent safeguards, and pushing is not technically blocked at the OS
+  level.
 - Semantic resolution has no confidence, ambiguity or multi-intent result; add these
   only when a resolver produces meaningful values.
 - Gmail read, send and archive capabilities use deterministic in-memory fake data only. Executor resolution supports explicit capability-provider routing and returns `SKIPPED` through `NoOpWorkerExecutor` when no registered handler matches.

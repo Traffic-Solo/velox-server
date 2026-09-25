@@ -286,7 +286,7 @@ class ClaudeCodeSoftwareEngineeringExecutor:
 
         try:
             canonical_before = self._workspace.status(root)
-            worktree_file_rules(self._workspace.worktrees_root() / f"se-{action.id}")
+            worktree_file_rules(self._workspace.expected_worktree(action.id).path)
             worktree = self._workspace.create_worktree(action.id)
         except (WorkspaceUnavailableError, ValueError):
             return self._failure(action, "workspace_unavailable", permanent, executed=False)
