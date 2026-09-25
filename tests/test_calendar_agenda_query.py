@@ -4,8 +4,10 @@ from collections.abc import Iterator
 from typing import Any, cast
 
 import pytest
+from apps.server.src.core.actions import ExecutorRole
 from apps.server.src.core.config import get_settings
 from apps.server.src.core.container import ApplicationContainer, get_container
+from apps.server.src.core.semantic import SemanticRoute, SemanticRouter
 from apps.server.src.integrations.calendar_agenda import CalendarTomorrowAgendaResult
 from apps.server.src.integrations.calendar_agenda_command import (
     CalendarAgendaCommandRequest,
@@ -222,3 +224,59 @@ def test_query_preserves_safe_execution_error_behavior(
 def test_query_requires_request_context(client: TestClient) -> None:
     response = client.post("/calendar/agenda/query", json={"text": "що в мене завтра?"})
     assert response.status_code == 422
+
+
+def test_query_uses_container_semantic_role_capability_handler(
+    client: TestClient, container: ApplicationContainer,
+) -> None:
+    command_spy = install_spy(container)
+    route = container.semantic_router.resolve("calendar.agenda.tomorrow")
+    assert route == SemanticRoute(
+        "calendar.agenda.tomorrow", ExecutorRole.CONTEXT_PREPARATION, "list_calendar_events",
+    )
+    routed_requests: list[CalendarAgendaCommandRequest] = []
+
+    def handler(request: CalendarAgendaCommandRequest) -> CalendarTomorrowAgendaResult:
+        routed_requests.append(request)
+        return RESULT
+
+    container.semantic_router = SemanticRouter(
+        (route,), {(route.role, route.capability): handler},
+    )
+    response = client.post("/calendar/agenda/query", json=query_payload())
+    assert response.status_code == 200
+    assert response.json()["intent"] == "tomorrow"
+    assert command_spy.calls == []
+    assert routed_requests == [CalendarAgendaCommandRequest(
+        intent="tomorrow",
+        account_context=WorkerAccountContext("explicit-principal", "explicit-account"),
+        timezone="Europe/Tirane",
+    )]
+
+
+@pytest.mark.parametrize("intent", ["today", "gmail.send", "tomorrow; secret-provider-token"])
+def test_unregistered_resolver_output_cannot_invoke_command(
+    client: TestClient, container: ApplicationContainer, intent: str,
+) -> None:
+    container.calendar_agenda_intent_resolver = RecordingIntentResolver(intent)
+    spy = install_spy(container)
+    response = client.post("/calendar/agenda/query", json=query_payload())
+    assert response.status_code == 422
+    assert response.json() == {"detail": "unsupported calendar agenda query"}
+    assert spy.calls == []
+
+
+def test_missing_semantic_route_fails_closed_but_structured_endpoint_is_unchanged(
+    client: TestClient, container: ApplicationContainer,
+) -> None:
+    spy = install_spy(container)
+    container.semantic_router = SemanticRouter((), {})
+    response = client.post("/calendar/agenda/query", json=query_payload())
+    assert response.status_code == 422
+    assert spy.calls == []
+    body = query_payload()
+    del body["text"]
+    body["intent"] = "tomorrow"
+    response = client.post("/calendar/agenda", json=body)
+    assert response.status_code == 200
+    assert len(spy.calls) == 1
