@@ -6,6 +6,10 @@ from uuid import UUID
 
 from apps.server.src.api.dependencies import require_api_token
 from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionStatus
+from apps.server.src.core.approval_decisions import (
+    PendingActionNotFoundError,
+    approve_pending_action,
+)
 from apps.server.src.core.container import get_container
 from apps.server.src.core.events import (
     DuplicateEventError,
@@ -67,31 +71,22 @@ def list_pending_approval_actions() -> list[dict[str, Any]]:
 def approve_action(action_id: UUID) -> dict[str, Any]:
     """Approve a pending action and move it to the execution queue."""
     container = get_container()
-    action = container.pending_approval_registry.get(action_id)
-    if action is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-
-    lifecycle_state = container.action_lifecycle_repository.get(action_id)
-    if lifecycle_state is None:
-        lifecycle_state = ActionLifecycleState(
-            status=ActionStatus.QUEUED,
-            metadata={"approval_required": True},
-        )
-
     try:
-        approved_state = container.action_lifecycle_manager.transition(
-            lifecycle_state,
-            ActionStatus.APPROVED,
+        approved_state = approve_pending_action(
+            action_id,
+            pending_approval_registry=container.pending_approval_registry,
+            lifecycle_repository=container.action_lifecycle_repository,
+            lifecycle_manager=container.action_lifecycle_manager,
+            action_queue=container.action_queue,
         )
+    except PendingActionNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
     except ValueError as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(error),
         ) from error
 
-    container.action_lifecycle_repository.set(action_id, approved_state)
-    container.pending_approval_registry.remove(action_id)
-    container.action_queue.enqueue(action)
     return {
         "status": "approved",
         "action_id": str(action_id),

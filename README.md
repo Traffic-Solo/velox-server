@@ -86,6 +86,12 @@ Calendar:
   Set `VELOX_CALENDAR_AGENDA_RESOLVER=ollama` with an explicit
   `VELOX_OLLAMA_MODEL` to opt in to local-only Ollama classification; the
   configured base URL must use a loopback host.
+- The Software Engineering worker (`software_engineering` / `code.implement`) is
+  disabled by default. With `VELOX_SOFTWARE_ENGINEERING_PROVIDER=claude_code` and a
+  trusted `VELOX_SOFTWARE_ENGINEERING_WORKSPACE`, delegated coding tasks always
+  require explicit approval and run the local Claude Code CLI in a new git worktree
+  outside the canonical checkout; the worker cannot commit, push or merge. See
+  `docs/engineering/CODEX_CONTEXT.md` for the pilot procedure.
 
 ## Development
 
