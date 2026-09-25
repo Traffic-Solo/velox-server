@@ -1,15 +1,19 @@
 """Structured Calendar agenda HTTP adapter."""
 
 import logging
-from typing import Annotated
+from typing import Annotated, Any
 
 from apps.server.src.api.dependencies import require_api_token
 from apps.server.src.core.container import ApplicationContainer, get_container
 from apps.server.src.core.semantic import (
     SemanticInputError,
-    SemanticResolution,
-    SemanticResolutionStatus,
+    SemanticResolverError,
     SemanticRoutingError,
+)
+from apps.server.src.core.semantic_query import (
+    SemanticQueryRequest,
+    SemanticRequestError,
+    execute_semantic_query,
 )
 from apps.server.src.integrations.calendar_agenda import (
     CalendarAgendaWorkflowError,
@@ -20,6 +24,7 @@ from apps.server.src.integrations.calendar_agenda_command import (
 )
 from apps.server.src.integrations.calendar_agenda_query import (
     CALENDAR_AGENDA_COMMAND_INTENTS,
+    CALENDAR_AGENDA_REQUEST_FIELDS,
 )
 from apps.server.src.workers.executor import WorkerAccountContext
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -58,41 +63,26 @@ class CalendarAgendaQueryHttpRequest(BaseModel):
     timezone: str
 
 
-def _execute_calendar_agenda(
-    request: CalendarAgendaCommandRequest,
-    container: ApplicationContainer,
-    *,
-    semantic_intent: str | None = None,
-) -> CalendarTomorrowAgendaResult:
-    """Execute a recognized command and expose only safe HTTP failures."""
-    try:
-        if semantic_intent is not None:
-            return container.semantic_router.execute(semantic_intent, request)
-        return container.calendar_agenda_command_service.execute(request)
-    except SemanticRoutingError:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="unsupported calendar agenda query",
-        ) from None
-    except CalendarAgendaWorkflowError as error:
-        if error.category is None and error.field in {
-            "intent", "timezone", "account_context", "principal", "account_identifier",
-        }:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="invalid calendar agenda request",
-            ) from None
-        logger.error("calendar agenda execution failed")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="calendar agenda execution failed",
-        ) from None
-    except Exception:
-        logger.error("calendar agenda execution failed")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="calendar agenda execution failed",
-        ) from None
+def _account_context(request: CalendarAccountContextRequest) -> WorkerAccountContext:
+    return WorkerAccountContext(
+        principal=request.principal,
+        account_identifier=request.account_identifier,
+    )
+
+
+def _execution_failed() -> HTTPException:
+    logger.error("calendar agenda execution failed")
+    return HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="calendar agenda execution failed",
+    )
+
+
+def _invalid_request() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail="invalid calendar agenda request",
+    )
 
 
 @router.post("/calendar/agenda")
@@ -101,69 +91,65 @@ def calendar_agenda(
     container: Annotated[ApplicationContainer, Depends(get_container)],
 ) -> CalendarTomorrowAgendaResult:
     """Delegate a structured command and expose only safe HTTP failures."""
-    return _execute_calendar_agenda(
-        CalendarAgendaCommandRequest(
-            intent=request.intent,
-            account_context=WorkerAccountContext(
-                principal=request.account_context.principal,
-                account_identifier=request.account_context.account_identifier,
+    try:
+        return container.calendar_agenda_command_service.execute(
+            CalendarAgendaCommandRequest(
+                intent=request.intent,
+                account_context=_account_context(request.account_context),
+                timezone=request.timezone,
             ),
-            timezone=request.timezone,
-        ),
-        container,
-    )
+        )
+    except CalendarAgendaWorkflowError as error:
+        if error.category is None and error.field in CALENDAR_AGENDA_REQUEST_FIELDS:
+            raise _invalid_request() from None
+        raise _execution_failed() from None
+    except Exception:
+        raise _execution_failed() from None
 
 
-@router.post("/calendar/agenda/query")
+@router.post(
+    "/calendar/agenda/query",
+    response_model=CalendarTomorrowAgendaResult,
+    deprecated=True,
+)
 def calendar_agenda_query(
     request: CalendarAgendaQueryHttpRequest,
     container: Annotated[ApplicationContainer, Depends(get_container)],
-) -> CalendarTomorrowAgendaResult:
-    """Resolve through the semantic resolver Role, then dispatch the canonical intent.
+) -> dict[str, Any]:
+    """Compatibility adapter over the canonical ``POST /semantic/query`` path.
 
-    Only a well-formed resolved intent with an application-owned command mapping
-    reaches the route table; account context and timezone come from the request.
+    Uses the same resolver, route table and handler, restricted to Calendar
+    agenda intents, and keeps this endpoint's historical response and errors.
     """
     try:
-        # Typed as object: adapter output is checked at runtime, never trusted.
-        resolution: object = container.semantic_resolver.resolve(request.text)
+        result = execute_semantic_query(
+            SemanticQueryRequest(
+                text=request.text,
+                account_context=_account_context(request.account_context),
+                timezone=request.timezone,
+            ),
+            resolver=container.semantic_resolver,
+            router=container.semantic_router,
+            allowed_intents=CALENDAR_AGENDA_COMMAND_INTENTS.keys(),
+        )
     except SemanticInputError:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="invalid calendar agenda query",
         ) from None
-    except Exception:
+    except SemanticRoutingError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="unsupported calendar agenda query",
+        ) from None
+    except SemanticRequestError:
+        raise _invalid_request() from None
+    except SemanticResolverError:
         logger.error("calendar agenda query resolution failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="calendar agenda query resolution failed",
         ) from None
-    if not isinstance(resolution, SemanticResolution):
-        logger.error("semantic resolver returned an invalid result")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="calendar agenda query resolution failed",
-        )
-    intent = resolution.intent
-    command_intent = (
-        CALENDAR_AGENDA_COMMAND_INTENTS.get(intent)
-        if resolution.status is SemanticResolutionStatus.RESOLVED and intent is not None
-        else None
-    )
-    if intent is None or command_intent is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="unsupported calendar agenda query",
-        )
-    return _execute_calendar_agenda(
-        CalendarAgendaCommandRequest(
-            intent=command_intent,
-            account_context=WorkerAccountContext(
-                principal=request.account_context.principal,
-                account_identifier=request.account_context.account_identifier,
-            ),
-            timezone=request.timezone,
-        ),
-        container,
-        semantic_intent=intent,
-    )
+    except Exception:
+        raise _execution_failed() from None
+    return dict(result.result)

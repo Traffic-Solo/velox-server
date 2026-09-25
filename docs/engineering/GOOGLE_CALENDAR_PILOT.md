@@ -438,7 +438,7 @@ curl http://127.0.0.1:8000/health
 Then send the free-form query:
 
 ```bash
-curl -s -X POST http://127.0.0.1:8000/calendar/agenda/query \
+curl -s -X POST http://127.0.0.1:8000/semantic/query \
   -H 'Content-Type: application/json' \
   -d '{
     "text": "що там у мене по планах завтра",
@@ -455,7 +455,9 @@ Success means:
 - VELOX delegates through the existing Calendar agenda command path;
 - the Keychain credential refreshes successfully;
 - Google Calendar `events.list` returns successfully;
-- VELOX returns HTTP 200 with the bounded agenda contract;
+- VELOX returns HTTP 200 with `{"intent": "calendar.agenda.tomorrow", "result": ...}`,
+  where `result` is the bounded agenda contract (the deprecated
+  `/calendar/agenda/query` returns the same agenda without the envelope);
 - no Calendar write occurs.
 
 An empty result such as `event_count=0` is a successful agenda when

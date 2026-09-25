@@ -34,6 +34,7 @@ from apps.server.src.core.permission import (
 )
 from apps.server.src.core.planner import BasePlanner, Planner
 from apps.server.src.core.semantic import SemanticResolver, SemanticRoute, SemanticRouter
+from apps.server.src.core.semantic_query import SemanticQueryRouter
 from apps.server.src.integrations.calendar import (
     CALENDAR_ACCOUNT_CONTEXT,
     CALENDAR_EXECUTOR_ROLE,
@@ -42,16 +43,15 @@ from apps.server.src.integrations.calendar import (
     CalendarWorkerExecutor,
 )
 from apps.server.src.integrations.calendar_agenda import (
-    CalendarTomorrowAgendaResult,
     CalendarTomorrowAgendaWorkflow,
 )
 from apps.server.src.integrations.calendar_agenda_command import (
-    CalendarAgendaCommandRequest,
     CalendarAgendaCommandService,
 )
 from apps.server.src.integrations.calendar_agenda_query import (
     CALENDAR_AGENDA_TOMORROW_INTENT,
     BoundedCalendarAgendaIntentResolver,
+    calendar_agenda_semantic_handler,
 )
 from apps.server.src.integrations.calendar_ingress import (
     CalendarEventNormalizer,
@@ -119,9 +119,7 @@ class ApplicationContainer:
             clock=lambda: datetime.now(UTC),
         )
         self.semantic_resolver: SemanticResolver = BoundedCalendarAgendaIntentResolver()
-        self.semantic_router = SemanticRouter[
-            CalendarAgendaCommandRequest, CalendarTomorrowAgendaResult
-        ](
+        self.semantic_router: SemanticQueryRouter = SemanticRouter(
             routes=(SemanticRoute(
                 intent=CALENDAR_AGENDA_TOMORROW_INTENT,
                 role=CALENDAR_EXECUTOR_ROLE,
@@ -129,7 +127,9 @@ class ApplicationContainer:
             ),),
             handlers={
                 (CALENDAR_EXECUTOR_ROLE, CALENDAR_LIST_EVENTS_CAPABILITY.identifier):
-                    lambda request: self.calendar_agenda_command_service.execute(request),
+                    calendar_agenda_semantic_handler(
+                        lambda: self.calendar_agenda_command_service,
+                    ),
             },
         )
         self.worker_execution_observer = InMemoryWorkerExecutionObserver()

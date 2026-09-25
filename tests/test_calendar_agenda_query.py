@@ -2,6 +2,7 @@
 
 import socket
 from collections.abc import Iterator
+from dataclasses import asdict
 from typing import Any, cast
 
 import pytest
@@ -15,6 +16,11 @@ from apps.server.src.core.semantic import (
     SemanticResolverError,
     SemanticRoute,
     SemanticRouter,
+)
+from apps.server.src.core.semantic_query import (
+    ResolvedSemanticQuery,
+    SemanticQueryRequest,
+    SemanticQueryResult,
 )
 from apps.server.src.integrations.calendar_agenda import CalendarTomorrowAgendaResult
 from apps.server.src.integrations.calendar_agenda_command import (
@@ -242,11 +248,11 @@ def test_query_uses_container_semantic_role_capability_handler(
     assert route == SemanticRoute(
         "calendar.agenda.tomorrow", ExecutorRole.CONTEXT_PREPARATION, "list_calendar_events",
     )
-    routed_requests: list[CalendarAgendaCommandRequest] = []
+    routed: list[ResolvedSemanticQuery] = []
 
-    def handler(request: CalendarAgendaCommandRequest) -> CalendarTomorrowAgendaResult:
-        routed_requests.append(request)
-        return RESULT
+    def handler(query: ResolvedSemanticQuery) -> SemanticQueryResult:
+        routed.append(query)
+        return SemanticQueryResult(intent=query.intent, result=asdict(RESULT))
 
     container.semantic_router = SemanticRouter(
         (route,), {(route.role, route.capability): handler},
@@ -255,10 +261,13 @@ def test_query_uses_container_semantic_role_capability_handler(
     assert response.status_code == 200
     assert response.json()["intent"] == "tomorrow"
     assert command_spy.calls == []
-    assert routed_requests == [CalendarAgendaCommandRequest(
-        intent="tomorrow",
-        account_context=WorkerAccountContext("explicit-principal", "explicit-account"),
-        timezone="Europe/Tirane",
+    assert routed == [ResolvedSemanticQuery(
+        intent=CALENDAR_AGENDA_TOMORROW_INTENT,
+        request=SemanticQueryRequest(
+            text=query_payload()["text"],
+            account_context=WorkerAccountContext("explicit-principal", "explicit-account"),
+            timezone="Europe/Tirane",
+        ),
     )]
 
 
@@ -318,11 +327,11 @@ def test_unresolved_resolution_fails_closed_before_routing(
 ) -> None:
     container.semantic_resolver = RecordingIntentResolver(SemanticResolution.unresolved())
     spy = install_spy(container)
-    routed: list[CalendarAgendaCommandRequest] = []
+    routed: list[ResolvedSemanticQuery] = []
 
-    def handler(request: CalendarAgendaCommandRequest) -> CalendarTomorrowAgendaResult:
-        routed.append(request)
-        return RESULT
+    def handler(query: ResolvedSemanticQuery) -> SemanticQueryResult:
+        routed.append(query)
+        return SemanticQueryResult(intent=query.intent, result=asdict(RESULT))
 
     route = container.semantic_router.resolve(CALENDAR_AGENDA_TOMORROW_INTENT)
     container.semantic_router = SemanticRouter((route,), {(route.role, route.capability): handler})
@@ -336,13 +345,11 @@ def test_unresolved_resolution_fails_closed_before_routing(
 def test_router_receives_canonical_intent_and_request_owned_context(
     client: TestClient, container: ApplicationContainer,
 ) -> None:
-    install_spy(container)
-    dispatched: list[tuple[str, CalendarAgendaCommandRequest]] = []
+    spy = install_spy(container)
+    dispatched: list[tuple[str, ResolvedSemanticQuery]] = []
     original_execute = container.semantic_router.execute
 
-    def recording_execute(
-        intent: str, request: CalendarAgendaCommandRequest,
-    ) -> CalendarTomorrowAgendaResult:
+    def recording_execute(intent: str, request: ResolvedSemanticQuery) -> SemanticQueryResult:
         dispatched.append((intent, request))
         return original_execute(intent, request)
 
@@ -353,11 +360,16 @@ def test_router_receives_canonical_intent_and_request_owned_context(
     }
     response = client.post("/calendar/agenda/query", json=body)
     assert response.status_code == 200
-    assert dispatched == [(CALENDAR_AGENDA_TOMORROW_INTENT, CalendarAgendaCommandRequest(
-        intent="tomorrow",
-        account_context=WorkerAccountContext("request-principal", "request-acct"),
-        timezone="Europe/Tirane",
+    account = WorkerAccountContext("request-principal", "request-acct")
+    assert dispatched == [(CALENDAR_AGENDA_TOMORROW_INTENT, ResolvedSemanticQuery(
+        intent=CALENDAR_AGENDA_TOMORROW_INTENT,
+        request=SemanticQueryRequest(
+            text=body["text"], account_context=account, timezone="Europe/Tirane",
+        ),
     ))]
+    assert spy.calls == [CalendarAgendaCommandRequest(
+        intent="tomorrow", account_context=account, timezone="Europe/Tirane",
+    )]
 
 
 def test_default_composition_uses_bounded_resolver_without_external_calls(
