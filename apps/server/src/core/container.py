@@ -60,7 +60,7 @@ from apps.server.src.integrations.calendar_ingress import (
 )
 from apps.server.src.integrations.gmail import GMAIL_ACCOUNT_CONTEXT, GmailWorkerExecutor
 from apps.server.src.integrations.software_engineering_runtime import (
-    configured_software_engineering_executor,
+    configured_software_engineering,
 )
 from apps.server.src.workers.executor import (
     NoOpWorkerExecutor,
@@ -112,7 +112,13 @@ class ApplicationContainer:
         self.worker_executor_registry.register_manifest(
             self.calendar_worker_executor.provider_manifest
         )
-        self.software_engineering_executor = configured_software_engineering_executor()
+        software_engineering = configured_software_engineering()
+        self.software_engineering_executor = (
+            software_engineering.executor if software_engineering is not None else None
+        )
+        self.software_engineering_work_products = (
+            software_engineering.work_products if software_engineering is not None else None
+        )
         if self.software_engineering_executor is not None:
             self.worker_executor_registry.register_manifest(
                 self.software_engineering_executor.provider_manifest

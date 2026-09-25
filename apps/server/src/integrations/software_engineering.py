@@ -136,7 +136,8 @@ class TrustedGitWorkspace:
         self._worktrees_root = worktrees_root
         self._git = git_executable
 
-    def _git_run(self, *args: str, cwd: Path) -> ProcessResult:
+    def run_git(self, *args: str, cwd: Path) -> ProcessResult:
+        """Run git through the process boundary; argv only, bounded."""
         try:
             return self._runner.run(
                 [self._git, *args], cwd=cwd, timeout_seconds=_GIT_TIMEOUT_SECONDS,
@@ -149,7 +150,7 @@ class TrustedGitWorkspace:
         root = self._root
         if not root.is_absolute() or not root.is_dir():
             raise WorkspaceUnavailableError("trusted workspace does not exist")
-        result = self._git_run("rev-parse", "--show-toplevel", cwd=root)
+        result = self.run_git("rev-parse", "--show-toplevel", cwd=root)
         if result.returncode != 0 or result.timed_out:
             raise WorkspaceUnavailableError("trusted workspace is not a git repository")
         if Path(result.stdout.strip()).resolve() != root.resolve():
@@ -160,23 +161,27 @@ class TrustedGitWorkspace:
         root = self._root
         return self._worktrees_root or root.parent / f".{root.name}-velox-worktrees"
 
+    def expected_worktree(self, action_id: UUID) -> IsolatedWorktree:
+        """The only identity a per-Action worktree may have: workspace + Action UUID."""
+        name = f"se-{UUID(str(action_id))}"
+        return IsolatedWorktree(path=self.worktrees_root() / name, branch=f"velox/{name}")
+
     def create_worktree(self, action_id: UUID) -> IsolatedWorktree:
         """Create the per-Action worktree; the name never comes from task text."""
         root = self.validate()
-        name = f"se-{UUID(str(action_id))}"
-        path = self.worktrees_root() / name
-        branch = f"velox/{name}"
+        worktree = self.expected_worktree(action_id)
+        path, branch = worktree.path, worktree.branch
         if path.exists():
             raise WorkspaceUnavailableError("isolated worktree already exists")
         path.parent.mkdir(parents=True, exist_ok=True)
-        result = self._git_run("worktree", "add", "-b", branch, str(path), "HEAD", cwd=root)
+        result = self.run_git("worktree", "add", "-b", branch, str(path), "HEAD", cwd=root)
         if result.returncode != 0 or result.timed_out:
             raise WorkspaceUnavailableError("isolated worktree could not be created")
-        return IsolatedWorktree(path=path, branch=branch)
+        return worktree
 
     def status(self, path: Path) -> str:
         """Porcelain status of a checkout, used to verify worker side effects."""
-        result = self._git_run("status", "--porcelain=v1", "--untracked-files=all", cwd=path)
+        result = self.run_git("status", "--porcelain=v1", "--untracked-files=all", cwd=path)
         if result.returncode != 0 or result.timed_out:
             raise WorkspaceUnavailableError("workspace status is unavailable")
         return result.stdout

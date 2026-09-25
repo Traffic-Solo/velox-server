@@ -101,7 +101,8 @@ class FakeRunner:
             if argv[1] == "worktree":
                 return result(self.worktree_add_rc)
             if cwd == self.root:
-                return result(stdout=self.canonical_statuses.pop(0))
+                statuses = self.canonical_statuses
+                return result(stdout=statuses.pop(0) if statuses else "")
             return result(stdout=self.worktree_status)
         if list(argv[1:]) == ["--version"]:
             if isinstance(self.version, Exception):
