@@ -50,6 +50,21 @@ Actions:
 - `POST /actions/{id}/approve` - approve a held action (moves it to the queue)
 - `POST /actions/{id}/reject` - reject a held action
 
+Semantic query:
+
+- `POST /semantic/query` - canonical free-form ingress. Body: `text`,
+  explicit `account_context` (`principal`, `account_identifier`) and `timezone`.
+  The configured resolver classifies `text` into a canonical intent; only an
+  application-declared route runs. Response: `{"intent": ..., "result": {...}}`.
+  Currently the only registered intent is `calendar.agenda.tomorrow`.
+
+Calendar:
+
+- `POST /calendar/agenda` - structured agenda command
+- `POST /calendar/agenda/query` - deprecated compatibility adapter over
+  `POST /semantic/query`, limited to Calendar agenda intents; returns the bare
+  agenda result
+
 ## Safety model
 
 - Deny-by-default permissions: only an explicit safe list of action types is
@@ -66,7 +81,8 @@ Actions:
   It adds no Calendar writes or OAuth scopes. Other manual/live Calendar read
   tools also require explicit invocation; see the
   [Calendar pilot runbook](docs/engineering/GOOGLE_CALENDAR_PILOT.md).
-  Free-form `POST /calendar/agenda/query` uses the bounded resolver by default.
+  Free-form `POST /semantic/query` (and the deprecated `POST /calendar/agenda/query`)
+  uses the bounded resolver by default.
   Set `VELOX_CALENDAR_AGENDA_RESOLVER=ollama` with an explicit
   `VELOX_OLLAMA_MODEL` to opt in to local-only Ollama classification; the
   configured base URL must use a loopback host.

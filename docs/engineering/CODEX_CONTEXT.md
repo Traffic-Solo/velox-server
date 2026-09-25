@@ -17,6 +17,7 @@ Sprint 4 - Vendor-neutral Semantic Routing
 
 Slice 1 implements explicit semantic dispatch for the existing Calendar query path.
 Slice 2 adds the vendor-neutral semantic resolver Role with typed intent output.
+Slice 3 adds the domain-neutral `POST /semantic/query` ingress.
 Sprint 3 remains closed; its final runtime and live-pilot evidence follow.
 
 Final Sprint 3 runtime head before closure documentation: `21acccee5ec6d53d91644e2f11b886815c4dc576`.
@@ -177,10 +178,52 @@ Slice 2 validation: `uv run ruff check .` and `uv run ruff check apps tests` pas
 (90 source files each); focused semantic/Calendar agenda/settings tests 117 passed;
 `uv run pytest` 973 passed, 6 deselected, 0 warnings; `git diff --check` passed.
 
-Next highest-priority slice: make the free-form ingress domain-neutral. Add one
-semantic query endpoint and application-owned request context so the route table is
-no longer typed to Calendar command requests, with Calendar agenda remaining the
-only registered production intent. Worker delegation stays deferred until then.
+Sprint 4 Slice 3: `core/semantic_query.py` is the application-level semantic query
+boundary. `SemanticQueryRequest(text, account_context: WorkerAccountContext,
+timezone)` holds only caller-owned context. `ResolvedSemanticQuery(intent, request)`
+is the router input and `SemanticQueryResult(intent, result: Mapping)` the
+domain-neutral handler output. `execute_semantic_query` is the single
+resolve-then-dispatch path: it runtime-checks the `SemanticResolution`, rejects
+unresolved, disallowed (optional `allowed_intents`) or unregistered intents with
+`SemanticRoutingError` before any handler runs, maps resolver exceptions and
+malformed output to `SemanticResolverError`, and rejects handler results whose
+type or intent does not match. Handlers raise `SemanticRequestError` when caller
+context is invalid. `core/semantic.py`, `core/semantic_query.py` and
+`api/semantic.py` import nothing from integrations.
+
+`POST /semantic/query` (`api/semantic.py`) is the canonical free-form ingress.
+Request: `text`, explicit `account_context` (`principal`, `account_identifier`) and
+`timezone`; unknown fields are rejected. Response: `{"intent", "result"}`. Errors:
+422 `invalid semantic query` (blank text), 422 `unsupported semantic query`
+(unresolved/unregistered), 422 `invalid semantic query request` (handler rejected
+caller context), 500 `semantic query resolution failed`, 500
+`semantic query execution failed`. The container route table is now
+`SemanticRouter[ResolvedSemanticQuery, SemanticQueryResult]`;
+`calendar_agenda_semantic_handler` (Calendar integration) adapts the envelope to
+`CalendarAgendaCommandRequest` through `CALENDAR_AGENDA_COMMAND_INTENTS`, reads the
+current (possibly lifespan-installed live) command service per call, and returns
+the agenda as a JSON-safe payload. Account context and timezone come only from
+the request.
+
+`POST /calendar/agenda/query` is deprecated (OpenAPI `deprecated: true`) but kept:
+it is a thin adapter over `execute_semantic_query` restricted to Calendar agenda
+intents, with its historical request shape, bare agenda response and error details
+unchanged. `POST /calendar/agenda` is unchanged. Patterns harvested from current
+sources: caller envelope separate from NLU result (Rasa `UserMessage`), typed
+request -> handler -> response (MediatR `IRequest<TResponse>`), handlers composed
+with dependencies at the composition root (cosmicpython bootstrap/message bus), and
+application-owned typed dependencies distinct from model input (pydantic-ai
+`RunContext.deps`); no framework was adopted.
+
+Slice 3 validation: `uv run ruff check .` and `uv run ruff check apps tests` passed;
+`uv run mypy`, `uv run mypy apps tests` and `uv run mypy --platform linux` passed
+(93 source files each); focused semantic/Calendar agenda/settings tests 146 passed;
+`uv run pytest` 1002 passed, 6 deselected, 0 warnings; `git diff --check` passed.
+
+Next highest-priority slice: add a second, deliberately low-risk production semantic
+intent behind the same ingress (read-only, deterministic default) to prove the
+boundary beyond Calendar, and decide whether caller context stays fixed or becomes
+per-intent validated before worker delegation is considered.
 
 ## Final Slice 10
 
@@ -380,12 +423,14 @@ After every implementation slice, update this file in the same commit if the imp
 
 ## Deferred Capabilities / Architecture Gaps
 
-- Semantic resolution and dispatch are vendor-neutral, but the only ingress is
-  `/calendar/agenda/query`, the container route table is typed to Calendar command
-  requests/results, and canonical-to-command mapping lives in the Calendar
-  integration. Only `calendar.agenda.tomorrow` is registered; generic ingress,
-  additional intents and other production handlers are not implemented. Planner,
-  approval and worker paths are unchanged and not reachable from semantic dispatch.
+- `POST /semantic/query` is domain-neutral, but only `calendar.agenda.tomorrow` is
+  registered and the single resolver is the Calendar adapter (bounded or Ollama);
+  there is no multi-domain resolver composition. Every semantic query must supply
+  `account_context` and `timezone` even if a future intent does not need them;
+  per-intent context requirements are not modelled. Planner, approval and worker
+  paths are unchanged and not reachable from semantic dispatch.
+- `POST /calendar/agenda/query` is a deprecated compatibility adapter with no
+  removal date.
 - Semantic resolution has no confidence, ambiguity or multi-intent result; add these
   only when a resolver produces meaningful values.
 - Gmail read, send and archive capabilities use deterministic in-memory fake data only. Executor resolution supports explicit capability-provider routing and returns `SKIPPED` through `NoOpWorkerExecutor` when no registered handler matches.
