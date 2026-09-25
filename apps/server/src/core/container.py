@@ -59,6 +59,9 @@ from apps.server.src.integrations.calendar_ingress import (
     CalendarIngressAdapter,
 )
 from apps.server.src.integrations.gmail import GMAIL_ACCOUNT_CONTEXT, GmailWorkerExecutor
+from apps.server.src.integrations.software_engineering_runtime import (
+    configured_software_engineering_executor,
+)
 from apps.server.src.workers.executor import (
     NoOpWorkerExecutor,
     WorkerExecutor,
@@ -109,6 +112,11 @@ class ApplicationContainer:
         self.worker_executor_registry.register_manifest(
             self.calendar_worker_executor.provider_manifest
         )
+        self.software_engineering_executor = configured_software_engineering_executor()
+        if self.software_engineering_executor is not None:
+            self.worker_executor_registry.register_manifest(
+                self.software_engineering_executor.provider_manifest
+            )
         self.task_delegator: TaskDelegator = ActionTaskDelegator(
             executor_registry=self.worker_executor_registry,
             permission_runtime=self.permission_runtime,

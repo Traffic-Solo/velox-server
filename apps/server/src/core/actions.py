@@ -14,6 +14,7 @@ class ExecutorRole(StrEnum):
     CONTENT_REVIEW = "content_review"
     CONTENT_SUMMARY = "content_summary"
     CONTEXT_PREPARATION = "context_preparation"
+    SOFTWARE_ENGINEERING = "software_engineering"
 
 
 class Action(BaseModel):
