@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncIterator
 from contextlib import ExitStack, asynccontextmanager
 
@@ -13,6 +14,7 @@ from apps.server.src.integrations.calendar_agenda_runtime import (
 from fastapi import FastAPI
 
 configure_logging(get_settings().log_level)
+logger = logging.getLogger(__name__)
 
 SERVICE_NAME = "VELOX Server"
 SERVICE_VERSION = "0.0.1"
@@ -23,9 +25,20 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     container = get_container()
     previous_service = container.calendar_agenda_command_service
     previous_resolver = container.calendar_agenda_intent_resolver
+    settings = get_settings()
+    if settings.calendar_agenda_live:
+        logger.warning(
+            "live Calendar agenda enabled by VELOX_CALENDAR_AGENDA_LIVE: "
+            "stored macOS Keychain credentials and Google Calendar reads are in use"
+        )
+    if settings.calendar_agenda_resolver != "bounded":
+        logger.warning(
+            "Calendar agenda resolver %s enabled by VELOX_CALENDAR_AGENDA_RESOLVER",
+            settings.calendar_agenda_resolver,
+        )
     try:
         with ExitStack() as stack:
-            if get_settings().calendar_agenda_live:
+            if settings.calendar_agenda_live:
                 container.calendar_agenda_command_service = stack.enter_context(
                     live_calendar_agenda_command_service()
                 )
