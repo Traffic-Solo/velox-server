@@ -281,12 +281,25 @@ the route. Verified against installed Claude Code 2.1.153 help and the official
 headless/permission docs. It first checks `claude --version` >= 2.1.153 and the
 workspace, snapshots canonical `git status`, creates the worktree, then runs
 `claude -p --output-format json --json-schema <completion report> --permission-mode
-dontAsk --tools Read,Edit,Write,Glob,Grep,Bash --allowedTools <read/edit, git
-status/diff/log/show, uv run ruff/mypy/pytest> --disallowedTools <git
-push/merge/reset/rebase/commit/checkout/switch/branch/worktree/clean/tag/remote/
+dontAsk --tools Read,Edit,Write,Glob,Grep,Bash --allowedTools
+Read(//<worktree>/**),Edit(//<worktree>/**),<git status/diff/log/show, uv run
+ruff/mypy/pytest> --disallowedTools Edit(//<worktree>/.claude/**),
+Edit(//<worktree>/.mcp.json),Edit(//<worktree>/.git),Edit(//<worktree>/.git/**),
+<git push/merge/reset/rebase/commit/checkout/switch/branch/worktree/clean/tag/remote/
 fetch/pull/restore/stash, rm, gh, curl, wget, WebFetch, WebSearch>
---strict-mcp-config --setting-sources project --disable-slash-commands
---no-session-persistence --max-turns 40` with cwd set to the worktree. The bounded
+--strict-mcp-config --setting-sources= --disable-slash-commands
+--no-session-persistence --max-turns 40` with cwd set to the worktree.
+
+Hardening (Slice 5 review): `--setting-sources=` (empty; the exact form the official
+Python Agent SDK sends for `setting_sources=[]`) loads no user, project or local
+settings file, so no repository- or user-controlled allow rules, hooks, env or MCP
+servers apply; `~/.claude.json` (subscription login) and managed policy are always
+read, so authentication is unchanged. File tools are never allowed bare: the only
+file allow rules are `Read`/`Edit` anchored with `//` at the absolute worktree path
+(`Edit` also governs `Write`); reads inside the working directory need no rule under
+`dontAsk` and anything outside is denied. The worktree path must be absolute and free
+of rule metacharacters (`* ? [ ] ! \ ( ) ,`), otherwise the run fails closed with
+`workspace_unavailable` before a worktree is created. The bounded
 prompt (objective delimited as data, target, worktree branch, execution rules) is
 sent on stdin, so task text never enters argv. The child environment drops
 `CLAUDECODE` and every `VELOX_*` value. `--bare` is not used because it would require
@@ -295,13 +308,15 @@ an API key instead of the existing Claude Code login. `--restricted` and
 
 Result mapping: `SUCCEEDED` only when the process exits 0, `is_error` is not true,
 the JSON envelope parses, `structured_output` validates as `CompletionReport`
-(`summary`, `files_changed`, `validation`, `blockers`; extra fields rejected), and
-canonical `git status` is unchanged. Metadata: provider, worktree path/branch,
+(`summary`, `files_changed`, `validation`, `blockers`; extra fields rejected), the
+report has no blockers, and canonical `git status` is unchanged. A valid report with
+non-empty `blockers` is `FAILED` / `worker_reported_blockers` (permanent): the
+lifecycle ends `FAILED`, never `COMPLETED`, and it is not retried. Metadata: provider, worktree path/branch,
 session id, duration, VELOX-observed `changed_files` from worktree status, the
 reported summary/files/validation/blockers (clipped), and
 `external_execution_performed`. Failures: `executable_missing`, `unsupported_cli`,
-`workspace_unavailable`, `timeout`, `process_failed`, `authentication_failed`
-(permanent); `malformed_output`, `invalid_result`, `canonical_workspace_modified`
+`workspace_unavailable`, `timeout`, `process_failed`, `authentication_failed`,
+`worker_reported_blockers` (permanent); `malformed_output`, `invalid_result`, `canonical_workspace_modified`
 (internal). Provider stderr/result text is never copied into metadata or reasons.
 The executor never returns `TRANSIENT`: a coding run is not idempotent and must not be
 re-run automatically by `WorkerRuntime`.
@@ -346,8 +361,8 @@ uv run --env-file .env.live python -m apps.server.src.integrations.software_engi
 Slice 5 validation: `uv run ruff check .` and `uv run ruff check apps tests` passed;
 `uv run mypy`, `uv run mypy apps tests` and `uv run mypy --platform linux` passed
 (101 source files each); focused Software Engineering/delegation/worker runtime/
-worker executor/approval/events API tests 222 passed; `uv run pytest` 1074 passed,
-6 deselected, 0 warnings; `git diff --check` passed.
+worker executor/approval/events API tests 236 passed; `uv run pytest` 1088 passed,
+6 deselected, 0 warnings; `git diff --check` passed (after the hardening commit).
 
 Next highest-priority slice: run and record the live Software Engineering pilot
 through VELOX, then add operator-visible review/cleanup of worker worktrees

@@ -19,12 +19,13 @@ from apps.server.src.core.delegation import TaskDelegationRequest, TaskDelegatio
 from apps.server.src.integrations import software_engineering_pilot
 from apps.server.src.integrations import software_engineering_runtime as runtime
 from apps.server.src.integrations.claude_code import (
-    CLAUDE_CODE_ALLOWED_TOOLS,
-    CLAUDE_CODE_DISALLOWED_TOOLS,
+    CLAUDE_CODE_ALLOWED_BASH,
+    CLAUDE_CODE_DISALLOWED_BASH_AND_WEB,
     CLAUDE_CODE_PROVIDER,
     CLAUDE_CODE_TOOLS,
     ClaudeCodeSoftwareEngineeringExecutor,
     build_claude_code_argv,
+    worktree_file_rules,
 )
 from apps.server.src.integrations.software_engineering import (
     SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
@@ -326,14 +327,21 @@ def test_argv_is_fixed_and_task_text_travels_only_on_stdin(root: Path, tmp_path:
     outcome = run(make_executor(runner, tmp_path), engineering_action(hostile))
     assert outcome.status is WorkerExecutionStatus.SUCCEEDED
     [call] = runner.claude_calls()
-    assert call.argv == build_claude_code_argv("claude")
+    assert call.argv == build_claude_code_argv("claude", call.cwd)
     assert all(hostile not in arg for arg in call.argv)
     assert call.stdin is not None and hostile in call.stdin
     assert call.timeout == 5
 
 
+def option(argv: list[str], flag: str) -> list[str]:
+    return argv[argv.index(flag) + 1].split(",")
+
+
+WORKTREE = Path("/work/.repo-velox-worktrees/se-0f6b4c52-7a3e-4d1f-9b0a-2c8e5d9f1a74")
+
+
 def test_permission_policy_has_no_bypass_or_git_write_access() -> None:
-    argv = build_claude_code_argv("claude")
+    argv = build_claude_code_argv("claude", WORKTREE)
     assert "--dangerously-skip-permissions" not in argv
     assert "bypassPermissions" not in argv
     assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
@@ -341,9 +349,84 @@ def test_permission_policy_has_no_bypass_or_git_write_access() -> None:
     assert "--bare" not in argv
     assert set(CLAUDE_CODE_TOOLS) == {"Read", "Edit", "Write", "Glob", "Grep", "Bash"}
     for verb in ("push", "merge", "reset", "rebase", "commit", "checkout", "branch", "clean"):
-        assert not any(f"git {verb}" in rule for rule in CLAUDE_CODE_ALLOWED_TOOLS)
-        assert f"Bash(git {verb} *)" in CLAUDE_CODE_DISALLOWED_TOOLS
-    assert "WebFetch" in CLAUDE_CODE_DISALLOWED_TOOLS
+        assert not any(f"git {verb}" in rule for rule in CLAUDE_CODE_ALLOWED_BASH)
+        assert f"Bash(git {verb} *)" in CLAUDE_CODE_DISALLOWED_BASH_AND_WEB
+    assert "WebFetch" in CLAUDE_CODE_DISALLOWED_BASH_AND_WEB
+
+
+# --- Hardening: no settings-file authority -------------------------------------------
+
+def test_no_settings_file_can_add_permissions_hooks_env_or_mcp() -> None:
+    argv = build_claude_code_argv("claude", WORKTREE)
+    assert "--setting-sources=" in argv
+    assert "project" not in argv
+    assert not any(
+        arg.startswith("--setting-sources") and arg != "--setting-sources=" for arg in argv
+    )
+    assert "--settings" not in argv
+    assert "--mcp-config" not in argv
+    assert "--strict-mcp-config" in argv
+    assert "--bare" not in argv
+
+
+# --- Hardening: path-scoped file permissions -------------------------------------------
+
+def test_file_tools_are_never_auto_allowed_bare() -> None:
+    allowed = option(build_claude_code_argv("claude", WORKTREE), "--allowedTools")
+    for tool in ("Read", "Edit", "Write", "Glob", "Grep", "NotebookEdit"):
+        assert tool not in allowed
+    file_rules = [rule for rule in allowed if not rule.startswith("Bash(")]
+    assert file_rules == [f"Read(/{WORKTREE}/**)", f"Edit(/{WORKTREE}/**)"]
+    assert all(rule.startswith("Bash(") for rule in CLAUDE_CODE_ALLOWED_BASH)
+
+
+def test_worker_authority_files_are_explicitly_denied_inside_the_worktree() -> None:
+    denied = option(build_claude_code_argv("claude", WORKTREE), "--disallowedTools")
+    for protected in (".claude/**", ".mcp.json", ".git", ".git/**"):
+        assert f"Edit(/{WORKTREE}/{protected})" in denied
+
+
+def test_file_rules_are_anchored_at_the_absolute_worktree_path() -> None:
+    allow, deny = worktree_file_rules(WORKTREE)
+    assert all(rule.split("(", 1)[1].startswith(f"/{WORKTREE}/") for rule in allow + deny)
+    assert f"/{WORKTREE}".startswith("//")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [Path("relative/wt"), Path("/work/a*b/wt"), Path("/work/a,b/wt"), Path("/work/(x)/wt"),
+     Path("/work/[x]/wt"), Path("/work/!x/wt")],
+)
+def test_unsafe_worktree_paths_cannot_become_permission_rules(path: Path) -> None:
+    with pytest.raises(ValueError):
+        worktree_file_rules(path)
+
+
+def test_unsafe_worktrees_root_fails_closed_before_any_worktree(
+    root: Path, tmp_path: Path,
+) -> None:
+    runner = FakeRunner(root)
+    executor = ClaudeCodeSoftwareEngineeringExecutor(
+        workspace=TrustedGitWorkspace(root, runner, worktrees_root=tmp_path / "a,b"),
+        runner=runner, executable="claude", timeout_seconds=5, environment={},
+    )
+    outcome = run(executor)
+    assert_failed(outcome, "workspace_unavailable", WorkerExecutionFailureCategory.PERMANENT)
+    assert runner.git_calls("worktree") == []
+    assert runner.claude_calls() == []
+
+
+def test_live_invocation_scopes_file_rules_to_that_actions_worktree(
+    root: Path, tmp_path: Path,
+) -> None:
+    runner = FakeRunner(root)
+    action = engineering_action()
+    run(make_executor(runner, tmp_path), action)
+    [call] = runner.claude_calls()
+    worktree = tmp_path / "wt" / f"se-{action.id}"
+    assert call.cwd == worktree
+    assert f"Edit(/{worktree}/**)" in option(call.argv, "--allowedTools")
+    assert f"Edit(/{root}/**)" not in option(call.argv, "--allowedTools")
 
 
 def test_child_environment_drops_nested_session_marker_and_velox_settings(
@@ -599,3 +682,40 @@ def test_real_git_worktree_isolation_leaves_the_canonical_checkout_clean(
     )
     with pytest.raises(WorkspaceUnavailableError):
         workspace.create_worktree(action_id)
+
+
+# --- Hardening: reported blockers ----------------------------------------------------
+
+def test_reported_blockers_are_a_permanent_failure_not_success(
+    root: Path, tmp_path: Path,
+) -> None:
+    blocked = {**REPORT, "blockers": ["Tests fail: missing fixture"]}
+    runner = FakeRunner(root, claude=result(stdout=claude_output(structured_output=blocked)))
+    outcome = run(make_executor(runner, tmp_path))
+    assert_failed(outcome, "worker_reported_blockers", WorkerExecutionFailureCategory.PERMANENT)
+    assert outcome.metadata["blockers"] == ["Tests fail: missing fixture"]
+    assert outcome.metadata["changed_files"] == ["apps/server/src/main.py", "tests/test_new.py"]
+    assert outcome.metadata["external_execution_performed"] is True
+
+
+def test_reported_blockers_never_complete_and_are_not_retried(opt_in: FakeRunner) -> None:
+    blocked = {**REPORT, "blockers": ["Could not finish"]}
+    opt_in.claude = result(stdout=claude_output(structured_output=blocked))
+    container = ApplicationContainer()
+    outcome = container.task_delegator.delegate(se_request())
+    approve_pending_action(
+        outcome.action_id,
+        pending_approval_registry=container.pending_approval_registry,
+        lifecycle_repository=container.action_lifecycle_repository,
+        lifecycle_manager=container.action_lifecycle_manager,
+        action_queue=container.action_queue,
+    )
+    container.worker_runtime_invocation.invoke(max_actions=3)
+    lifecycle = container.action_lifecycle_repository.get(outcome.action_id)
+    assert lifecycle is not None
+    assert lifecycle.status == ActionStatus.FAILED  # never COMPLETED
+    assert len(opt_in.claude_calls()) == 1
+    assert container.action_queue.list() == []
+    [observation] = container.worker_execution_observer.list()
+    assert observation.status == "failed"
+    assert observation.failure_category == "permanent"

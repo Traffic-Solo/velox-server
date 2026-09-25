@@ -5,8 +5,8 @@ a VELOX-created worktree. The CLI contract below was verified against the
 installed CLI help (2.1.153) and the official headless/permission docs:
 non-interactive ``-p`` with the prompt on stdin (task text never enters argv),
 ``--permission-mode dontAsk`` so unapproved tool calls are denied instead of
-prompting, an explicit built-in tool set and allow/deny rules, no MCP servers,
-project settings only, bounded turns, no session persistence, and JSON output
+prompting, an explicit built-in tool set, file rules scoped to the worktree,
+no MCP servers, no settings files, bounded turns, no session persistence, and JSON output
 validated against a completion-report schema.
 
 Success means the process finished and returned a structurally valid report;
@@ -19,6 +19,7 @@ import json
 import os
 import re
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from apps.server.src.core.actions import Action, ExecutorRole
@@ -57,8 +58,7 @@ CLAUDE_CODE_WORKER_CAPABILITIES = (
 CLAUDE_CODE_TOOLS = ("Read", "Edit", "Write", "Glob", "Grep", "Bash")
 """Built-in tools made available; web, agent, notebook and MCP tools are absent."""
 
-CLAUDE_CODE_ALLOWED_TOOLS = (
-    "Read", "Edit", "Write", "Glob", "Grep",
+CLAUDE_CODE_ALLOWED_BASH = (
     "Bash(git status)", "Bash(git status *)",
     "Bash(git diff)", "Bash(git diff *)",
     "Bash(git log *)", "Bash(git show *)",
@@ -66,18 +66,42 @@ CLAUDE_CODE_ALLOWED_TOOLS = (
     "Bash(uv run mypy)", "Bash(uv run mypy *)",
     "Bash(uv run pytest)", "Bash(uv run pytest *)",
 )
-"""Pre-approved rules; under dontAsk every other tool call is denied, not asked."""
+"""Pre-approved Bash rules; under dontAsk every other call is denied, not asked.
+
+File tools are never allowed bare: see ``worktree_file_rules``. Reads inside the
+working directory need no rule in dontAsk mode; everything else is denied.
+"""
 
 _DENIED_GIT = (
     "push", "merge", "reset", "rebase", "commit", "checkout", "switch", "branch",
     "worktree", "clean", "tag", "remote", "fetch", "pull", "restore", "stash",
 )
-CLAUDE_CODE_DISALLOWED_TOOLS = (
+CLAUDE_CODE_DISALLOWED_BASH_AND_WEB = (
     *(rule for sub in _DENIED_GIT for rule in (f"Bash(git {sub})", f"Bash(git {sub} *)")),
     "Bash(rm *)", "Bash(gh *)", "Bash(curl *)", "Bash(wget *)",
     "WebFetch", "WebSearch",
 )
 """Explicit denials; deny rules are evaluated before allow rules."""
+
+_PROTECTED_WORKTREE_PATHS = (".claude/**", ".mcp.json", ".git", ".git/**")
+"""Worker-authority files inside the worktree that must never be edited."""
+
+_UNSAFE_RULE_CHARACTERS = frozenset("*?[]!\\(),")
+
+
+def worktree_file_rules(worktree: Path) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Path-scoped (allow, deny) file rules anchored at the absolute worktree.
+
+    ``//`` anchors a rule at the filesystem root; ``Edit`` rules also govern
+    ``Write``. The path must not contain characters that change rule meaning.
+    """
+    path = str(worktree)
+    if not worktree.is_absolute() or _UNSAFE_RULE_CHARACTERS.intersection(path):
+        raise ValueError("worktree path cannot be expressed as a permission rule")
+    anchor = f"/{path.rstrip('/')}"
+    allow = (f"Read({anchor}/**)", f"Edit({anchor}/**)")
+    deny = tuple(f"Edit({anchor}/{protected})" for protected in _PROTECTED_WORKTREE_PATHS)
+    return allow, deny
 
 _AUTH_MARKERS = re.compile(
     r"log ?in|logged (?:in|out)|auth|credential|api key", re.IGNORECASE,
@@ -109,8 +133,14 @@ COMPLETION_REPORT_SCHEMA: dict[str, Any] = {
 }
 
 
-def build_claude_code_argv(executable: str) -> list[str]:
-    """Fixed argv: no task text, no shell, no permission bypass."""
+def build_claude_code_argv(executable: str, worktree: Path) -> list[str]:
+    """Argv from trusted values only: no task text, no shell, no permission bypass.
+
+    ``--setting-sources=`` (empty) loads no user, project or local settings file,
+    so no repository- or user-controlled allow rules, hooks, env or MCP servers
+    apply; the subscription login in ``~/.claude.json`` is still used.
+    """
+    file_allow, file_deny = worktree_file_rules(worktree)
     return [
         executable,
         "-p",
@@ -118,10 +148,10 @@ def build_claude_code_argv(executable: str) -> list[str]:
         "--json-schema", json.dumps(COMPLETION_REPORT_SCHEMA, separators=(",", ":")),
         "--permission-mode", "dontAsk",
         "--tools", ",".join(CLAUDE_CODE_TOOLS),
-        "--allowedTools", ",".join(CLAUDE_CODE_ALLOWED_TOOLS),
-        "--disallowedTools", ",".join(CLAUDE_CODE_DISALLOWED_TOOLS),
+        "--allowedTools", ",".join((*file_allow, *CLAUDE_CODE_ALLOWED_BASH)),
+        "--disallowedTools", ",".join((*file_deny, *CLAUDE_CODE_DISALLOWED_BASH_AND_WEB)),
         "--strict-mcp-config",
-        "--setting-sources", "project",
+        "--setting-sources=",
         "--disable-slash-commands",
         "--no-session-persistence",
         "--max-turns", str(CLAUDE_CODE_MAX_TURNS),
@@ -256,14 +286,15 @@ class ClaudeCodeSoftwareEngineeringExecutor:
 
         try:
             canonical_before = self._workspace.status(root)
+            worktree_file_rules(self._workspace.worktrees_root() / f"se-{action.id}")
             worktree = self._workspace.create_worktree(action.id)
-        except WorkspaceUnavailableError:
+        except (WorkspaceUnavailableError, ValueError):
             return self._failure(action, "workspace_unavailable", permanent, executed=False)
         location = {"worktree_path": str(worktree.path), "worktree_branch": worktree.branch}
 
         try:
             process = self._runner.run(
-                build_claude_code_argv(self._executable),
+                build_claude_code_argv(self._executable, worktree.path),
                 cwd=worktree.path,
                 timeout_seconds=self._timeout_seconds,
                 stdin=build_task_prompt(
@@ -313,6 +344,19 @@ class ClaudeCodeSoftwareEngineeringExecutor:
         except ValidationError:
             return self._failure(action, "invalid_result", internal, executed=True, **ran)
 
+        observed = {
+            **ran,
+            "changed_files": list(TrustedGitWorkspace.changed_files(worktree_status)),
+            "reported_files_changed": _clip(report.files_changed),
+            "summary": report.summary,
+            "validation": _clip(report.validation),
+            "blockers": _clip(report.blockers),
+        }
+        if report.blockers:
+            # The worker says the task is not done; that can never be success.
+            return self._failure(
+                action, "worker_reported_blockers", permanent, executed=True, **observed,
+            )
         return WorkerExecutionResult(
             action=action,
             status=WorkerExecutionStatus.SUCCEEDED,
@@ -320,11 +364,6 @@ class ClaudeCodeSoftwareEngineeringExecutor:
             metadata={
                 "provider": CLAUDE_CODE_PROVIDER,
                 "external_execution_performed": True,
-                **ran,
-                "changed_files": list(TrustedGitWorkspace.changed_files(worktree_status)),
-                "reported_files_changed": _clip(report.files_changed),
-                "summary": report.summary,
-                "validation": _clip(report.validation),
-                "blockers": _clip(report.blockers),
+                **observed,
             },
         )
