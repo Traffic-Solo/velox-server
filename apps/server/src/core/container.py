@@ -14,6 +14,7 @@ from apps.server.src.core.approvals import (
     PendingApprovalRegistry,
 )
 from apps.server.src.core.config import get_settings
+from apps.server.src.core.delegation import ActionTaskDelegator, TaskDelegator
 from apps.server.src.core.events import (
     BaseContextResolver,
     EventInbox,
@@ -107,6 +108,11 @@ class ApplicationContainer:
         self.calendar_worker_executor = CalendarWorkerExecutor()
         self.worker_executor_registry.register_manifest(
             self.calendar_worker_executor.provider_manifest
+        )
+        self.task_delegator: TaskDelegator = ActionTaskDelegator(
+            executor_registry=self.worker_executor_registry,
+            permission_runtime=self.permission_runtime,
+            action_queue=self.action_queue,
         )
         self.calendar_event_list_orchestrator = CalendarEventListOrchestrator(
             self.calendar_worker_executor
