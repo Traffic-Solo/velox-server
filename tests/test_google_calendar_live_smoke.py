@@ -80,6 +80,8 @@ _PRINCIPAL_ENV = "VELOX_LIVE_GOOGLE_PRINCIPAL"
 _ACCOUNT_ENV = "VELOX_LIVE_GOOGLE_ACCOUNT_IDENTIFIER"
 _EVENT_ID_ENV = "VELOX_LIVE_GOOGLE_CALENDAR_EVENT_ID"
 _LIVE_ENV_NAMES = (_PRINCIPAL_ENV, _ACCOUNT_ENV, _EVENT_ID_ENV)
+# Evaluated at runtime so type checking on any platform sees both fixture paths.
+_RUNNING_ON_MACOS = sys.platform == "darwin"
 
 
 @dataclass(frozen=True)
@@ -145,7 +147,7 @@ def resolve_live_config(environment: Mapping[str, str]) -> LiveConfig:
 @pytest.fixture(scope="module")
 def live_config() -> LiveConfig:
     """Skip when live prerequisites are absent; fail closed when malformed."""
-    if sys.platform != "darwin":
+    if not _RUNNING_ON_MACOS:
         pytest.skip("live smoke requires the macOS Keychain credential store")
     try:
         return resolve_live_config(os.environ)
