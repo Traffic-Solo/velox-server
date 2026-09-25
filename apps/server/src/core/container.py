@@ -33,15 +33,20 @@ from apps.server.src.core.permission import (
     PermissionEngineRuntime,
 )
 from apps.server.src.core.planner import BasePlanner, Planner
+from apps.server.src.core.semantic import SemanticRoute, SemanticRouter
 from apps.server.src.integrations.calendar import (
     CALENDAR_ACCOUNT_CONTEXT,
+    CALENDAR_EXECUTOR_ROLE,
+    CALENDAR_LIST_EVENTS_CAPABILITY,
     CalendarEventListOrchestrator,
     CalendarWorkerExecutor,
 )
 from apps.server.src.integrations.calendar_agenda import (
+    CalendarTomorrowAgendaResult,
     CalendarTomorrowAgendaWorkflow,
 )
 from apps.server.src.integrations.calendar_agenda_command import (
+    CalendarAgendaCommandRequest,
     CalendarAgendaCommandService,
 )
 from apps.server.src.integrations.calendar_agenda_query import (
@@ -115,6 +120,19 @@ class ApplicationContainer:
         )
         self.calendar_agenda_intent_resolver: CalendarAgendaIntentResolver = (
             BoundedCalendarAgendaIntentResolver()
+        )
+        self.semantic_router = SemanticRouter[
+            CalendarAgendaCommandRequest, CalendarTomorrowAgendaResult
+        ](
+            routes=(SemanticRoute(
+                intent="calendar.agenda.tomorrow",
+                role=CALENDAR_EXECUTOR_ROLE,
+                capability=CALENDAR_LIST_EVENTS_CAPABILITY.identifier,
+            ),),
+            handlers={
+                (CALENDAR_EXECUTOR_ROLE, CALENDAR_LIST_EVENTS_CAPABILITY.identifier):
+                    lambda request: self.calendar_agenda_command_service.execute(request),
+            },
         )
         self.worker_execution_observer = InMemoryWorkerExecutionObserver()
         self.worker_runtime = WorkerRuntime(

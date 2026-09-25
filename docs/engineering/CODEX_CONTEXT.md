@@ -13,7 +13,10 @@ This file is the canonical repository handoff for Codex engineering sessions.
 
 ## Current Sprint
 
-Sprint 3 - CLOSED
+Sprint 4 - Vendor-neutral Semantic Routing
+
+Slice 1 implements explicit semantic dispatch for the existing Calendar query path.
+Sprint 3 remains closed; its final runtime and live-pilot evidence follow.
 
 Final Sprint 3 runtime head before closure documentation: `21acccee5ec6d53d91644e2f11b886815c4dc576`.
 
@@ -128,12 +131,24 @@ Any further Calendar intent expansion belongs to a separately scoped Sprint 4.
 
 ## Current Next Slice
 
-No active slice.
+Sprint 4 Slice 1: `SemanticRouter` in `core/semantic.py` dispatches exact semantic
+intent identifiers through an application-owned Role/Capability table. Construction
+rejects duplicate intents and routes without a matching handler. Unknown intents
+fail closed before execution. The router does not infer provider/account identity,
+create actions, grant permissions, retry failures or replace `WorkerExecutorRegistry`.
 
-Do not continue Sprint 3 with Slice 11. The next implementation work must begin only
-after an explicit Sprint 4 scope decision. Candidate work such as additional Calendar
-intents, refresh-token rotation persistence, warning cleanup, Gmail production adapters,
-or broader semantic routing remains deferred until selected into Sprint 4.
+`ApplicationContainer` registers `calendar.agenda.tomorrow` against the existing
+`CONTEXT_PREPARATION` / `list_calendar_events` pair. The handler delegates to the
+container's current `CalendarAgendaCommandService`, including lifespan-installed
+live composition. `/calendar/agenda/query` namespaces the existing bounded/Ollama
+resolver output and uses this router. Explicit account context, timezone, result
+shape and safe HTTP failures are preserved. `/calendar/agenda` remains unchanged.
+
+Next highest-priority slice: introduce a vendor-neutral semantic resolver Role with
+typed intent output and bridge the existing Calendar resolver through it. Keep
+provider/account selection outside model output and preserve the current HTTP
+compatibility adapter. A second production capability needs its own explicit scope;
+the second Role/Capability in Slice 1 tests is only a deterministic test handler.
 
 ## Final Slice 10
 
@@ -317,6 +332,15 @@ After every implementation slice, update this file in the same commit if the imp
 
 ## Technical Debt
 
+- Semantic dispatch is vendor-neutral, but production ingress/resolver and the
+  container's request/result types remain Calendar-specific. Only tomorrow agenda
+  is registered; generic ingress, additional intents and other production handlers
+  are not implemented. Existing planner, approval and worker paths are unchanged.
+- `tests/conftest.py` isolates every test from the local `.env` and ambient `VELOX_*`
+  settings; a gitignored live-pilot `.env` previously enabled live Calendar/Keychain
+  composition in default runs. Tests opt in only through explicit `monkeypatch.setenv`.
+- `uv run mypy apps tests` reports 75 pre-existing strict errors in 18 test files
+  (also on `main`); CI type-checks only `apps` via `uv run mypy`.
 - Open-source Harvest exists in Notion, but no real repositories have been evaluated yet.
 - Apple Ecosystem Strategy references ADRs that are not yet created.
 - Gmail read, send and archive capabilities use deterministic in-memory fake data only. Executor resolution supports explicit capability-provider routing and returns `SKIPPED` through `NoOpWorkerExecutor` when no registered handler matches.

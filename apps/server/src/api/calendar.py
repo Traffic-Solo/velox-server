@@ -5,6 +5,7 @@ from typing import Annotated
 
 from apps.server.src.api.dependencies import require_api_token
 from apps.server.src.core.container import ApplicationContainer, get_container
+from apps.server.src.core.semantic import SemanticRoutingError
 from apps.server.src.integrations.calendar_agenda import (
     CalendarAgendaWorkflowError,
     CalendarTomorrowAgendaResult,
@@ -57,10 +58,19 @@ class CalendarAgendaQueryHttpRequest(BaseModel):
 def _execute_calendar_agenda(
     request: CalendarAgendaCommandRequest,
     container: ApplicationContainer,
+    *,
+    semantic_intent: str | None = None,
 ) -> CalendarTomorrowAgendaResult:
     """Execute a recognized command and expose only safe HTTP failures."""
     try:
+        if semantic_intent is not None:
+            return container.semantic_router.execute(semantic_intent, request)
         return container.calendar_agenda_command_service.execute(request)
+    except SemanticRoutingError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="unsupported calendar agenda query",
+        ) from None
     except CalendarAgendaWorkflowError as error:
         if error.category is None and error.field in {
             "intent", "timezone", "account_context", "principal", "account_identifier",
@@ -106,7 +116,7 @@ def calendar_agenda_query(
     request: CalendarAgendaQueryHttpRequest,
     container: Annotated[ApplicationContainer, Depends(get_container)],
 ) -> CalendarTomorrowAgendaResult:
-    """Resolve a bounded query, then delegate the recognized command."""
+    """Resolve a bounded query, then dispatch through the semantic route table."""
     try:
         intent = container.calendar_agenda_intent_resolver.resolve(request.text)
     except CalendarAgendaQueryValidationError:
@@ -134,4 +144,5 @@ def calendar_agenda_query(
             timezone=request.timezone,
         ),
         container,
+        semantic_intent=f"calendar.agenda.{intent}",
     )
