@@ -1,13 +1,16 @@
-"""Local Ollama adapter for Calendar agenda intent classification."""
+"""Local Ollama Calendar agenda adapter for the semantic resolver Role."""
 
 from typing import Literal
 from urllib.parse import urlsplit
 
 import httpx
+from apps.server.src.core.semantic import (
+    SemanticInputError,
+    SemanticResolution,
+    SemanticResolverError,
+)
 from apps.server.src.integrations.calendar_agenda_query import (
-    CalendarAgendaIntentResolutionError,
-    CalendarAgendaIntentResolverExecutionError,
-    CalendarAgendaQueryValidationError,
+    CALENDAR_AGENDA_TOMORROW_INTENT,
 )
 from pydantic import BaseModel, ConfigDict
 
@@ -68,12 +71,10 @@ class OllamaCalendarAgendaIntentResolver:
             raise ValueError("Ollama model must be configured")
         return model.strip()
 
-    def resolve(self, text: str) -> str:
+    def resolve(self, text: str) -> SemanticResolution:
         """Classify text without exposing local model or transport details."""
         if not text.strip():
-            raise CalendarAgendaQueryValidationError(
-                "calendar agenda query text is required",
-            )
+            raise SemanticInputError("calendar agenda query text is required")
         try:
             response = self._client.post(
                 self._url,
@@ -94,11 +95,7 @@ class OllamaCalendarAgendaIntentResolver:
                 envelope.message.content,
             )
         except Exception:
-            raise CalendarAgendaIntentResolverExecutionError(
-                "calendar agenda query resolution failed",
-            ) from None
+            raise SemanticResolverError("calendar agenda query resolution failed") from None
         if classification.intent == "unsupported":
-            raise CalendarAgendaIntentResolutionError(
-                "calendar agenda query is unsupported",
-            )
-        return classification.intent
+            return SemanticResolution.unresolved()
+        return SemanticResolution.resolved(CALENDAR_AGENDA_TOMORROW_INTENT)

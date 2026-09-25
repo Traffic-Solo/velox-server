@@ -1,16 +1,79 @@
-"""Explicit semantic dispatch to application handlers by Role and Capability."""
+"""Vendor-neutral semantic resolution and explicit Role/Capability dispatch.
+
+Resolution classifies free-form input into a canonical semantic intent only.
+Dispatch stays with the application-owned ``SemanticRouter`` route table.
+"""
 
 import logging
+import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from enum import StrEnum
+from typing import Protocol
 
 from apps.server.src.core.actions import ExecutorRole
 
 logger = logging.getLogger(__name__)
 
+_CANONICAL_INTENT = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+")
+
 
 class SemanticRoutingError(ValueError):
     """No approved route exists for the supplied semantic intent."""
+
+
+class SemanticInputError(ValueError):
+    """Free-form input is structurally invalid (for example, blank)."""
+
+
+class SemanticResolverError(RuntimeError):
+    """A resolver could not safely classify input; details stay internal."""
+
+
+class SemanticResolutionStatus(StrEnum):
+    RESOLVED = "resolved"
+    UNRESOLVED = "unresolved"
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticResolution:
+    """Typed resolver output: a canonical intent identifier or an explicit miss.
+
+    It carries no provider, account, credential, handler or permission data;
+    the application route table alone decides what a resolved intent may run.
+    """
+
+    status: SemanticResolutionStatus
+    intent: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, SemanticResolutionStatus):
+            raise ValueError("semantic resolution requires a known status")
+        if self.status is SemanticResolutionStatus.UNRESOLVED:
+            if self.intent is not None:
+                raise ValueError("unresolved semantic resolution cannot carry an intent")
+            return
+        if not isinstance(self.intent, str) or not _CANONICAL_INTENT.fullmatch(self.intent):
+            raise ValueError("resolved semantic intent must be a canonical identifier")
+
+    @classmethod
+    def resolved(cls, intent: str) -> "SemanticResolution":
+        return cls(SemanticResolutionStatus.RESOLVED, intent)
+
+    @classmethod
+    def unresolved(cls) -> "SemanticResolution":
+        return cls(SemanticResolutionStatus.UNRESOLVED)
+
+
+class SemanticResolver(Protocol):
+    """Role: classify free-form input into a typed semantic resolution.
+
+    Implementations raise ``SemanticInputError`` for invalid input and
+    ``SemanticResolverError`` when classification cannot complete safely.
+    """
+
+    def resolve(self, text: str) -> SemanticResolution:
+        ...
 
 
 @dataclass(frozen=True)

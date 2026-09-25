@@ -1,48 +1,34 @@
-"""Provider-neutral Calendar agenda query resolution."""
+"""Calendar agenda adapters for the vendor-neutral semantic resolver Role."""
 
 from collections.abc import Mapping
-from typing import Protocol
 
+from apps.server.src.core.semantic import SemanticInputError, SemanticResolution
 
-class CalendarAgendaQueryValidationError(ValueError):
-    """Raised when a free-form Calendar agenda query is structurally invalid."""
+CALENDAR_AGENDA_TOMORROW_INTENT = "calendar.agenda.tomorrow"
+"""Canonical semantic intent for the existing tomorrow agenda command."""
 
-
-class CalendarAgendaIntentResolutionError(ValueError):
-    """Raised when a non-blank Calendar agenda query is not supported."""
-
-
-class CalendarAgendaIntentResolverExecutionError(RuntimeError):
-    """Raised when a configured resolver cannot safely classify a query."""
-
-
-class CalendarAgendaIntentResolver(Protocol):
-    """Resolve bounded user text to an existing Calendar agenda intent."""
-
-    def resolve(self, text: str) -> str:
-        """Return a supported semantic Calendar agenda intent."""
-        ...
+CALENDAR_AGENDA_COMMAND_INTENTS: Mapping[str, str] = {
+    CALENDAR_AGENDA_TOMORROW_INTENT: "tomorrow",
+}
+"""Application-owned bridge from canonical intents to agenda command intents."""
 
 
 class BoundedCalendarAgendaIntentResolver:
-    """Resolve the fixed Slice 9 Calendar agenda phrase set."""
+    """Resolve the fixed Slice 9 Calendar agenda phrase set deterministically."""
 
     _PHRASES: Mapping[str, str] = {
-        "що в мене завтра": "tomorrow",
-        "що у мене завтра": "tomorrow",  # noqa: RUF001
-        "what do i have tomorrow": "tomorrow",
+        "що в мене завтра": CALENDAR_AGENDA_TOMORROW_INTENT,
+        "що у мене завтра": CALENDAR_AGENDA_TOMORROW_INTENT,  # noqa: RUF001
+        "what do i have tomorrow": CALENDAR_AGENDA_TOMORROW_INTENT,
     }
     _TERMINAL_PUNCTUATION = "!?.,;"
 
-    def resolve(self, text: str) -> str:
+    def resolve(self, text: str) -> SemanticResolution:
         """Resolve supported text without calling any provider or runtime."""
         normalized = text.strip().casefold().rstrip(self._TERMINAL_PUNCTUATION).strip()
         if not normalized:
-            raise CalendarAgendaQueryValidationError(
-                "calendar agenda query text is required",
-            )
-        if normalized not in self._PHRASES:
-            raise CalendarAgendaIntentResolutionError(
-                "calendar agenda query is unsupported",
-            )
-        return self._PHRASES[normalized]
+            raise SemanticInputError("calendar agenda query text is required")
+        intent = self._PHRASES.get(normalized)
+        if intent is None:
+            return SemanticResolution.unresolved()
+        return SemanticResolution.resolved(intent)

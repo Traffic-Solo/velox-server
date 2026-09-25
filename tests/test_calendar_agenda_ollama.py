@@ -6,16 +6,20 @@ from typing import Any
 import httpx
 import pytest
 from apps.server.src.core.config import get_settings
+from apps.server.src.core.semantic import (
+    SemanticInputError,
+    SemanticResolution,
+    SemanticResolverError,
+)
 from apps.server.src.integrations.calendar_agenda_ollama import (
     OllamaCalendarAgendaIntentResolver,
 )
 from apps.server.src.integrations.calendar_agenda_query import (
-    CalendarAgendaIntentResolutionError,
-    CalendarAgendaIntentResolverExecutionError,
-    CalendarAgendaQueryValidationError,
+    CALENDAR_AGENDA_TOMORROW_INTENT,
+    BoundedCalendarAgendaIntentResolver,
 )
 from apps.server.src.integrations.calendar_agenda_runtime import (
-    calendar_agenda_intent_resolver,
+    calendar_agenda_semantic_resolver,
 )
 
 
@@ -67,7 +71,9 @@ def test_valid_tomorrow_result_sends_native_chat_request() -> None:
     resolver, requests = make_resolver(
         {"message": {"content": '{"intent":"tomorrow"}'}},
     )
-    assert resolver.resolve("які зустрічі завтра") == "tomorrow"
+    assert resolver.resolve("які зустрічі завтра") == SemanticResolution.resolved(
+        CALENDAR_AGENDA_TOMORROW_INTENT,
+    )
     request = requests[0]
     assert request.url.path == "/api/chat"
     sent = json.loads(request.content)
@@ -82,10 +88,9 @@ def test_valid_tomorrow_result_sends_native_chat_request() -> None:
     assert "today, another date, creating or changing events" in system_prompt
 
 
-def test_unsupported_result_uses_safe_semantic_error() -> None:
+def test_unsupported_result_is_an_explicit_unresolved_resolution() -> None:
     resolver, _ = make_resolver({"message": {"content": '{"intent":"unsupported"}'}})
-    with pytest.raises(CalendarAgendaIntentResolutionError):
-        resolver.resolve("am I busy tomorrow?")
+    assert resolver.resolve("am I busy tomorrow?") == SemanticResolution.unresolved()
 
 
 @pytest.mark.parametrize(
@@ -98,7 +103,7 @@ def test_unsupported_result_uses_safe_semantic_error() -> None:
 )
 def test_malformed_or_schema_invalid_results_are_safe(payload: dict[str, Any]) -> None:
     resolver, _ = make_resolver(payload)
-    with pytest.raises(CalendarAgendaIntentResolverExecutionError):
+    with pytest.raises(SemanticResolverError):
         resolver.resolve("show my calendar tomorrow")
 
 
@@ -108,14 +113,14 @@ def test_malformed_or_schema_invalid_results_are_safe(payload: dict[str, Any]) -
 )
 def test_transport_failures_are_safe(error: Exception) -> None:
     resolver, _ = make_resolver(error=error)
-    with pytest.raises(CalendarAgendaIntentResolverExecutionError) as raised:
+    with pytest.raises(SemanticResolverError) as raised:
         resolver.resolve("show my calendar tomorrow")
     assert str(raised.value) == "calendar agenda query resolution failed"
 
 
 def test_http_failure_is_safe_and_details_do_not_leak() -> None:
     resolver, _ = make_resolver({"error": "provider-secret"}, status_code=503)
-    with pytest.raises(CalendarAgendaIntentResolverExecutionError) as raised:
+    with pytest.raises(SemanticResolverError) as raised:
         resolver.resolve("show my calendar tomorrow")
     assert str(raised.value) == "calendar agenda query resolution failed"
     assert "provider-secret" not in str(raised.value)
@@ -123,7 +128,7 @@ def test_http_failure_is_safe_and_details_do_not_leak() -> None:
 
 def test_blank_input_does_not_call_http() -> None:
     resolver, requests = make_resolver()
-    with pytest.raises(CalendarAgendaQueryValidationError):
+    with pytest.raises(SemanticInputError):
         resolver.resolve("  ")
     assert requests == []
 
@@ -146,7 +151,18 @@ def test_ollama_mode_composes_and_closes_client(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("VELOX_CALENDAR_AGENDA_RESOLVER", "ollama")
     monkeypatch.setenv("VELOX_OLLAMA_MODEL", "configured-model")
     get_settings.cache_clear()
-    with calendar_agenda_intent_resolver() as resolver:
+    with calendar_agenda_semantic_resolver() as resolver:
         assert isinstance(resolver, OllamaCalendarAgendaIntentResolver)
     assert tracking.closed is True
     get_settings.cache_clear()
+
+
+def test_default_mode_composes_bounded_adapter_without_http_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "apps.server.src.integrations.calendar_agenda_runtime.httpx.Client",
+        lambda **_: pytest.fail("HTTP client created in default resolver mode"),
+    )
+    with calendar_agenda_semantic_resolver() as resolver:
+        assert isinstance(resolver, BoundedCalendarAgendaIntentResolver)

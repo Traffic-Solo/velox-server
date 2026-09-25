@@ -405,11 +405,12 @@ Before involving Google, verify the production resolver composition:
 
 ```bash
 uv run --env-file .env.live python - <<'PY'
-from apps.server.src.integrations.calendar_agenda_runtime import calendar_agenda_intent_resolver
+from apps.server.src.integrations.calendar_agenda_runtime import calendar_agenda_semantic_resolver
 
-with calendar_agenda_intent_resolver() as resolver:
+with calendar_agenda_semantic_resolver() as resolver:
     print(type(resolver).__name__)
-    print(resolver.resolve("що там у мене по планах завтра"))
+    resolution = resolver.resolve("що там у мене по планах завтра")
+    print(resolution.status.value, resolution.intent)
 PY
 ```
 
@@ -417,7 +418,7 @@ Expected semantic result:
 
 ```text
 OllamaCalendarAgendaIntentResolver
-tomorrow
+resolved calendar.agenda.tomorrow
 ```
 
 ### Full API pilot

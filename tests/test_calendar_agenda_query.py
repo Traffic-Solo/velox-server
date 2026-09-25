@@ -1,5 +1,6 @@
 """Offline coverage for bounded free-form Calendar agenda ingress."""
 
+import socket
 from collections.abc import Iterator
 from typing import Any, cast
 
@@ -7,18 +8,22 @@ import pytest
 from apps.server.src.core.actions import ExecutorRole
 from apps.server.src.core.config import get_settings
 from apps.server.src.core.container import ApplicationContainer, get_container
-from apps.server.src.core.semantic import SemanticRoute, SemanticRouter
+from apps.server.src.core.semantic import (
+    SemanticInputError,
+    SemanticResolution,
+    SemanticResolver,
+    SemanticResolverError,
+    SemanticRoute,
+    SemanticRouter,
+)
 from apps.server.src.integrations.calendar_agenda import CalendarTomorrowAgendaResult
 from apps.server.src.integrations.calendar_agenda_command import (
     CalendarAgendaCommandRequest,
     CalendarAgendaCommandService,
 )
 from apps.server.src.integrations.calendar_agenda_query import (
+    CALENDAR_AGENDA_TOMORROW_INTENT,
     BoundedCalendarAgendaIntentResolver,
-    CalendarAgendaIntentResolutionError,
-    CalendarAgendaIntentResolver,
-    CalendarAgendaIntentResolverExecutionError,
-    CalendarAgendaQueryValidationError,
 )
 from apps.server.src.main import app
 from apps.server.src.workers.executor import WorkerAccountContext
@@ -48,21 +53,19 @@ RESULT = CalendarTomorrowAgendaResult(
     ],
 )
 def test_bounded_resolver_supports_normalized_phrases(text: str) -> None:
-    resolver: CalendarAgendaIntentResolver = BoundedCalendarAgendaIntentResolver()
-    assert resolver.resolve(text) == "tomorrow"
+    resolver: SemanticResolver = BoundedCalendarAgendaIntentResolver()
+    assert resolver.resolve(text) == SemanticResolution.resolved(CALENDAR_AGENDA_TOMORROW_INTENT)
 
 
 @pytest.mark.parametrize("text", ["", "   "])
 def test_bounded_resolver_rejects_blank_text(text: str) -> None:
-    with pytest.raises(CalendarAgendaQueryValidationError):
+    with pytest.raises(SemanticInputError):
         BoundedCalendarAgendaIntentResolver().resolve(text)
 
 
-def test_bounded_resolver_rejects_unsupported_text() -> None:
-    with pytest.raises(CalendarAgendaIntentResolutionError):
-        BoundedCalendarAgendaIntentResolver().resolve(
-            "what is on my calendar today?"
-        )
+def test_bounded_resolver_returns_unresolved_for_unsupported_text() -> None:
+    resolution = BoundedCalendarAgendaIntentResolver().resolve("what is on my calendar today?")
+    assert resolution == SemanticResolution.unresolved()
 
 
 def test_resolver_has_no_provider_or_runtime_dependencies() -> None:
@@ -70,20 +73,25 @@ def test_resolver_has_no_provider_or_runtime_dependencies() -> None:
 
 
 class RecordingIntentResolver:
+    """Semantic resolver double; ``result`` may be deliberately malformed."""
+
     def __init__(
         self,
-        intent: str = "tomorrow",
+        result: object = None,
         error: Exception | None = None,
     ) -> None:
-        self.intent = intent
+        self.result = (
+            SemanticResolution.resolved(CALENDAR_AGENDA_TOMORROW_INTENT)
+            if result is None else result
+        )
         self.error = error
         self.calls: list[str] = []
 
-    def resolve(self, text: str) -> str:
+    def resolve(self, text: str) -> SemanticResolution:
         self.calls.append(text)
         if self.error is not None:
             raise self.error
-        return self.intent
+        return cast(SemanticResolution, self.result)
 
 
 class RecordingCommandService:
@@ -180,7 +188,7 @@ def test_query_uses_container_owned_resolver(
     client: TestClient, container: ApplicationContainer,
 ) -> None:
     resolver = RecordingIntentResolver()
-    container.calendar_agenda_intent_resolver = resolver
+    container.semantic_resolver = resolver
     spy = install_spy(container)
     body = query_payload()
     body["text"] = "delegate this text"
@@ -196,9 +204,9 @@ def test_query_resolver_execution_failure_is_fixed_safe_500(
 ) -> None:
     secret = "secret local model detail"
     resolver = RecordingIntentResolver(
-        error=CalendarAgendaIntentResolverExecutionError(secret),
+        error=SemanticResolverError(secret),
     )
-    container.calendar_agenda_intent_resolver = resolver
+    container.semantic_resolver = resolver
     spy = install_spy(container)
 
     response = client.post("/calendar/agenda/query", json=query_payload())
@@ -254,11 +262,13 @@ def test_query_uses_container_semantic_role_capability_handler(
     )]
 
 
-@pytest.mark.parametrize("intent", ["today", "gmail.send", "tomorrow; secret-provider-token"])
+@pytest.mark.parametrize(
+    "intent", ["calendar.agenda.today", "gmail.send", "calendar.agenda.tomorrow.extra"],
+)
 def test_unregistered_resolver_output_cannot_invoke_command(
     client: TestClient, container: ApplicationContainer, intent: str,
 ) -> None:
-    container.calendar_agenda_intent_resolver = RecordingIntentResolver(intent)
+    container.semantic_resolver = RecordingIntentResolver(SemanticResolution.resolved(intent))
     spy = install_spy(container)
     response = client.post("/calendar/agenda/query", json=query_payload())
     assert response.status_code == 422
@@ -280,3 +290,86 @@ def test_missing_semantic_route_fails_closed_but_structured_endpoint_is_unchange
     response = client.post("/calendar/agenda", json=body)
     assert response.status_code == 200
     assert len(spy.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        "tomorrow",
+        "calendar.agenda.tomorrow",
+        {"status": "resolved", "intent": "calendar.agenda.tomorrow"},
+        ("resolved", "calendar.agenda.tomorrow"),
+        42,
+    ],
+)
+def test_malformed_resolver_output_never_becomes_a_route(
+    client: TestClient, container: ApplicationContainer, malformed: object,
+) -> None:
+    container.semantic_resolver = RecordingIntentResolver(malformed)
+    spy = install_spy(container)
+    response = client.post("/calendar/agenda/query", json=query_payload())
+    assert response.status_code == 500
+    assert response.json() == {"detail": "calendar agenda query resolution failed"}
+    assert spy.calls == []
+
+
+def test_unresolved_resolution_fails_closed_before_routing(
+    client: TestClient, container: ApplicationContainer,
+) -> None:
+    container.semantic_resolver = RecordingIntentResolver(SemanticResolution.unresolved())
+    spy = install_spy(container)
+    routed: list[CalendarAgendaCommandRequest] = []
+
+    def handler(request: CalendarAgendaCommandRequest) -> CalendarTomorrowAgendaResult:
+        routed.append(request)
+        return RESULT
+
+    route = container.semantic_router.resolve(CALENDAR_AGENDA_TOMORROW_INTENT)
+    container.semantic_router = SemanticRouter((route,), {(route.role, route.capability): handler})
+    response = client.post("/calendar/agenda/query", json=query_payload())
+    assert response.status_code == 422
+    assert response.json() == {"detail": "unsupported calendar agenda query"}
+    assert routed == []
+    assert spy.calls == []
+
+
+def test_router_receives_canonical_intent_and_request_owned_context(
+    client: TestClient, container: ApplicationContainer,
+) -> None:
+    install_spy(container)
+    dispatched: list[tuple[str, CalendarAgendaCommandRequest]] = []
+    original_execute = container.semantic_router.execute
+
+    def recording_execute(
+        intent: str, request: CalendarAgendaCommandRequest,
+    ) -> CalendarTomorrowAgendaResult:
+        dispatched.append((intent, request))
+        return original_execute(intent, request)
+
+    container.semantic_router.execute = recording_execute  # type: ignore[method-assign]
+    body = query_payload()
+    body["account_context"] = {
+        "principal": "request-principal", "account_identifier": "request-acct",
+    }
+    response = client.post("/calendar/agenda/query", json=body)
+    assert response.status_code == 200
+    assert dispatched == [(CALENDAR_AGENDA_TOMORROW_INTENT, CalendarAgendaCommandRequest(
+        intent="tomorrow",
+        account_context=WorkerAccountContext("request-principal", "request-acct"),
+        timezone="Europe/Tirane",
+    ))]
+
+
+def test_default_composition_uses_bounded_resolver_without_external_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_external_call(*args: object, **kwargs: object) -> None:
+        raise AssertionError("external call attempted")
+
+    monkeypatch.setattr(socket, "create_connection", fail_external_call)
+    monkeypatch.setattr(socket, "socket", fail_external_call)
+    resolver = ApplicationContainer().semantic_resolver
+    assert isinstance(resolver, BoundedCalendarAgendaIntentResolver)
+    assert resolver.resolve("що в мене завтра?") == SemanticResolution.resolved(
+        CALENDAR_AGENDA_TOMORROW_INTENT,
+    )

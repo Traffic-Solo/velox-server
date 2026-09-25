@@ -2,11 +2,17 @@
 
 import logging
 from collections.abc import Callable
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, fields
 
 import pytest
 from apps.server.src.core.actions import ExecutorRole
-from apps.server.src.core.semantic import SemanticRoute, SemanticRouter, SemanticRoutingError
+from apps.server.src.core.semantic import (
+    SemanticResolution,
+    SemanticResolutionStatus,
+    SemanticRoute,
+    SemanticRouter,
+    SemanticRoutingError,
+)
 
 AGENDA = SemanticRoute(
     "calendar.agenda.tomorrow", ExecutorRole.CONTEXT_PREPARATION, "list_calendar_events",
@@ -119,3 +125,43 @@ def test_handler_failure_is_not_retried_or_converted_to_success() -> None:
         router.execute(AGENDA.intent, request)
     assert error.value is failure
     assert calls == [request]
+
+
+@pytest.mark.parametrize("intent", ["calendar.agenda.tomorrow", "content.summary", "a.b_2"])
+def test_resolved_resolution_accepts_canonical_intents(intent: str) -> None:
+    resolution = SemanticResolution.resolved(intent)
+    assert resolution.status is SemanticResolutionStatus.RESOLVED
+    assert resolution.intent == intent
+
+
+@pytest.mark.parametrize(
+    "intent",
+    [
+        "", " calendar.agenda.tomorrow", "tomorrow", "Calendar.Agenda", "calendar..agenda",
+        "calendar.agenda.tomorrow; provider=google", "calendar.agenda.tomorrow\n",
+        "calendar/agenda", None, 7,
+    ],
+)
+def test_resolved_resolution_rejects_non_canonical_intents(intent: object) -> None:
+    with pytest.raises(ValueError, match="canonical"):
+        SemanticResolution(SemanticResolutionStatus.RESOLVED, intent)  # type: ignore[arg-type]
+
+
+def test_unresolved_resolution_cannot_carry_an_intent() -> None:
+    assert SemanticResolution.unresolved().intent is None
+    with pytest.raises(ValueError, match="unresolved"):
+        SemanticResolution(SemanticResolutionStatus.UNRESOLVED, "calendar.agenda.tomorrow")
+
+
+def test_resolution_requires_a_known_status() -> None:
+    with pytest.raises(ValueError, match="status"):
+        SemanticResolution("resolved", "calendar.agenda.tomorrow")  # type: ignore[arg-type]
+
+
+def test_resolution_exposes_only_intent_classification_fields() -> None:
+    resolution = SemanticResolution.resolved("calendar.agenda.tomorrow")
+    assert {field.name for field in fields(resolution)} == {"status", "intent"}
+    with pytest.raises(FrozenInstanceError):
+        resolution.intent = "gmail.send"  # type: ignore[misc]
+    with pytest.raises((AttributeError, TypeError)):
+        object.__setattr__(resolution, "provider", "google")
