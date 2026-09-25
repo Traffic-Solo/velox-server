@@ -18,6 +18,7 @@ Sprint 4 - Vendor-neutral Semantic Routing
 Slice 1 implements explicit semantic dispatch for the existing Calendar query path.
 Slice 2 adds the vendor-neutral semantic resolver Role with typed intent output.
 Slice 3 adds the domain-neutral `POST /semantic/query` ingress.
+Slice 4 adds the vendor-neutral `TaskDelegator` boundary (no worker execution).
 Sprint 3 remains closed; its final runtime and live-pilot evidence follow.
 
 Final Sprint 3 runtime head before closure documentation: `21acccee5ec6d53d91644e2f11b886815c4dc576`.
@@ -220,10 +221,53 @@ Slice 3 validation: `uv run ruff check .` and `uv run ruff check apps tests` pas
 (93 source files each); focused semantic/Calendar agenda/settings tests 146 passed;
 `uv run pytest` 1002 passed, 6 deselected, 0 warnings; `git diff --check` passed.
 
-Next highest-priority slice: add a second, deliberately low-risk production semantic
-intent behind the same ingress (read-only, deterministic default) to prove the
-boundary beyond Calendar, and decide whether caller context stays fixed or becomes
-per-intent validated before worker delegation is considered.
+Sprint 4 Slice 4: `core/delegation.py` adds the vendor-neutral `TaskDelegator` Role,
+`delegate(TaskDelegationRequest) -> TaskDelegationResult`, implemented by
+`ActionTaskDelegator` and composed as `ApplicationContainer.task_delegator` over the
+container's own `WorkerExecutorRegistry`, `PermissionEngineRuntime` and
+`ActionQueue`. It is separate from the event `Planner`
+(`ProcessedEvent -> list[Action]`), which is unchanged and does not use it; no
+public endpoint exposes delegation yet.
+
+`TaskDelegationRequest(objective, target, executor_role: ExecutorRole, capability,
+account_context: WorkerAccountContext | None = None)` is frozen and validated:
+non-blank objective/target/capability, canonical (stripped, casefolded) capability,
+known `ExecutorRole`, and a well-formed account context when supplied; failures raise
+`TaskDelegationRequestError` before any side effect. It has no provider,
+credential, approval, retry or handler field.
+
+Flow: request -> `Action(type=capability, target, executor_role,
+payload={capability, objective[, account_context]},
+metadata={task_delegation: {requested_role, requested_capability}})` with no
+`capability_provider` -> `WorkerExecutorRegistry.resolve_with_registration`; if the
+route is not uniquely registered (`no_handler`, `missing_account_context`,
+`ambiguous_capability_route`, `invalid_*`) the result is `route_rejected` and nothing
+is evaluated, recorded or queued -> otherwise `PermissionEngineRuntime.evaluate`:
+`allowed` is enqueued (`queued`), `requires_approval` stays in the existing pending
+approval registry (`awaiting_approval`, not queued), `denied` is recorded rejected
+(`denied`). The registry chooses the provider; there is no ranking and ambiguity
+fails closed. `WorkerRuntime` is never invoked.
+
+`TaskDelegationResult(action_id: UUID, status, permission_status | None,
+routing_reason | None)` with `queued` meaning accepted into the queue, not executed.
+The Action id is the delegation identity. Harvested patterns (current sources):
+Temporal `execute_activity` names the activity while task-queue workers execute it;
+Celery `Router` resolves destinations from app routing config rather than the caller;
+Prefect `pause_flow_run` holds work for human input; Taskiq `with_labels` carries
+trace metadata on the task message. Retry policy on the request (Temporal) was
+deliberately not adopted; retries stay with `WorkerRuntime`.
+
+Slice 4 validation: `uv run ruff check .` and `uv run ruff check apps tests` passed;
+`uv run mypy`, `uv run mypy apps tests` and `uv run mypy --platform linux` passed
+(95 source files each); focused delegation/event workflow/planner/permission/worker
+runtime/semantic query tests 112 passed; `uv run pytest` 1026 passed, 6 deselected,
+0 warnings; `git diff --check` passed.
+
+Next highest-priority slice: a real, replaceable Software Engineering worker adapter
+behind a new vendor-neutral Role/capability, registered through a provider manifest
+and reached only through `TaskDelegator` -> approval -> `WorkerRuntime`, so VELOX can
+hand off one bounded engineering task without the user relaying prompts. Human-relay
+removal is not complete until a real worker has been invoked through VELOX.
 
 ## Final Slice 10
 
@@ -431,6 +475,10 @@ After every implementation slice, update this file in the same commit if the imp
   paths are unchanged and not reachable from semantic dispatch.
 - `POST /calendar/agenda/query` is a deprecated compatibility adapter with no
   removal date.
+- `TaskDelegator` has no caller yet: no Goal Planner, no public endpoint and no
+  engineering Role/capability. Only existing Gmail/Calendar routes can be delegated,
+  and queued work still runs only through the existing fake executors via
+  `WorkerRuntime`. No real worker has been invoked through delegation.
 - Semantic resolution has no confidence, ambiguity or multi-intent result; add these
   only when a resolver produces meaningful values.
 - Gmail read, send and archive capabilities use deterministic in-memory fake data only. Executor resolution supports explicit capability-provider routing and returns `SKIPPED` through `NoOpWorkerExecutor` when no registered handler matches.
