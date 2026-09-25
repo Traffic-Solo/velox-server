@@ -8,7 +8,7 @@ from apps.server.src.core.config import get_settings
 from apps.server.src.core.container import get_container
 from apps.server.src.core.log import configure_logging
 from apps.server.src.integrations.calendar_agenda_runtime import (
-    calendar_agenda_intent_resolver,
+    calendar_agenda_semantic_resolver,
     live_calendar_agenda_command_service,
 )
 from fastapi import FastAPI
@@ -24,7 +24,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     """Install the opt-in live agenda service only while its client is open."""
     container = get_container()
     previous_service = container.calendar_agenda_command_service
-    previous_resolver = container.calendar_agenda_intent_resolver
+    previous_resolver = container.semantic_resolver
     settings = get_settings()
     if settings.calendar_agenda_live:
         logger.warning(
@@ -42,13 +42,13 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
                 container.calendar_agenda_command_service = stack.enter_context(
                     live_calendar_agenda_command_service()
                 )
-            container.calendar_agenda_intent_resolver = stack.enter_context(
-                calendar_agenda_intent_resolver()
+            container.semantic_resolver = stack.enter_context(
+                calendar_agenda_semantic_resolver()
             )
             yield
     finally:
         container.calendar_agenda_command_service = previous_service
-        container.calendar_agenda_intent_resolver = previous_resolver
+        container.semantic_resolver = previous_resolver
 
 
 app = FastAPI(title=SERVICE_NAME, version=SERVICE_VERSION, lifespan=lifespan)

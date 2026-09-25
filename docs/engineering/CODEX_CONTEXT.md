@@ -16,6 +16,7 @@ This file is the canonical repository handoff for Codex engineering sessions.
 Sprint 4 - Vendor-neutral Semantic Routing
 
 Slice 1 implements explicit semantic dispatch for the existing Calendar query path.
+Slice 2 adds the vendor-neutral semantic resolver Role with typed intent output.
 Sprint 3 remains closed; its final runtime and live-pilot evidence follow.
 
 Final Sprint 3 runtime head before closure documentation: `21acccee5ec6d53d91644e2f11b886815c4dc576`.
@@ -144,11 +145,42 @@ live composition. `/calendar/agenda/query` namespaces the existing bounded/Ollam
 resolver output and uses this router. Explicit account context, timezone, result
 shape and safe HTTP failures are preserved. `/calendar/agenda` remains unchanged.
 
-Next highest-priority slice: introduce a vendor-neutral semantic resolver Role with
-typed intent output and bridge the existing Calendar resolver through it. Keep
-provider/account selection outside model output and preserve the current HTTP
-compatibility adapter. A second production capability needs its own explicit scope;
-the second Role/Capability in Slice 1 tests is only a deterministic test handler.
+Sprint 4 Slice 2: `core/semantic.py` defines the vendor-neutral `SemanticResolver`
+Role. `resolve(text)` returns a frozen `SemanticResolution(status, intent)`: status
+`resolved` requires a canonical dotted lowercase intent (for example
+`calendar.agenda.tomorrow`); `unresolved` carries no intent. The result has no
+provider, account, credential, handler or permission fields. Blank input raises
+`SemanticInputError`; classification failure raises `SemanticResolverError`.
+Design follows common intent-classification patterns (explicit none/fallback result,
+closed schema-validated labels, classification separated from routing); confidence
+scores and intent ranking were not adopted because no resolver produces calibrated
+values.
+
+`BoundedCalendarAgendaIntentResolver` (default) and the opt-in
+`OllamaCalendarAgendaIntentResolver` implement the Role directly; the former
+Calendar-specific resolver protocol and errors were removed. Unsupported input is
+an `unresolved` result. The Ollama model schema stays `tomorrow | unsupported` and
+is mapped to the canonical intent inside the adapter.
+`calendar_agenda_semantic_resolver()` composes the configured adapter, and
+`ApplicationContainer.semantic_resolver` is the single resolver attribute.
+
+`/calendar/agenda/query` flow: text -> `semantic_resolver` -> runtime-checked
+`SemanticResolution` -> `CALENDAR_AGENDA_COMMAND_INTENTS` (application-owned
+canonical-to-command map) -> `SemanticRouter.execute(canonical intent, command)`.
+Non-`SemanticResolution` output or resolver exceptions return the fixed 500;
+unresolved, unmapped or unrouted intents return the fixed 422 before any handler
+runs. Account context and timezone always come from the HTTP request. HTTP
+request/response shapes and error details are unchanged.
+
+Slice 2 validation: `uv run ruff check .` and `uv run ruff check apps tests` passed;
+`uv run mypy`, `uv run mypy apps tests` and `uv run mypy --platform linux` passed
+(90 source files each); focused semantic/Calendar agenda/settings tests 117 passed;
+`uv run pytest` 973 passed, 6 deselected, 0 warnings; `git diff --check` passed.
+
+Next highest-priority slice: make the free-form ingress domain-neutral. Add one
+semantic query endpoint and application-owned request context so the route table is
+no longer typed to Calendar command requests, with Calendar agenda remaining the
+only registered production intent. Worker delegation stays deferred until then.
 
 ## Final Slice 10
 
@@ -348,10 +380,14 @@ After every implementation slice, update this file in the same commit if the imp
 
 ## Deferred Capabilities / Architecture Gaps
 
-- Semantic dispatch is vendor-neutral, but production ingress/resolver and the
-  container's request/result types remain Calendar-specific. Only tomorrow agenda
-  is registered; generic ingress, additional intents and other production handlers
-  are not implemented. Existing planner, approval and worker paths are unchanged.
+- Semantic resolution and dispatch are vendor-neutral, but the only ingress is
+  `/calendar/agenda/query`, the container route table is typed to Calendar command
+  requests/results, and canonical-to-command mapping lives in the Calendar
+  integration. Only `calendar.agenda.tomorrow` is registered; generic ingress,
+  additional intents and other production handlers are not implemented. Planner,
+  approval and worker paths are unchanged and not reachable from semantic dispatch.
+- Semantic resolution has no confidence, ambiguity or multi-intent result; add these
+  only when a resolver produces meaningful values.
 - Gmail read, send and archive capabilities use deterministic in-memory fake data only. Executor resolution supports explicit capability-provider routing and returns `SKIPPED` through `NoOpWorkerExecutor` when no registered handler matches.
 - Real Gmail adapter, Gmail credential refresh integration, HTTP transport and real Gmail API calls are not implemented yet. The provider-local Calendar read-only OAuth bootstrap and macOS Keychain credential store exist but are not wired into Gmail provider composition.
 - Gmail provider boundary interfaces, fake transport bootstrap, fake credentials provider bootstrap and fake provider composition bootstrap are present behind the Gmail integration boundary. No concrete real provider implementation exists yet.

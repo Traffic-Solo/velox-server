@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 import httpx
 from apps.server.src.core.config import get_settings
+from apps.server.src.core.semantic import SemanticResolver
 from apps.server.src.integrations.calendar import (
     CalendarEventListOrchestrator,
     CalendarProviderComposition,
@@ -19,7 +20,6 @@ from apps.server.src.integrations.calendar_agenda_ollama import (
 )
 from apps.server.src.integrations.calendar_agenda_query import (
     BoundedCalendarAgendaIntentResolver,
-    CalendarAgendaIntentResolver,
 )
 from apps.server.src.integrations.google_oauth import StoredGoogleCredentialsProvider
 from apps.server.src.integrations.keyring_credentials import MacOSKeychainCredentialStore
@@ -50,8 +50,8 @@ def live_calendar_agenda_command_service(
 
 
 @contextmanager
-def calendar_agenda_intent_resolver() -> Iterator[CalendarAgendaIntentResolver]:
-    """Compose the configured resolver and own any local client it requires."""
+def calendar_agenda_semantic_resolver() -> Iterator[SemanticResolver]:
+    """Compose the configured Calendar adapter behind the semantic resolver Role."""
     settings = get_settings()
     if settings.calendar_agenda_resolver == "bounded":
         yield BoundedCalendarAgendaIntentResolver()

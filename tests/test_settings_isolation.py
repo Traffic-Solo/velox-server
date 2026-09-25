@@ -110,7 +110,7 @@ def test_startup_warns_only_when_live_opt_ins_are_enabled(
     with (
         patch.object(main, "get_container", return_value=ApplicationContainer()),
         patch.object(main, "live_calendar_agenda_command_service"),
-        patch.object(main, "calendar_agenda_intent_resolver"),
+        patch.object(main, "calendar_agenda_semantic_resolver"),
         caplog.at_level(logging.WARNING, logger=main.__name__),
         TestClient(app),
     ):
