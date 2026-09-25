@@ -1,7 +1,11 @@
-from apps.server.src.core.events import RuleBasedEventClassifier, UniversalEvent
+from apps.server.src.core.events import (
+    EventClassification,
+    RuleBasedEventClassifier,
+    UniversalEvent,
+)
 
 
-def classify_source(source: str):
+def classify_source(source: str) -> EventClassification:
     classifier = RuleBasedEventClassifier()
     event = UniversalEvent(source=source, type="event.created")
 

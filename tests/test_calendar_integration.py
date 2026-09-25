@@ -1,4 +1,6 @@
 import socket
+from collections.abc import Callable
+from typing import NoReturn
 
 import httpx
 import pytest
@@ -60,8 +62,8 @@ class StaticCalendarProviderComposition(CalendarProviderComposition):
         return self.response
 
 
-def block_external_socket_calls(monkeypatch) -> None:
-    def fail_external_call(*args, **kwargs):
+def block_external_socket_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_external_call(*args: object, **kwargs: object) -> NoReturn:
         raise AssertionError("external API call attempted")
 
     monkeypatch.setattr(socket, "create_connection", fail_external_call)
@@ -89,7 +91,7 @@ def calendar_provider_request(
 
 
 def calendar_http_client(
-    handler,
+    handler: Callable[[httpx.Request], httpx.Response],
 ) -> httpx.Client:
     return httpx.Client(transport=httpx.MockTransport(handler))
 
@@ -1072,7 +1074,9 @@ def test_calendar_executor_preserves_provider_failure_classification(
     assert "found" not in result.metadata
 
 
-def test_calendar_bootstrap_makes_no_external_api_calls(monkeypatch) -> None:
+def test_calendar_bootstrap_makes_no_external_api_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     block_external_socket_calls(monkeypatch)
     action = Action(
         type="prepare_calendar_context",

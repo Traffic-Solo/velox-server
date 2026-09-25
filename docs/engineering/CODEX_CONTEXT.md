@@ -27,7 +27,7 @@ Any further Calendar intent expansion belongs to a separately scoped Sprint 4.
 
 ## Quality Gates
 
-- CI runs on every push and pull request to main: `uv run ruff check apps tests`, `uv run mypy` (strict), `uv run pytest -q`.
+- CI runs on every push and pull request to main: `uv run ruff check apps tests`, `uv run mypy` (strict; `apps/server/src` and `tests`, with no test-specific relaxation), `uv run pytest -q`.
 - All three gates must pass before any commit is pushed. Run them locally before committing.
 - Dev tooling is installed with `uv sync --group dev`.
 
@@ -339,8 +339,6 @@ After every implementation slice, update this file in the same commit if the imp
 - `tests/conftest.py` isolates every test from the local `.env` and ambient `VELOX_*`
   settings; a gitignored live-pilot `.env` previously enabled live Calendar/Keychain
   composition in default runs. Tests opt in only through explicit `monkeypatch.setenv`.
-- `uv run mypy apps tests` reports 75 pre-existing strict errors in 18 test files
-  (also on `main`); CI type-checks only `apps` via `uv run mypy`.
 - Open-source Harvest exists in Notion, but no real repositories have been evaluated yet.
 - Apple Ecosystem Strategy references ADRs that are not yet created.
 - Gmail read, send and archive capabilities use deterministic in-memory fake data only. Executor resolution supports explicit capability-provider routing and returns `SKIPPED` through `NoOpWorkerExecutor` when no registered handler matches.

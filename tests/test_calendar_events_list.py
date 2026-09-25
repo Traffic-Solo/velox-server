@@ -4,6 +4,8 @@ Every test here is deterministic and offline: HTTP is served by an in-process
 httpx mock transport, and no credential material or real identifier is used.
 """
 
+from collections.abc import Callable, Sequence
+
 import httpx
 import pytest
 from apps.server.src.core.actions import Action
@@ -28,6 +30,7 @@ from apps.server.src.integrations.calendar import (
 from apps.server.src.workers.executor import (
     WorkerAccountContext,
     WorkerExecutionFailureCategory,
+    WorkerExecutionResult,
     WorkerExecutionStatus,
 )
 
@@ -115,12 +118,14 @@ def list_action(
     )
 
 
-def list_http_client(handler) -> httpx.Client:
+def list_http_client(
+    handler: Callable[[httpx.Request], httpx.Response],
+) -> httpx.Client:
     return httpx.Client(transport=httpx.MockTransport(handler))
 
 
 def google_page(
-    items: list[object],
+    items: Sequence[object],
     *,
     next_page_token: str | None = None,
 ) -> dict[str, object]:
@@ -136,7 +141,9 @@ def google_page(
     return page
 
 
-def executor_over(handler) -> tuple[CalendarWorkerExecutor, list[httpx.Request]]:
+def executor_over(
+    handler: Callable[[httpx.Request], httpx.Response],
+) -> tuple[CalendarWorkerExecutor, list[httpx.Request]]:
     """Compose the executor over the real transport with in-process HTTP."""
     requests: list[httpx.Request] = []
 
@@ -159,7 +166,7 @@ def execute_list(
     *,
     account_context: WorkerAccountContext | None = ACCOUNT_CONTEXT,
     action: Action | None = None,
-):
+) -> WorkerExecutionResult:
     return executor.execute(
         action if action is not None else list_action(),
         capability=LIST_CAPABILITY,
@@ -351,7 +358,7 @@ def test_executor_rejects_invalid_list_input_without_contacting_the_provider(
 
     executor, requests = executor_over(unreachable)
 
-    result = execute_list(executor, action=list_action(**payload))  # type: ignore[arg-type]
+    result = execute_list(executor, action=list_action(**payload))
 
     assert result.status == WorkerExecutionStatus.FAILED
     assert result.failure is not None

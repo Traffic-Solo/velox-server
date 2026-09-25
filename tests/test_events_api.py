@@ -1,10 +1,12 @@
 from datetime import UTC, datetime
+from typing import NoReturn
 from uuid import uuid4
 
 import pytest
 from apps.server.src.core.action_lifecycle_manager import ActionLifecycleManager
 from apps.server.src.core.actions import Action
 from apps.server.src.core.container import get_container
+from apps.server.src.core.events import UniversalEvent
 from apps.server.src.core.permission import (
     PermissionDecision,
     PermissionEngineRuntime,
@@ -605,7 +607,7 @@ def test_successful_processing_sets_lifecycle_state_to_processed() -> None:
 
 def test_processing_failure_sets_lifecycle_state_to_failed(monkeypatch: pytest.MonkeyPatch) -> None:
     class FailingPipeline:
-        def process(self, event):
+        def process(self, event: UniversalEvent) -> NoReturn:
             raise RuntimeError("processing failed")
 
     event_id = uuid4()

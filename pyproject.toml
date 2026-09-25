@@ -59,13 +59,9 @@ ignore = [
 python_version = "3.12"
 strict = true
 warn_unreachable = true
-files = ["apps/server/src"]
+files = ["apps/server/src", "tests"]
 explicit_package_bases = true
 mypy_path = "."
-
-[[tool.mypy.overrides]]
-module = "tests.*"
-disallow_untyped_defs = false
 
 [[tool.mypy.overrides]]
 module = ["google_auth_oauthlib", "google_auth_oauthlib.*"]

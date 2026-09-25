@@ -42,7 +42,13 @@ class RecordingContextResolver:
         return self.context
 
 
-def create_pipeline_parts():
+def create_pipeline_parts() -> tuple[
+    UniversalEvent,
+    EventClassification,
+    RecordingClassifier,
+    RecordingContextResolver,
+    EventProcessingPipeline,
+]:
     event = UniversalEvent(source="gmail", type="message.received")
     classification = EventClassification(
         category="communication",

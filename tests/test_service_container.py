@@ -1,3 +1,5 @@
+import inspect
+
 import pytest
 from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.core.container import ApplicationContainer, get_container
@@ -342,7 +344,9 @@ def test_provider_worker_capabilities_are_read_only_manifest_properties() -> Non
         container.gmail_worker_executor,
         container.calendar_worker_executor,
     ):
-        worker_capabilities_property = type(executor).worker_capabilities
+        worker_capabilities_property = inspect.getattr_static(
+            type(executor), "worker_capabilities",
+        )
         assert isinstance(worker_capabilities_property, property)
         assert worker_capabilities_property.fset is None
 

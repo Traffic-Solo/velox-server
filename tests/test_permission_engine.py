@@ -108,7 +108,7 @@ def test_permission_runtime_defaults_to_deny_when_decision_cannot_be_resolved() 
 
     lifecycle_repository = InMemoryActionLifecycleRepository()
     runtime = PermissionEngineRuntime(
-        permission_engine=MissingDecisionPermissionEngine(),
+        permission_engine=MissingDecisionPermissionEngine(),  # type: ignore[arg-type]
         action_lifecycle_manager=ActionLifecycleManager(),
         lifecycle_repository=lifecycle_repository,
     )

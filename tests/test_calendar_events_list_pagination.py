@@ -8,6 +8,8 @@ a failure message.
 Every test is deterministic and offline; HTTP is served by an httpx mock.
 """
 
+from collections.abc import Callable
+
 import httpx
 import pytest
 from apps.server.src.core.actions import Action
@@ -31,6 +33,7 @@ from apps.server.src.integrations.calendar import (
 from apps.server.src.workers.executor import (
     WorkerAccountContext,
     WorkerExecutionFailureCategory,
+    WorkerExecutionResult,
     WorkerExecutionStatus,
 )
 
@@ -139,7 +142,9 @@ def orchestration_action(
     return action.model_copy(update={"payload": payload})
 
 
-def executor_over(handler) -> tuple[CalendarWorkerExecutor, list[httpx.Request]]:
+def executor_over(
+    handler: Callable[[httpx.Request], httpx.Response],
+) -> tuple[CalendarWorkerExecutor, list[httpx.Request]]:
     requests: list[httpx.Request] = []
 
     def recording_handler(request: httpx.Request) -> httpx.Response:
@@ -156,7 +161,7 @@ def executor_over(handler) -> tuple[CalendarWorkerExecutor, list[httpx.Request]]
     return executor, requests
 
 
-def execute(executor: CalendarWorkerExecutor, action: Action):
+def execute(executor: CalendarWorkerExecutor, action: Action) -> WorkerExecutionResult:
     return executor.execute(
         action,
         capability=LIST_CAPABILITY,
@@ -167,7 +172,7 @@ def execute(executor: CalendarWorkerExecutor, action: Action):
 def execute_orchestration(
     executor: CalendarWorkerExecutor,
     action: Action | None = None,
-):
+) -> WorkerExecutionResult:
     return CalendarEventListOrchestrator(executor).execute(
         action if action is not None else orchestration_action(),
         account_context=ACCOUNT_CONTEXT,
@@ -707,7 +712,7 @@ def test_page_token_is_confined_to_the_request_and_a_presence_flag() -> None:
 SENTINEL_TOKEN = "SENTINEL-PAGE-TOKEN-MUST-NEVER-ESCAPE-7f3a91"
 
 
-def result_surfaces(result) -> str:
+def result_surfaces(result: WorkerExecutionResult) -> str:
     """Every surface a caller can read off a WorkerExecutionResult."""
     return "|".join(
         (
