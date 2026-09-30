@@ -186,9 +186,10 @@ def test_promotion_creates_one_velox_commit_pushes_exact_branch_and_publishes_pr
     assert git(expected.path, "rev-list", "--count", f"{canonical_before}..HEAD") == "1"
     message = git(expected.path, "show", "-s", "--format=%B", "HEAD")
     assert f"VELOX-Action: {action_id}" in message
-    assert git(repo, "ls-remote", "--heads", "origin", f"refs/heads/{expected.branch}").split()[0] == (
-        result.commit_sha
-    )
+    remote_head = git(
+        repo, "ls-remote", "--heads", "origin", f"refs/heads/{expected.branch}"
+    ).split()[0]
+    assert remote_head == result.commit_sha
     assert publisher.calls == [
         (repo, "main", expected.branch, "Slice 10", "Guarded promotion")
     ]
