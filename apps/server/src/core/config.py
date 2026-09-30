@@ -6,6 +6,7 @@ be committed to the repository or stored in Notion.
 """
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -53,6 +54,9 @@ class Settings(BaseSettings):
     software_engineering_timeout_seconds: int = 1800
     """Process-level bound for one Software Engineering worker invocation."""
 
+    software_engineering_state_database_path: str | None = None
+    """Optional absolute SQLite path for durable Software Engineering run state."""
+
     claude_code_executable: str = "claude"
     """Claude Code CLI executable name or path (resolved on PATH when a name)."""
 
@@ -98,6 +102,14 @@ class Settings(BaseSettings):
             )
         if self.software_engineering_timeout_seconds < 1:
             raise ValueError("VELOX_SOFTWARE_ENGINEERING_TIMEOUT_SECONDS must be positive")
+        if self.software_engineering_state_database_path is not None:
+            state_path = Path(
+                self.software_engineering_state_database_path
+            ).expanduser()
+            if not state_path.is_absolute():
+                raise ValueError(
+                    "VELOX_SOFTWARE_ENGINEERING_STATE_DATABASE_PATH must be absolute"
+                )
         if self.software_engineering_promotion_enabled and (
             self.software_engineering_provider == "disabled"
         ):

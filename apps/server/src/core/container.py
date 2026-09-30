@@ -63,7 +63,6 @@ from apps.server.src.integrations.software_engineering_continuation import (
     SoftwareEngineeringTaskContinuation,
 )
 from apps.server.src.integrations.software_engineering_disposition import (
-    InMemorySoftwareEngineeringDispositionRepository,
     SoftwareEngineeringWorkProductDispositionService,
 )
 from apps.server.src.integrations.software_engineering_ingress import (
@@ -74,6 +73,10 @@ from apps.server.src.integrations.software_engineering_promotion import (
 )
 from apps.server.src.integrations.software_engineering_runtime import (
     configured_software_engineering,
+)
+from apps.server.src.integrations.software_engineering_state import (
+    DurableSoftwareEngineeringExecutionObserver,
+    InMemorySoftwareEngineeringRunRepository,
 )
 from apps.server.src.workers.executor import (
     NoOpWorkerExecutor,
@@ -141,6 +144,11 @@ class ApplicationContainer:
             if software_engineering is not None
             else None
         )
+        self.software_engineering_run_repository = (
+            software_engineering.run_repository
+            if software_engineering is not None
+            else InMemorySoftwareEngineeringRunRepository()
+        )
         if self.software_engineering_executor is not None:
             self.worker_executor_registry.register_manifest(
                 self.software_engineering_executor.provider_manifest
@@ -151,7 +159,8 @@ class ApplicationContainer:
             action_queue=self.action_queue,
         )
         self.software_engineering_task_ingress = SoftwareEngineeringTaskIngress(
-            self.task_delegator
+            self.task_delegator,
+            self.software_engineering_run_repository,
         )
         self.calendar_event_list_orchestrator = CalendarEventListOrchestrator(
             self.calendar_worker_executor
@@ -177,7 +186,10 @@ class ApplicationContainer:
                     ),
             },
         )
-        self.worker_execution_observer = InMemoryWorkerExecutionObserver()
+        self.worker_execution_observer = DurableSoftwareEngineeringExecutionObserver(
+            InMemoryWorkerExecutionObserver(),
+            self.software_engineering_run_repository,
+        )
         self.worker_runtime = WorkerRuntime(
             action_queue=self.action_queue,
             action_lifecycle_manager=self.action_lifecycle_manager,
@@ -196,21 +208,14 @@ class ApplicationContainer:
             worker_runtime=self.worker_runtime,
             work_product_reviewer=self.software_engineering_work_products,
         )
-        self.software_engineering_disposition_repository = (
-            InMemorySoftwareEngineeringDispositionRepository()
-        )
         self.software_engineering_work_product_disposition = (
             SoftwareEngineeringWorkProductDispositionService(
-                lifecycle_repository=self.action_lifecycle_repository,
-                execution_observer=self.worker_execution_observer,
+                run_repository=self.software_engineering_run_repository,
                 work_products=self.software_engineering_work_products,
-                disposition_repository=self.software_engineering_disposition_repository,
             )
         )
         self.software_engineering_promotion = SoftwareEngineeringPromotionService(
-            lifecycle_repository=self.action_lifecycle_repository,
-            execution_observer=self.worker_execution_observer,
-            disposition_repository=self.software_engineering_disposition_repository,
+            run_repository=self.software_engineering_run_repository,
             workspace=self.software_engineering_workspace,
             work_products=self.software_engineering_work_products,
             pull_request_publisher=self.software_engineering_pull_request_publisher,
