@@ -18,17 +18,9 @@ from collections.abc import Callable, Sequence
 from typing import TextIO
 from uuid import UUID
 
-from apps.server.src.core.actions import ExecutorRole
 from apps.server.src.core.approval_decisions import approve_pending_action
 from apps.server.src.core.container import ApplicationContainer
-from apps.server.src.core.delegation import (
-    TaskDelegationRequest,
-    TaskDelegationRequestError,
-    TaskDelegationStatus,
-)
-from apps.server.src.integrations.software_engineering import (
-    SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
-)
+from apps.server.src.core.delegation import TaskDelegationStatus
 from apps.server.src.integrations.software_engineering_work_product import (
     SoftwareEngineeringWorkProductService,
     WorkProductDisposition,
@@ -68,18 +60,10 @@ def main(
             file=out,
         )
         return 2
-    try:
-        request = TaskDelegationRequest(
-            objective=args.objective,
-            target=args.target,
-            executor_role=ExecutorRole.SOFTWARE_ENGINEERING,
-            capability=SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
-        )
-    except TaskDelegationRequestError as error:
-        print(f"Invalid task: {error}", file=out)
-        return 2
-
-    delegation = container.task_delegator.delegate(request)
+    delegation = container.software_engineering_task_ingress.delegate(
+        objective=args.objective,
+        target=args.target,
+    )
     action_id = str(delegation.action_id)
     print(f"Delegation: {delegation.status.value} (action {action_id})", file=out)
     if delegation.status is not TaskDelegationStatus.AWAITING_APPROVAL:
@@ -108,9 +92,11 @@ def main(
         lifecycle_repository=container.action_lifecycle_repository,
         lifecycle_manager=container.action_lifecycle_manager,
         action_queue=container.action_queue,
+        pending_action_recovery=container.software_engineering_action_recovery,
+        approval_recorder=container.software_engineering_action_recovery,
     )
     print("Approved. Running the worker (this can take several minutes)...", file=out)
-    container.worker_runtime_invocation.invoke(max_actions=1)
+    container.software_engineering_task_continuation.execute(delegation.action_id)
 
     observation = next(
         (
