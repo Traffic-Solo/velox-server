@@ -28,6 +28,7 @@ import httpx
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_TIMEOUT_SECONDS = 1_900.0
 _TARGET = "velox-server"
+_ACCEPTANCE_LOG = "docs/engineering/acceptance/SPRINT4_LIVE_ACCEPTANCE.md"
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
@@ -116,14 +117,14 @@ def _request_json(
     return payload
 
 
-def _acceptance_objective(marker_path: str) -> str:
+def _acceptance_objective(marker_line: str) -> str:
     return (
-        f"Create a new Markdown file at {marker_path} with exactly these two lines:\n"
-        "# VELOX Sprint 4 live acceptance\n"
-        "This file was created by the VELOX Software Engineering live acceptance pilot.\n"
+        f"Append exactly this one new line to {_ACCEPTANCE_LOG}:\n"
+        f"{marker_line}\n"
         "Do not modify, rename, delete, or create any other file. "
+        "Do not alter any existing line in that file. "
         "Do not run git commit, git push, or gh commands. "
-        "Stop after the requested file exists."
+        "Stop immediately after the requested line has been appended."
     )
 
 
@@ -145,7 +146,12 @@ def _require_int(payload: dict[str, Any], key: str) -> int:
     return value
 
 
-def _show_review(execution: dict[str, Any], out: TextIO) -> None:
+def _show_review(
+    execution: dict[str, Any],
+    *,
+    expected_line: str,
+    out: TextIO,
+) -> None:
     if execution.get("review_status") != "available":
         raise SoftwareEngineeringAcceptanceError(
             "live execution completed without an available work-product review"
@@ -165,9 +171,14 @@ def _show_review(execution: dict[str, Any], out: TextIO) -> None:
         )
     changed = review.get("changed_files")
     untracked = review.get("untracked_files")
-    if not isinstance(changed, list) or not isinstance(untracked, list):
+    if changed != [_ACCEPTANCE_LOG] or untracked != []:
         raise SoftwareEngineeringAcceptanceError(
-            "live work-product review file summary is invalid"
+            "live worker modified files outside the exact acceptance target"
+        )
+    diff = str(review.get("diff", ""))
+    if expected_line not in diff:
+        raise SoftwareEngineeringAcceptanceError(
+            "live work-product diff does not contain the exact acceptance marker"
         )
     print(
         "=== VELOX bounded work-product review ===",
@@ -178,7 +189,7 @@ def _show_review(execution: dict[str, Any], out: TextIO) -> None:
         "--- diff --stat ---",
         str(review.get("diff_stat", "")).rstrip() or "(none)",
         "--- diff ---",
-        str(review.get("diff", "")).rstrip() or "(none)",
+        diff.rstrip() or "(none)",
         sep="\n",
         file=out,
     )
@@ -196,8 +207,10 @@ def run_acceptance(
     current = now or datetime.now(UTC)
     suffix = marker_suffix or uuid4().hex[:8]
     stamp = current.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
-    marker_path = (
-        f"docs/engineering/acceptance/sprint4-live-acceptance-{stamp}-{suffix}.md"
+    marker_path = _ACCEPTANCE_LOG
+    marker_line = (
+        f"- Acceptance {stamp}-{suffix}: "
+        "VELOX live Software Engineering control plane."
     )
 
     health = _request_json(client, "GET", "/health")
@@ -209,7 +222,7 @@ def run_acceptance(
         "POST",
         "/tasks/software-engineering",
         json_body={
-            "objective": _acceptance_objective(marker_path),
+            "objective": _acceptance_objective(marker_line),
             "target": _TARGET,
         },
     )
@@ -257,7 +270,7 @@ def run_acceptance(
         raise SoftwareEngineeringAcceptanceError(
             "live Software Engineering execution did not complete successfully"
         )
-    _show_review(execution, out)
+    _show_review(execution, expected_line=marker_line, out=out)
 
     executed_status = _request_json(
         client,
