@@ -92,6 +92,9 @@ class SoftwareEngineeringRunRepository(Protocol):
     def get(self, action_id: UUID) -> SoftwareEngineeringRunState | None:
         ...
 
+    def list_pending_approval(self) -> list[SoftwareEngineeringRunState]:
+        ...
+
     def register_action(
         self,
         *,
@@ -174,6 +177,18 @@ class InMemorySoftwareEngineeringRunRepository:
 
     def get(self, action_id: UUID) -> SoftwareEngineeringRunState | None:
         return self._states.get(action_id)
+
+    def list_pending_approval(self) -> list[SoftwareEngineeringRunState]:
+        return [
+            state
+            for state in self._states.values()
+            if (
+                state.approval_status
+                is SoftwareEngineeringApprovalStatus.AWAITING_APPROVAL
+                and state.claim_id is None
+                and state.execution_status is None
+            )
+        ]
 
     def register_action(
         self,
@@ -528,6 +543,25 @@ class SqliteSoftwareEngineeringRunRepository:
                 "software engineering state could not be read"
             ) from None
         return _state_from_row(row) if row is not None else None
+
+    def list_pending_approval(self) -> list[SoftwareEngineeringRunState]:
+        try:
+            with self._connect() as connection:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM software_engineering_runs
+                    WHERE approval_status = ?
+                      AND claim_id IS NULL
+                      AND execution_status IS NULL
+                    ORDER BY created_at, action_id
+                    """,
+                    (SoftwareEngineeringApprovalStatus.AWAITING_APPROVAL.value,),
+                ).fetchall()
+        except sqlite3.Error:
+            raise SoftwareEngineeringRunStateError(
+                "software engineering pending approvals could not be read"
+            ) from None
+        return [_state_from_row(row) for row in rows]
 
     def register_action(
         self,
