@@ -67,3 +67,36 @@ def test_action_queue_count_returns_number_of_actions() -> None:
     queue.enqueue(Action(type="prepare_meeting", target="event-2"))
 
     assert queue.count() == 2
+
+
+def test_action_queue_get_is_non_destructive() -> None:
+    queue = ActionQueue()
+    first = Action(type="first", target="one")
+    target = Action(type="target", target="two")
+    third = Action(type="third", target="three")
+    queue.enqueue_many([first, target, third])
+
+    assert queue.get(target.id) == target
+    assert queue.list() == [first, target, third]
+
+
+def test_action_queue_remove_exact_action_preserves_unrelated_order() -> None:
+    queue = ActionQueue()
+    first = Action(type="first", target="one")
+    target = Action(type="target", target="two")
+    third = Action(type="third", target="three")
+    queue.enqueue_many([first, target, third])
+
+    assert queue.remove(target.id) == target
+    assert queue.list() == [first, third]
+
+
+def test_action_queue_exact_lookup_and_remove_missing_return_none() -> None:
+    queue = ActionQueue()
+    queued = Action(type="queued", target="one")
+    missing = Action(type="missing", target="two")
+    queue.enqueue(queued)
+
+    assert queue.get(missing.id) is None
+    assert queue.remove(missing.id) is None
+    assert queue.list() == [queued]

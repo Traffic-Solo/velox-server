@@ -11,6 +11,12 @@ from apps.server.src.core.delegation import (
     TaskDelegationStatus,
 )
 from apps.server.src.core.permission import PermissionStatus
+from apps.server.src.integrations.software_engineering_continuation import (
+    SoftwareEngineeringContinuationNotFoundError,
+    SoftwareEngineeringContinuationRouteError,
+    SoftwareEngineeringContinuationStateError,
+    WorkProductReviewStatus,
+)
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict
 
@@ -34,6 +40,32 @@ class SoftwareEngineeringTaskHttpResponse(BaseModel):
     status: TaskDelegationStatus
     permission_status: PermissionStatus | None
     routing_reason: str | None
+
+
+class SoftwareEngineeringWorkProductReviewHttpResponse(BaseModel):
+    """Bounded git-generated review without exposing local filesystem paths."""
+
+    changed_files: list[str]
+    untracked_files: list[str]
+    diff_stat: str
+    diff: str
+    diff_truncated: bool
+    dirty: bool
+    canonical_clean: bool
+    canonical_unchanged: bool
+
+
+class SoftwareEngineeringExecutionHttpResponse(BaseModel):
+    """Provider-neutral exact-Action execution and review result."""
+
+    action_id: UUID
+    processed: bool
+    execution_status: str
+    lifecycle_status: str
+    execution_reason: str | None
+    external_execution_performed: bool
+    review_status: WorkProductReviewStatus
+    review: SoftwareEngineeringWorkProductReviewHttpResponse | None
 
 
 @router.post("/tasks/software-engineering")
@@ -64,4 +96,56 @@ def delegate_software_engineering_task(
         status=result.status,
         permission_status=result.permission_status,
         routing_reason=result.routing_reason,
+    )
+
+
+@router.post("/tasks/software-engineering/{action_id}/execute")
+def execute_software_engineering_task(
+    action_id: UUID,
+    container: Annotated[ApplicationContainer, Depends(get_container)],
+) -> SoftwareEngineeringExecutionHttpResponse:
+    """Execute one exact approved Software Engineering Action and review its work."""
+    try:
+        result = container.software_engineering_task_continuation.execute(action_id)
+    except SoftwareEngineeringContinuationNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+    except (
+        SoftwareEngineeringContinuationStateError,
+        SoftwareEngineeringContinuationRouteError,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="software engineering action is not executable",
+        ) from None
+    except Exception:
+        logger.exception("software engineering task continuation failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="software engineering task continuation failed",
+        ) from None
+
+    review = result.review
+    review_response = (
+        SoftwareEngineeringWorkProductReviewHttpResponse(
+            changed_files=list(review.changed_files),
+            untracked_files=list(review.untracked_files),
+            diff_stat=review.diff_stat,
+            diff=review.diff,
+            diff_truncated=review.diff_truncated,
+            dirty=review.dirty,
+            canonical_clean=review.canonical_clean,
+            canonical_unchanged=review.canonical_unchanged,
+        )
+        if review is not None
+        else None
+    )
+    return SoftwareEngineeringExecutionHttpResponse(
+        action_id=result.action_id,
+        processed=result.processed,
+        execution_status=result.execution_status.value,
+        lifecycle_status=result.lifecycle_status.value,
+        execution_reason=result.execution_reason,
+        external_execution_performed=result.external_execution_performed,
+        review_status=result.review_status,
+        review=review_response,
     )
