@@ -544,7 +544,7 @@ class SqliteSoftwareEngineeringRunRepository:
                     (_SCHEMA_NAME,),
                 ).fetchone()
                 if row is None:
-                    self._create_v2_table(connection)
+                    self._create_v3_table(connection)
                     connection.execute(
                         "INSERT INTO velox_schema(name, version) VALUES (?, ?)",
                         (_SCHEMA_NAME, _SCHEMA_VERSION),
@@ -553,12 +553,19 @@ class SqliteSoftwareEngineeringRunRepository:
                     version = int(row["version"])
                     if version == 1:
                         self._migrate_v1_to_v2(connection)
+                        self._migrate_v2_to_v3(connection)
+                        connection.execute(
+                            "UPDATE velox_schema SET version = ? WHERE name = ?",
+                            (_SCHEMA_VERSION, _SCHEMA_NAME),
+                        )
+                    elif version == 2:
+                        self._migrate_v2_to_v3(connection)
                         connection.execute(
                             "UPDATE velox_schema SET version = ? WHERE name = ?",
                             (_SCHEMA_VERSION, _SCHEMA_NAME),
                         )
                     elif version == _SCHEMA_VERSION:
-                        self._create_v2_table(connection)
+                        self._create_v3_table(connection)
                     else:
                         raise SoftwareEngineeringRunStateError(
                             "unsupported software engineering state schema version"
@@ -569,7 +576,7 @@ class SqliteSoftwareEngineeringRunRepository:
             ) from None
 
     @staticmethod
-    def _create_v2_table(connection: sqlite3.Connection) -> None:
+    def _create_v3_table(connection: sqlite3.Connection) -> None:
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS software_engineering_runs (
@@ -585,6 +592,8 @@ class SqliteSoftwareEngineeringRunRepository:
                 claim_id TEXT,
                 claimed_at TEXT,
                 execution_started_at TEXT,
+                claim_resolution TEXT,
+                claim_reconciled_at TEXT,
                 execution_status TEXT,
                 execution_finished_at TEXT,
                 external_execution_performed INTEGER,
@@ -621,6 +630,24 @@ class SqliteSoftwareEngineeringRunRepository:
             "claim_id": "TEXT",
             "claimed_at": "TEXT",
             "execution_started_at": "TEXT",
+        }
+        for name, sql_type in additions.items():
+            if name not in columns:
+                connection.execute(
+                    f"ALTER TABLE software_engineering_runs ADD COLUMN {name} {sql_type}"
+                )
+
+    @staticmethod
+    def _migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in connection.execute(
+                "PRAGMA table_info(software_engineering_runs)"
+            ).fetchall()
+        }
+        additions = {
+            "claim_resolution": "TEXT",
+            "claim_reconciled_at": "TEXT",
         }
         for name, sql_type in additions.items():
             if name not in columns:
