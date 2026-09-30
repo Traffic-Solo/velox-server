@@ -125,12 +125,21 @@ class ApplicationContainer:
         self.worker_executor_registry.register_manifest(
             self.calendar_worker_executor.provider_manifest
         )
+        settings = get_settings()
         software_engineering = configured_software_engineering()
         self.software_engineering_executor = (
             software_engineering.executor if software_engineering is not None else None
         )
+        self.software_engineering_workspace = (
+            software_engineering.workspace if software_engineering is not None else None
+        )
         self.software_engineering_work_products = (
             software_engineering.work_products if software_engineering is not None else None
+        )
+        self.software_engineering_pull_request_publisher = (
+            software_engineering.pull_request_publisher
+            if software_engineering is not None
+            else None
         )
         if self.software_engineering_executor is not None:
             self.worker_executor_registry.register_manifest(
@@ -176,7 +185,7 @@ class ApplicationContainer:
             executor_registry=self.worker_executor_registry,
             execution_observer=self.worker_execution_observer,
             lifecycle_repository=self.action_lifecycle_repository,
-            max_transient_retries=get_settings().max_transient_retries,
+            max_transient_retries=settings.max_transient_retries,
         )
         self.worker_runtime_invocation = WorkerRuntimeInvocationService(
             worker_runtime=self.worker_runtime,
