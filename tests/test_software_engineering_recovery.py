@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from apps.server.src.core.action_lifecycle import ActionStatus
@@ -30,6 +30,7 @@ from apps.server.src.integrations.software_engineering_state import (
     SqliteSoftwareEngineeringRunRepository,
 )
 from apps.server.src.workers.executor import (
+    WorkerAccountContext,
     WorkerCapability,
     WorkerExecutionResult,
     WorkerExecutionStatus,
@@ -50,7 +51,7 @@ class RecordingExecutor:
         action: Action,
         *,
         capability: str | None = None,
-        account_context: object | None = None,
+        account_context: WorkerAccountContext | None = None,
     ) -> WorkerExecutionResult:
         self.calls.append(action)
         return WorkerExecutionResult(
@@ -128,7 +129,7 @@ def test_approved_action_executes_after_restart_with_empty_local_queue(
 ) -> None:
     path = tmp_path / "state.sqlite3"
     first_process = SqliteSoftwareEngineeringRunRepository(path)
-    action_id = __import__("uuid").uuid4()
+    action_id = uuid4()
     register_approved(first_process, action_id=action_id)
 
     restarted_repository = SqliteSoftwareEngineeringRunRepository(path)
@@ -164,7 +165,7 @@ def test_claimed_action_is_not_automatically_replayed_after_restart(
 ) -> None:
     path = tmp_path / "state.sqlite3"
     first_process = SqliteSoftwareEngineeringRunRepository(path)
-    action_id = __import__("uuid").uuid4()
+    action_id = uuid4()
     register_approved(first_process, action_id=action_id)
     first_process.claim_approved(action_id)
 
@@ -190,7 +191,7 @@ def test_pending_action_can_be_approved_after_restart_without_registry_state(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "state.sqlite3"
-    action_id = __import__("uuid").uuid4()
+    action_id = uuid4()
     first_process = SqliteSoftwareEngineeringRunRepository(path)
     first_process.register_action(
         action_id=action_id,
@@ -231,8 +232,8 @@ def test_durable_pending_listing_reconstructs_only_awaiting_actions(
     tmp_path: Path,
 ) -> None:
     repository = SqliteSoftwareEngineeringRunRepository(tmp_path / "state.sqlite3")
-    awaiting_id = __import__("uuid").uuid4()
-    approved_id = __import__("uuid").uuid4()
+    awaiting_id = uuid4()
+    approved_id = uuid4()
     repository.register_action(
         action_id=awaiting_id,
         target="velox-server",
