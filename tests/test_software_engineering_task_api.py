@@ -590,7 +590,7 @@ def test_work_product_disposition_never_runs_before_execution_finishes(
     assert reviewer.apply_calls == []
 
 
-def test_work_product_disposition_rejects_wrong_route_execution_evidence(
+def test_work_product_disposition_hides_non_software_engineering_action(
     client: TestClient,
     container: ApplicationContainer,
 ) -> None:
@@ -624,7 +624,7 @@ def test_work_product_disposition_rejects_wrong_route_execution_evidence(
         json={"disposition": "discard"},
     )
 
-    assert response.status_code == 409
+    assert response.status_code == 404
     assert reviewer.apply_calls == []
 
 
