@@ -3,22 +3,22 @@
 from typing import Protocol
 from uuid import UUID
 
-from apps.server.src.core.action_lifecycle import ActionStatus
-from apps.server.src.core.action_lifecycle_repository import ActionLifecycleRepository
 from apps.server.src.core.actions import ExecutorRole
 from apps.server.src.integrations.software_engineering import (
     SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
+)
+from apps.server.src.integrations.software_engineering_state import (
+    SoftwareEngineeringRunRepository,
 )
 from apps.server.src.integrations.software_engineering_work_product import (
     WorkProductDisposition,
     WorkProductDispositionResult,
     WorkProductIdentityError,
 )
-from apps.server.src.workers.runtime import WorkerExecutionObservation
 
 
 class SoftwareEngineeringDispositionNotFoundError(LookupError):
-    """No governed Action lifecycle exists for the requested id."""
+    """No durable Software Engineering Action record exists for the requested id."""
 
 
 class SoftwareEngineeringDispositionStateError(RuntimeError):
@@ -26,7 +26,7 @@ class SoftwareEngineeringDispositionStateError(RuntimeError):
 
 
 class SoftwareEngineeringDispositionRouteError(RuntimeError):
-    """Execution evidence is not the canonical Software Engineering route."""
+    """Durable evidence is not the canonical Software Engineering route."""
 
 
 class SoftwareEngineeringWorkProductDisposer(Protocol):
@@ -40,95 +40,44 @@ class SoftwareEngineeringWorkProductDisposer(Protocol):
         ...
 
 
-class WorkerExecutionEvidenceSource(Protocol):
-    """Provider-neutral source of worker execution observations."""
-
-    def list(self) -> list[WorkerExecutionObservation]:
-        ...
-
-
-class SoftwareEngineeringDispositionRepository(Protocol):
-    """Record the latest successful work-product disposition by Action."""
-
-    def get(self, action_id: UUID) -> WorkProductDispositionResult | None:
-        ...
-
-    def set(self, result: WorkProductDispositionResult) -> None:
-        ...
-
-
-class InMemorySoftwareEngineeringDispositionRepository:
-    """Process-local disposition evidence used by guarded promotion."""
-
-    def __init__(self) -> None:
-        self._results: dict[UUID, WorkProductDispositionResult] = {}
-
-    def get(self, action_id: UUID) -> WorkProductDispositionResult | None:
-        return self._results.get(action_id)
-
-    def set(self, result: WorkProductDispositionResult) -> None:
-        self._results[result.action_id] = result
-
-
 class SoftwareEngineeringWorkProductDispositionService:
-    """Apply KEEP/DISCARD only to a verified executed Software Engineering Action."""
+    """Apply KEEP/DISCARD using durable execution evidence."""
 
-    _terminal_statuses = frozenset(
-        {
-            ActionStatus.COMPLETED,
-            ActionStatus.FAILED,
-            ActionStatus.SKIPPED,
-        }
-    )
+    _terminal_execution_statuses = frozenset({"succeeded", "failed", "skipped"})
 
     def __init__(
         self,
         *,
-        lifecycle_repository: ActionLifecycleRepository,
-        execution_observer: WorkerExecutionEvidenceSource,
+        run_repository: SoftwareEngineeringRunRepository,
         work_products: SoftwareEngineeringWorkProductDisposer | None,
-        disposition_repository: SoftwareEngineeringDispositionRepository | None = None,
     ) -> None:
-        self._lifecycle_repository = lifecycle_repository
-        self._execution_observer = execution_observer
+        self._run_repository = run_repository
         self._work_products = work_products
-        self._disposition_repository = disposition_repository
 
     def apply(
         self,
         action_id: UUID,
         disposition: WorkProductDisposition,
     ) -> WorkProductDispositionResult:
-        """Apply one exact disposition after trusted route and state verification."""
-        lifecycle = self._lifecycle_repository.get(action_id)
-        if lifecycle is None:
+        """Apply one exact disposition after durable route/state verification."""
+        state = self._run_repository.get(action_id)
+        if state is None:
             raise SoftwareEngineeringDispositionNotFoundError(
                 "software engineering action was not found"
             )
-        if lifecycle.status not in self._terminal_statuses:
-            raise SoftwareEngineeringDispositionStateError(
-                "software engineering action has not finished execution"
-            )
-
-        observation = next(
-            (
-                item
-                for item in reversed(self._execution_observer.list())
-                if item.action_id == action_id
-            ),
-            None,
-        )
-        if observation is None or observation.finished_at is None:
-            raise SoftwareEngineeringDispositionStateError(
-                "software engineering execution evidence is unavailable"
-            )
         if (
-            observation.requested_role != ExecutorRole.SOFTWARE_ENGINEERING.value
-            or observation.requested_capability
-            != SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY
+            state.executor_role != ExecutorRole.SOFTWARE_ENGINEERING.value
+            or state.capability != SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY
         ):
             raise SoftwareEngineeringDispositionRouteError(
                 "action was not executed through the software engineering route"
+            )
+        if (
+            state.execution_status not in self._terminal_execution_statuses
+            or state.execution_finished_at is None
+        ):
+            raise SoftwareEngineeringDispositionStateError(
+                "software engineering action has not finished execution"
             )
 
         if self._work_products is None:
@@ -141,6 +90,6 @@ class SoftwareEngineeringWorkProductDispositionService:
             raise SoftwareEngineeringDispositionStateError(
                 "software engineering work product is unavailable or unverifiable"
             ) from None
-        if result.succeeded and self._disposition_repository is not None:
-            self._disposition_repository.set(result)
+        if result.succeeded:
+            self._run_repository.record_disposition(result)
         return result
