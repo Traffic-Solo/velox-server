@@ -61,6 +61,13 @@ class SoftwareEngineeringRunState:
     capability: str
     target: str
     delegation_status: str | None = None
+    pending_objective: str | None = None
+    approval_status: SoftwareEngineeringApprovalStatus | None = None
+    approved_at: datetime | None = None
+    rejected_at: datetime | None = None
+    claim_id: UUID | None = None
+    claimed_at: datetime | None = None
+    execution_started_at: datetime | None = None
     execution_status: str | None = None
     execution_finished_at: datetime | None = None
     external_execution_performed: bool | None = None
@@ -93,6 +100,39 @@ class SoftwareEngineeringRunRepository(Protocol):
         executor_role: str,
         capability: str,
         delegation_status: str | None = None,
+        objective: str | None = None,
+        approval_status: SoftwareEngineeringApprovalStatus | None = None,
+    ) -> SoftwareEngineeringRunState:
+        ...
+
+    def record_approval(
+        self,
+        *,
+        action_id: UUID,
+        objective: str,
+        approved_at: datetime,
+    ) -> SoftwareEngineeringRunState:
+        ...
+
+    def record_rejection(
+        self,
+        *,
+        action_id: UUID,
+        rejected_at: datetime,
+    ) -> SoftwareEngineeringRunState:
+        ...
+
+    def claim_approved(
+        self,
+        action_id: UUID,
+    ) -> SoftwareEngineeringActionClaim:
+        ...
+
+    def record_execution_started(
+        self,
+        *,
+        action_id: UUID,
+        started_at: datetime,
     ) -> SoftwareEngineeringRunState:
         ...
 
