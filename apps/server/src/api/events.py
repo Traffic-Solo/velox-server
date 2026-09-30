@@ -9,6 +9,7 @@ from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionSt
 from apps.server.src.core.approval_decisions import (
     PendingActionNotFoundError,
     approve_pending_action,
+    reject_pending_action,
 )
 from apps.server.src.core.container import get_container
 from apps.server.src.core.events import (
@@ -18,6 +19,9 @@ from apps.server.src.core.events import (
     EventProcessingError,
     IntegrationRouteContext,
     UniversalEvent,
+)
+from apps.server.src.integrations.software_engineering_recovery import (
+    SoftwareEngineeringRecoveryError,
 )
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
@@ -49,22 +53,37 @@ def list_action_queue() -> list[dict[str, Any]]:
 
 @router.get("/actions/pending-approval")
 def list_pending_approval_actions() -> list[dict[str, Any]]:
-    """Return actions held for explicit approval, with their lifecycle state."""
+    """Return process-local plus restart-recovered SE approval work."""
     container = get_container()
-    return [
-        {
-            "action": action.model_dump(mode="json"),
-            "lifecycle": (
-                lifecycle.model_dump(mode="json")
-                if (
-                    lifecycle := container.action_lifecycle_repository.get(action.id)
-                )
-                is not None
-                else None
-            ),
-        }
-        for action in container.pending_approval_registry.list_pending()
-    ]
+    actions = list(container.pending_approval_registry.list_pending())
+    known = {action.id for action in actions}
+    try:
+        for action in container.software_engineering_action_recovery.list_pending():
+            if action.id not in known:
+                actions.append(action)
+                known.add(action.id)
+    except SoftwareEngineeringRecoveryError:
+        logger.exception("software engineering pending approval recovery failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="pending approval recovery failed",
+        ) from None
+
+    response: list[dict[str, Any]] = []
+    for action in actions:
+        lifecycle = container.action_lifecycle_repository.get(action.id)
+        if lifecycle is None:
+            lifecycle = ActionLifecycleState(
+                status=ActionStatus.QUEUED,
+                metadata={"approval_required": True, "durable_recovery": True},
+            )
+        response.append(
+            {
+                "action": action.model_dump(mode="json"),
+                "lifecycle": lifecycle.model_dump(mode="json"),
+            }
+        )
+    return response
 
 
 @router.post("/actions/{action_id}/approve")
@@ -78,6 +97,8 @@ def approve_action(action_id: UUID) -> dict[str, Any]:
             lifecycle_repository=container.action_lifecycle_repository,
             lifecycle_manager=container.action_lifecycle_manager,
             action_queue=container.action_queue,
+            pending_action_recovery=container.software_engineering_action_recovery,
+            approval_recorder=container.software_engineering_action_recovery,
         )
     except PendingActionNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
@@ -86,6 +107,12 @@ def approve_action(action_id: UUID) -> dict[str, Any]:
             status_code=status.HTTP_409_CONFLICT,
             detail=str(error),
         ) from error
+    except SoftwareEngineeringRecoveryError:
+        logger.exception("software engineering approval persistence failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="action approval persistence failed",
+        ) from None
 
     return {
         "status": "approved",
@@ -101,32 +128,31 @@ def reject_action(
 ) -> dict[str, Any]:
     """Reject a pending action so it never reaches the execution queue."""
     container = get_container()
-    action = container.pending_approval_registry.get(action_id)
-    if action is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-
-    lifecycle_state = container.action_lifecycle_repository.get(action_id)
-    if lifecycle_state is None:
-        lifecycle_state = ActionLifecycleState(
-            status=ActionStatus.QUEUED,
-            metadata={"approval_required": True},
-        )
-
     reason = body.reason if body is not None and body.reason else "rejected by user"
     try:
-        rejected_state = container.action_lifecycle_manager.transition(
-            lifecycle_state,
-            ActionStatus.REJECTED,
+        rejected_state = reject_pending_action(
+            action_id,
+            pending_approval_registry=container.pending_approval_registry,
+            lifecycle_repository=container.action_lifecycle_repository,
+            lifecycle_manager=container.action_lifecycle_manager,
             reason=reason,
+            pending_action_recovery=container.software_engineering_action_recovery,
+            approval_recorder=container.software_engineering_action_recovery,
         )
+    except PendingActionNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
     except ValueError as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(error),
         ) from error
+    except SoftwareEngineeringRecoveryError:
+        logger.exception("software engineering rejection persistence failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="action rejection persistence failed",
+        ) from None
 
-    container.action_lifecycle_repository.set(action_id, rejected_state)
-    container.pending_approval_registry.remove(action_id)
     return {
         "status": "rejected",
         "action_id": str(action_id),
