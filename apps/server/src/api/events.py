@@ -12,9 +12,6 @@ from apps.server.src.core.approval_decisions import (
     reject_pending_action,
 )
 from apps.server.src.core.container import get_container
-from apps.server.src.integrations.software_engineering_recovery import (
-    SoftwareEngineeringRecoveryError,
-)
 from apps.server.src.core.events import (
     DuplicateEventError,
     EventLifecycleConflictError,
@@ -22,6 +19,9 @@ from apps.server.src.core.events import (
     EventProcessingError,
     IntegrationRouteContext,
     UniversalEvent,
+)
+from apps.server.src.integrations.software_engineering_recovery import (
+    SoftwareEngineeringRecoveryError,
 )
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
