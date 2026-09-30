@@ -25,7 +25,7 @@ from apps.server.src.workers.runtime import (
     WorkerExecutionObserver,
 )
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _SCHEMA_NAME = "software_engineering_runs"
 
 
@@ -39,6 +39,13 @@ class SoftwareEngineeringApprovalStatus(StrEnum):
     AWAITING_APPROVAL = "awaiting_approval"
     APPROVED = "approved"
     REJECTED = "rejected"
+
+
+class SoftwareEngineeringClaimResolution(StrEnum):
+    """Durable operator reconciliation outcome for one execution claim."""
+
+    RELEASED_BEFORE_START = "released_before_start"
+    ABANDONED_AFTER_START = "abandoned_after_start"
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +75,8 @@ class SoftwareEngineeringRunState:
     claim_id: UUID | None = None
     claimed_at: datetime | None = None
     execution_started_at: datetime | None = None
+    claim_resolution: SoftwareEngineeringClaimResolution | None = None
+    claim_reconciled_at: datetime | None = None
     execution_status: str | None = None
     execution_finished_at: datetime | None = None
     external_execution_performed: bool | None = None
@@ -136,6 +145,24 @@ class SoftwareEngineeringRunRepository(Protocol):
         *,
         action_id: UUID,
         started_at: datetime,
+    ) -> SoftwareEngineeringRunState:
+        ...
+
+    def release_unstarted_claim(
+        self,
+        *,
+        action_id: UUID,
+        expected_updated_at: datetime,
+        reconciled_at: datetime,
+    ) -> SoftwareEngineeringRunState:
+        ...
+
+    def abandon_started_claim(
+        self,
+        *,
+        action_id: UUID,
+        expected_updated_at: datetime,
+        reconciled_at: datetime,
     ) -> SoftwareEngineeringRunState:
         ...
 
