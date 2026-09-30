@@ -332,8 +332,7 @@ def configure_exact_execution(
     )
     container.software_engineering_work_product_disposition = (
         SoftwareEngineeringWorkProductDispositionService(
-            lifecycle_repository=container.action_lifecycle_repository,
-            execution_observer=container.worker_execution_observer,
+            run_repository=container.software_engineering_run_repository,
             work_products=reviewer,
         )
     )
