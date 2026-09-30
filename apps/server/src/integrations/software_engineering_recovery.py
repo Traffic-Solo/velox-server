@@ -46,6 +46,14 @@ class SoftwareEngineeringActionRecovery:
             )
         return self._action_from_state(state)
 
+    def list_pending(self) -> list[Action]:
+        """Return durable awaiting-approval SE Actions in creation order."""
+        actions: list[Action] = []
+        for state in self._repository.list_pending_approval():
+            self._require_canonical_state(state)
+            actions.append(self._action_from_state(state))
+        return actions
+
     def record_approved(self, action: Action) -> None:
         """Persist approval before process-local queue mutation."""
         if not self._is_canonical_action(action):
