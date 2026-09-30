@@ -114,6 +114,12 @@ class SoftwareEngineeringActionRecovery:
         )
 
     def _ensure_registered(self, action: Action, objective: str) -> None:
+        current = self._repository.get(action.id)
+        approval_status = (
+            SoftwareEngineeringApprovalStatus.AWAITING_APPROVAL
+            if current is None
+            else None
+        )
         try:
             self._repository.register_action(
                 action_id=action.id,
@@ -121,7 +127,7 @@ class SoftwareEngineeringActionRecovery:
                 executor_role=ExecutorRole.SOFTWARE_ENGINEERING.value,
                 capability=SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
                 objective=objective,
-                approval_status=SoftwareEngineeringApprovalStatus.AWAITING_APPROVAL,
+                approval_status=approval_status,
             )
         except SoftwareEngineeringRunStateError as error:
             raise SoftwareEngineeringRecoveryError(
