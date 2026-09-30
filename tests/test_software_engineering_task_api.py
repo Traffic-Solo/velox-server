@@ -328,6 +328,7 @@ def configure_exact_execution(
         action_queue=container.action_queue,
         lifecycle_repository=container.action_lifecycle_repository,
         worker_runtime=container.worker_runtime,
+        action_recovery=container.software_engineering_action_recovery,
         work_product_reviewer=reviewer,
     )
     container.software_engineering_work_product_disposition = (
@@ -345,6 +346,8 @@ def approve(container: ApplicationContainer, action_id: UUID) -> None:
         lifecycle_repository=container.action_lifecycle_repository,
         lifecycle_manager=container.action_lifecycle_manager,
         action_queue=container.action_queue,
+        pending_action_recovery=container.software_engineering_action_recovery,
+        approval_recorder=container.software_engineering_action_recovery,
     )
 
 
