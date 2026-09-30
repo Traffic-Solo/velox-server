@@ -31,7 +31,12 @@ class SoftwareEngineeringActionRecovery:
 
     def recover_pending(self, action_id: UUID) -> Action | None:
         """Reconstruct one awaiting-approval SE Action after restart."""
-        state = self._repository.get(action_id)
+        try:
+            state = self._repository.get(action_id)
+        except SoftwareEngineeringRunStateError as error:
+            raise SoftwareEngineeringRecoveryError(
+                "software engineering pending recovery state is unavailable"
+            ) from error
         if state is None:
             return None
         self._require_canonical_state(state)
@@ -49,7 +54,13 @@ class SoftwareEngineeringActionRecovery:
     def list_pending(self) -> list[Action]:
         """Return durable awaiting-approval SE Actions in creation order."""
         actions: list[Action] = []
-        for state in self._repository.list_pending_approval():
+        try:
+            states = self._repository.list_pending_approval()
+        except SoftwareEngineeringRunStateError as error:
+            raise SoftwareEngineeringRecoveryError(
+                "software engineering pending recovery state is unavailable"
+            ) from error
+        for state in states:
             self._require_canonical_state(state)
             actions.append(self._action_from_state(state))
         return actions
@@ -89,7 +100,12 @@ class SoftwareEngineeringActionRecovery:
 
     def claim(self, action_id: UUID) -> Action:
         """Atomically claim one approved Action and reconstruct its exact envelope."""
-        state = self._repository.get(action_id)
+        try:
+            state = self._repository.get(action_id)
+        except SoftwareEngineeringRunStateError as error:
+            raise SoftwareEngineeringRecoveryError(
+                "software engineering claim state is unavailable"
+            ) from error
         if state is None:
             raise SoftwareEngineeringRecoveryNotFoundError(
                 "software engineering action was not found"
@@ -122,13 +138,13 @@ class SoftwareEngineeringActionRecovery:
         )
 
     def _ensure_registered(self, action: Action, objective: str) -> None:
-        current = self._repository.get(action.id)
-        approval_status = (
-            SoftwareEngineeringApprovalStatus.AWAITING_APPROVAL
-            if current is None
-            else None
-        )
         try:
+            current = self._repository.get(action.id)
+            approval_status = (
+                SoftwareEngineeringApprovalStatus.AWAITING_APPROVAL
+                if current is None
+                else None
+            )
             self._repository.register_action(
                 action_id=action.id,
                 target=action.target,
