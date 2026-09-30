@@ -194,6 +194,100 @@ def test_sqlite_v1_state_migrates_to_v3_without_losing_existing_evidence(
     assert version == (3,)
 
 
+def test_sqlite_v2_state_migrates_to_v3_with_claim_evidence_intact(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state-v2.sqlite3"
+    action_id = uuid4()
+    now = datetime.now(UTC).isoformat()
+    claim_id = uuid4()
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE velox_schema (
+            name TEXT PRIMARY KEY,
+            version INTEGER NOT NULL
+        );
+        CREATE TABLE software_engineering_runs (
+            action_id TEXT PRIMARY KEY,
+            executor_role TEXT NOT NULL,
+            capability TEXT NOT NULL,
+            target TEXT NOT NULL,
+            delegation_status TEXT,
+            pending_objective TEXT,
+            approval_status TEXT,
+            approved_at TEXT,
+            rejected_at TEXT,
+            claim_id TEXT,
+            claimed_at TEXT,
+            execution_started_at TEXT,
+            execution_status TEXT,
+            execution_finished_at TEXT,
+            external_execution_performed INTEGER,
+            disposition TEXT,
+            disposition_succeeded INTEGER,
+            worktree_present INTEGER,
+            branch_present INTEGER,
+            canonical_unchanged INTEGER,
+            promotion_commit_sha TEXT,
+            pull_request_number INTEGER,
+            pull_request_url TEXT,
+            promotion_base_branch TEXT,
+            promotion_head_branch TEXT,
+            promotion_finished_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """
+    )
+    connection.execute(
+        "INSERT INTO velox_schema(name, version) VALUES (?, 2)",
+        ("software_engineering_runs",),
+    )
+    connection.execute(
+        """
+        INSERT INTO software_engineering_runs (
+            action_id, executor_role, capability, target,
+            delegation_status, pending_objective, approval_status,
+            approved_at, claim_id, claimed_at, execution_started_at,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(action_id),
+            ExecutorRole.SOFTWARE_ENGINEERING.value,
+            SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
+            "velox-server",
+            "awaiting_approval",
+            "Recover claim",
+            SoftwareEngineeringApprovalStatus.APPROVED.value,
+            now,
+            str(claim_id),
+            now,
+            now,
+            now,
+            now,
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    repository = SqliteSoftwareEngineeringRunRepository(path)
+    state = repository.get(action_id)
+
+    assert state is not None
+    assert state.claim_id == claim_id
+    assert state.execution_started_at == datetime.fromisoformat(now)
+    assert state.claim_resolution is None
+    assert state.claim_reconciled_at is None
+    with sqlite3.connect(path) as migrated:
+        version = migrated.execute(
+            "SELECT version FROM velox_schema WHERE name = ?",
+            ("software_engineering_runs",),
+        ).fetchone()
+    assert version == (3,)
+
+
 def test_pending_objective_and_approval_survive_reopen_then_scrub_on_completion(
     tmp_path: Path,
 ) -> None:
