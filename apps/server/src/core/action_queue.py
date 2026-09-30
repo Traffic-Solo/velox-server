@@ -1,5 +1,7 @@
 """In-memory FIFO queue for planned actions."""
 
+from uuid import UUID
+
 from apps.server.src.core.actions import Action
 
 
@@ -25,6 +27,17 @@ class ActionQueue:
         if not self._actions:
             return None
         return self._actions.pop(0)
+
+    def get(self, action_id: UUID) -> Action | None:
+        """Return one queued Action by id without changing queue order."""
+        return next((action for action in self._actions if action.id == action_id), None)
+
+    def remove(self, action_id: UUID) -> Action | None:
+        """Remove one queued Action by id while preserving every other position."""
+        for index, action in enumerate(self._actions):
+            if action.id == action_id:
+                return self._actions.pop(index)
+        return None
 
     def list(self) -> list[Action]:
         """Return queued actions in FIFO order."""
