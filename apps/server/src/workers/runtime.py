@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import perf_counter
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionStatus
@@ -76,6 +76,39 @@ class WorkerExecutionObservation:
             "failure_message": self.failure_message,
             "metadata": dict(self.metadata or {}),
         }
+
+
+class WorkerExecutionObserver(Protocol):
+    """Provider-neutral worker execution observation boundary."""
+
+    def start(
+        self,
+        action: Action,
+        requested_role: str | None,
+        executor_registered: bool,
+        requested_capability: str | None = None,
+        requested_provider: str | None = None,
+        matched_provider: str | None = None,
+        requested_account_context: dict[str, str | None] | None = None,
+        matched_account_context: dict[str, str | None] | None = None,
+        account_context_used: dict[str, str | None] | None = None,
+        routing_reason: str | None = None,
+    ) -> WorkerExecutionObservation:
+        ...
+
+    def finish(
+        self,
+        observation: WorkerExecutionObservation,
+        status: WorkerExecutionStatus,
+        metadata: dict[str, Any],
+        reason: str | None = None,
+        failure: WorkerExecutionFailure | None = None,
+        duration_ms: float | None = None,
+    ) -> WorkerExecutionObservation:
+        ...
+
+    def list(self) -> list[WorkerExecutionObservation]:
+        ...
 
 
 class InMemoryWorkerExecutionObserver:
@@ -178,7 +211,7 @@ class WorkerRuntime:
         action_lifecycle_manager: ActionLifecycleManager,
         worker_executor: WorkerExecutor,
         executor_registry: WorkerExecutorRegistry | None = None,
-        execution_observer: InMemoryWorkerExecutionObserver | None = None,
+        execution_observer: WorkerExecutionObserver | None = None,
         lifecycle_repository: ActionLifecycleRepository | None = None,
         max_transient_retries: int = 3,
     ) -> None:
