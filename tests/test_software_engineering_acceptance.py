@@ -8,7 +8,6 @@ from uuid import UUID
 
 import httpx
 import pytest
-
 from apps.server.src.integrations import software_engineering_acceptance as acceptance
 from apps.server.src.integrations.software_engineering_acceptance import (
     SoftwareEngineeringAcceptanceError,
