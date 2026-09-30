@@ -31,7 +31,7 @@ from apps.server.src.integrations.software_engineering_work_product import (
     WorkProductDisposition,
 )
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["tasks"], dependencies=[Depends(require_api_token)])
@@ -108,6 +108,13 @@ class SoftwareEngineeringPromotionHttpRequest(BaseModel):
 
     title: str = Field(min_length=1, max_length=200)
     body: str = Field(default="", max_length=10_000)
+
+    @field_validator("title")
+    @classmethod
+    def require_non_blank_title(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("promotion title must not be blank")
+        return value
 
 
 class SoftwareEngineeringPromotionHttpResponse(BaseModel):
