@@ -1,6 +1,7 @@
 """Offline coverage for the Software Engineering task HTTP ingress."""
 
 import json
+from datetime import UTC, datetime
 from collections.abc import Iterator
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -999,7 +1000,7 @@ def test_claim_reconciliation_rejects_stale_state_token(
     before = client.get(f"/tasks/software-engineering/{action_id}/status").json()
     container.software_engineering_run_repository.record_execution_started(
         action_id=action_id,
-        started_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
+        started_at=datetime.now(UTC),
     )
 
     response = client.post(
@@ -1029,7 +1030,7 @@ def test_started_ambiguous_status_exposes_only_bounded_work_product_summary(
     container.software_engineering_run_repository.claim_approved(action_id)
     container.software_engineering_run_repository.record_execution_started(
         action_id=action_id,
-        started_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
+        started_at=datetime.now(UTC),
     )
 
     response = client.get(f"/tasks/software-engineering/{action_id}/status")
@@ -1065,7 +1066,7 @@ def test_started_claim_abandon_requires_ack_and_never_makes_action_retriable(
     container.software_engineering_run_repository.claim_approved(action_id)
     container.software_engineering_run_repository.record_execution_started(
         action_id=action_id,
-        started_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
+        started_at=datetime.now(UTC),
     )
     before = client.get(f"/tasks/software-engineering/{action_id}/status").json()
 
