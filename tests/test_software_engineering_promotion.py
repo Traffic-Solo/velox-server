@@ -212,7 +212,7 @@ def test_promotion_retry_recovers_same_commit_instead_of_creating_second_commit(
 
 def test_promotion_refuses_without_explicit_keep(tmp_path: Path) -> None:
     service, _, _, action_id, publisher = promotion_fixture(tmp_path)
-    service._disposition_repository = (  # type: ignore[attr-defined]
+    service._disposition_repository = (
         InMemorySoftwareEngineeringDispositionRepository()
     )
 
