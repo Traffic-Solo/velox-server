@@ -911,12 +911,17 @@ class DurableSoftwareEngineeringExecutionObserver:
             routing_reason=routing_reason,
         )
         if _is_canonical_route(requested_role, requested_capability):
-            self._repository.register_action(
+            state = self._repository.register_action(
                 action_id=action.id,
                 target=action.target,
                 executor_role=ExecutorRole.SOFTWARE_ENGINEERING.value,
                 capability=SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
             )
+            if state.claim_id is not None and state.execution_started_at is None:
+                self._repository.record_execution_started(
+                    action_id=action.id,
+                    started_at=observation.started_at,
+                )
         return observation
 
     def finish(
