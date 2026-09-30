@@ -59,6 +59,9 @@ from apps.server.src.integrations.calendar_ingress import (
     CalendarIngressAdapter,
 )
 from apps.server.src.integrations.gmail import GMAIL_ACCOUNT_CONTEXT, GmailWorkerExecutor
+from apps.server.src.integrations.software_engineering_continuation import (
+    SoftwareEngineeringTaskContinuation,
+)
 from apps.server.src.integrations.software_engineering_ingress import (
     SoftwareEngineeringTaskIngress,
 )
@@ -170,6 +173,12 @@ class ApplicationContainer:
         )
         self.worker_runtime_invocation = WorkerRuntimeInvocationService(
             worker_runtime=self.worker_runtime,
+        )
+        self.software_engineering_task_continuation = SoftwareEngineeringTaskContinuation(
+            action_queue=self.action_queue,
+            lifecycle_repository=self.action_lifecycle_repository,
+            worker_runtime=self.worker_runtime,
+            work_product_reviewer=self.software_engineering_work_products,
         )
         self.event_classifier: EventClassifier = RuleBasedEventClassifier()
         self.context_resolver: ContextResolver = BaseContextResolver()
