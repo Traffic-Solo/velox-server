@@ -9,6 +9,9 @@ from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.integrations.software_engineering import (
     SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
 )
+from apps.server.src.integrations.software_engineering_disposition import (
+    SoftwareEngineeringWorkProductDispositionService,
+)
 from apps.server.src.integrations.software_engineering_state import (
     DurableSoftwareEngineeringExecutionObserver,
     InMemorySoftwareEngineeringRunRepository,
@@ -166,3 +169,64 @@ def test_default_state_path_stays_outside_canonical_repository(tmp_path: Path) -
 def test_sqlite_repository_requires_absolute_path() -> None:
     with pytest.raises(SoftwareEngineeringRunStateError, match="must be absolute"):
         SqliteSoftwareEngineeringRunRepository(Path("relative/state.sqlite3"))
+
+
+
+class RecordingDisposer:
+    def __init__(self, worktree: Path) -> None:
+        self.worktree = worktree
+        self.calls: list[tuple[object, WorkProductDisposition]] = []
+
+    def apply(
+        self,
+        action_id: object,
+        disposition: WorkProductDisposition,
+    ) -> WorkProductDispositionResult:
+        self.calls.append((action_id, disposition))
+        return WorkProductDispositionResult(
+            action_id=action_id,  # type: ignore[arg-type]
+            disposition=disposition,
+            worktree_path=self.worktree,
+            branch=f"velox/se-{action_id}",
+            worktree_present=True,
+            branch_present=True,
+            canonical_unchanged=True,
+        )
+
+
+def test_disposition_uses_sqlite_execution_evidence_after_repository_reopen(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.sqlite3"
+    action_id = uuid4()
+    first_process = SqliteSoftwareEngineeringRunRepository(path)
+    first_process.register_action(
+        action_id=action_id,
+        target="velox-server",
+        executor_role=ExecutorRole.SOFTWARE_ENGINEERING.value,
+        capability=SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
+        delegation_status="awaiting_approval",
+    )
+    first_process.record_execution(
+        action_id=action_id,
+        status="succeeded",
+        finished_at=datetime.now(UTC),
+        external_execution_performed=True,
+    )
+
+    restarted_repository = SqliteSoftwareEngineeringRunRepository(path)
+    disposer = RecordingDisposer(tmp_path / "derived-worktree")
+    service = SoftwareEngineeringWorkProductDispositionService(
+        run_repository=restarted_repository,
+        work_products=disposer,
+    )
+
+    result = service.apply(action_id, WorkProductDisposition.KEEP)
+
+    assert result.succeeded is True
+    reopened_again = SqliteSoftwareEngineeringRunRepository(path)
+    persisted = reopened_again.get(action_id)
+    assert persisted is not None
+    assert persisted.execution_status == "succeeded"
+    assert persisted.disposition is WorkProductDisposition.KEEP
+    assert persisted.disposition_succeeded is True
