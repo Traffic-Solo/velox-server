@@ -63,11 +63,15 @@ from apps.server.src.integrations.software_engineering_continuation import (
     SoftwareEngineeringTaskContinuation,
 )
 from apps.server.src.integrations.software_engineering_disposition import (
+    InMemorySoftwareEngineeringDispositionRepository,
     SoftwareEngineeringWorkProductDispositionService,
 )
 from apps.server.src.integrations.software_engineering_ingress import (
     SoftwareEngineeringTaskIngress,
 )
+from apps.server.src.integrations.software_engineering_promotion import (
+    SoftwareEngineeringPromotionService,
+
 from apps.server.src.integrations.software_engineering_runtime import (
     configured_software_engineering,
 )
