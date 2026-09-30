@@ -2,17 +2,33 @@
 
 import json
 from collections.abc import Iterator
-from uuid import UUID
+from pathlib import Path
+from uuid import UUID, uuid4
 
 import pytest
-from apps.server.src.core.actions import ExecutorRole
+from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionStatus
+from apps.server.src.core.actions import Action, ExecutorRole
+from apps.server.src.core.approval_decisions import approve_pending_action
 from apps.server.src.core.config import get_settings
 from apps.server.src.core.container import ApplicationContainer, get_container
 from apps.server.src.integrations.software_engineering import (
     SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
 )
+from apps.server.src.integrations.software_engineering_continuation import (
+    SoftwareEngineeringTaskContinuation,
+)
+from apps.server.src.integrations.software_engineering_work_product import (
+    WorkProductIdentityError,
+    WorkProductReview,
+)
 from apps.server.src.main import app
-from apps.server.src.workers.executor import NoOpWorkerExecutor, WorkerCapability
+from apps.server.src.workers.executor import (
+    NoOpWorkerExecutor,
+    WorkerAccountContext,
+    WorkerCapability,
+    WorkerExecutionResult,
+    WorkerExecutionStatus,
+)
 from fastapi.testclient import TestClient
 
 
@@ -198,3 +214,245 @@ def test_openapi_request_schema_exposes_only_caller_owned_fields(client: TestCli
     assert set(request_schema["properties"]) == {"objective", "target"}
     assert set(request_schema["required"]) == {"objective", "target"}
     assert request_schema["additionalProperties"] is False
+
+
+class RecordingSoftwareEngineeringExecutor:
+    def __init__(self, *, failed: bool = False) -> None:
+        self.failed = failed
+        self.called_actions: list[Action] = []
+
+    def execute(
+        self,
+        action: Action,
+        *,
+        capability: str | None = None,
+        account_context: WorkerAccountContext | None = None,
+    ) -> WorkerExecutionResult:
+        self.called_actions.append(action)
+        if self.failed:
+            return WorkerExecutionResult(
+                action=action,
+                status=WorkerExecutionStatus.FAILED,
+                reason="provider secret detail sk-test-secret",
+                metadata={
+                    "external_execution_performed": True,
+                    "provider": "secret-provider",
+                },
+            )
+        return WorkerExecutionResult(
+            action=action,
+            status=WorkerExecutionStatus.SUCCEEDED,
+            metadata={
+                "external_execution_performed": True,
+                "provider": "secret-provider",
+            },
+        )
+
+
+class RecordingWorkProductReviewer:
+    def __init__(self, *, unavailable: bool = False) -> None:
+        self.unavailable = unavailable
+        self.calls: list[UUID] = []
+
+    def review(self, action_id: UUID) -> WorkProductReview:
+        self.calls.append(action_id)
+        if self.unavailable:
+            raise WorkProductIdentityError("worktree missing")
+        return WorkProductReview(
+            action_id=action_id,
+            worktree_path=Path("/trusted/hidden/worktree"),
+            branch=f"velox/se-{action_id}",
+            changed_files=("apps/server/src/api/tasks.py",),
+            untracked_files=("tests/test_new.py",),
+            diff_stat=" 2 files changed",
+            diff="diff --git a/file b/file",
+            diff_truncated=False,
+            dirty=True,
+            canonical_clean=True,
+            canonical_unchanged=True,
+        )
+
+
+def configure_exact_execution(
+    container: ApplicationContainer,
+    executor: RecordingSoftwareEngineeringExecutor,
+    reviewer: RecordingWorkProductReviewer,
+) -> None:
+    container.worker_executor_registry.register_capability(
+        WorkerCapability(
+            identifier=SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
+            role=ExecutorRole.SOFTWARE_ENGINEERING,
+            provider="execution-test-provider",
+        ),
+        executor,
+    )
+    container.software_engineering_task_continuation = SoftwareEngineeringTaskContinuation(
+        action_queue=container.action_queue,
+        lifecycle_repository=container.action_lifecycle_repository,
+        worker_runtime=container.worker_runtime,
+        work_product_reviewer=reviewer,
+    )
+
+
+def approve(container: ApplicationContainer, action_id: UUID) -> None:
+    approve_pending_action(
+        action_id,
+        pending_approval_registry=container.pending_approval_registry,
+        lifecycle_repository=container.action_lifecycle_repository,
+        lifecycle_manager=container.action_lifecycle_manager,
+        action_queue=container.action_queue,
+    )
+
+
+def create_task(client: TestClient) -> UUID:
+    response = client.post("/tasks/software-engineering", json=payload())
+    assert response.status_code == 200
+    assert response.json()["status"] == "awaiting_approval"
+    return UUID(response.json()["action_id"])
+
+
+def test_exact_execute_processes_only_requested_action_and_returns_review(
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    executor = RecordingSoftwareEngineeringExecutor()
+    reviewer = RecordingWorkProductReviewer()
+    configure_exact_execution(container, executor, reviewer)
+
+    before = Action(type="unrelated.before", target="one")
+    after = Action(type="unrelated.after", target="three")
+    container.action_queue.enqueue(before)
+    action_id = create_task(client)
+    approve(container, action_id)
+    container.action_queue.enqueue(after)
+
+    response = client.post(f"/tasks/software-engineering/{action_id}/execute")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["action_id"] == str(action_id)
+    assert body["processed"] is True
+    assert body["execution_status"] == "succeeded"
+    assert body["lifecycle_status"] == "completed"
+    assert body["execution_reason"] is None
+    assert body["external_execution_performed"] is True
+    assert body["review_status"] == "available"
+    assert body["review"] == {
+        "changed_files": ["apps/server/src/api/tasks.py"],
+        "untracked_files": ["tests/test_new.py"],
+        "diff_stat": " 2 files changed",
+        "diff": "diff --git a/file b/file",
+        "diff_truncated": False,
+        "dirty": True,
+        "canonical_clean": True,
+        "canonical_unchanged": True,
+    }
+    assert [action.id for action in container.action_queue.list()] == [before.id, after.id]
+    assert [action.id for action in executor.called_actions] == [action_id]
+    assert reviewer.calls == [action_id]
+    rendered = json.dumps(body)
+    assert "/trusted/hidden/worktree" not in rendered
+    assert "execution-test-provider" not in rendered
+    assert "secret-provider" not in rendered
+
+
+def test_exact_execute_never_auto_approves(
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    executor = RecordingSoftwareEngineeringExecutor()
+    reviewer = RecordingWorkProductReviewer()
+    configure_exact_execution(container, executor, reviewer)
+    action_id = create_task(client)
+
+    response = client.post(f"/tasks/software-engineering/{action_id}/execute")
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "software engineering action is not executable"}
+    assert executor.called_actions == []
+    assert reviewer.calls == []
+    assert [action.id for action in container.pending_approval_registry.list_pending()] == [
+        action_id
+    ]
+
+
+def test_exact_execute_rejects_non_software_engineering_action(
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    executor = RecordingSoftwareEngineeringExecutor()
+    reviewer = RecordingWorkProductReviewer()
+    configure_exact_execution(container, executor, reviewer)
+    wrong = Action(
+        type="summarize_email",
+        target="message-1",
+        payload={"capability": "summarize_email"},
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+    container.action_lifecycle_repository.set(
+        wrong.id,
+        ActionLifecycleState(status=ActionStatus.APPROVED),
+    )
+    container.action_queue.enqueue(wrong)
+
+    response = client.post(f"/tasks/software-engineering/{wrong.id}/execute")
+
+    assert response.status_code == 409
+    assert executor.called_actions == []
+    assert container.action_queue.list() == [wrong]
+
+
+def test_exact_execute_unknown_action_is_404(
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    executor = RecordingSoftwareEngineeringExecutor()
+    reviewer = RecordingWorkProductReviewer()
+    configure_exact_execution(container, executor, reviewer)
+
+    response = client.post(f"/tasks/software-engineering/{uuid4()}/execute")
+
+    assert response.status_code == 404
+    assert executor.called_actions == []
+
+
+def test_exact_execute_preserves_execution_truth_when_review_is_unavailable(
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    executor = RecordingSoftwareEngineeringExecutor()
+    reviewer = RecordingWorkProductReviewer(unavailable=True)
+    configure_exact_execution(container, executor, reviewer)
+    action_id = create_task(client)
+    approve(container, action_id)
+
+    response = client.post(f"/tasks/software-engineering/{action_id}/execute")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["execution_status"] == "succeeded"
+    assert body["lifecycle_status"] == "completed"
+    assert body["review_status"] == "unavailable"
+    assert body["review"] is None
+    assert reviewer.calls == [action_id]
+
+
+def test_exact_execute_redacts_worker_failure_reason(
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    executor = RecordingSoftwareEngineeringExecutor(failed=True)
+    reviewer = RecordingWorkProductReviewer(unavailable=True)
+    configure_exact_execution(container, executor, reviewer)
+    action_id = create_task(client)
+    approve(container, action_id)
+
+    response = client.post(f"/tasks/software-engineering/{action_id}/execute")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["execution_status"] == "failed"
+    assert body["lifecycle_status"] == "failed"
+    assert body["execution_reason"] == "worker execution failed"
+    assert "sk-test-secret" not in response.text
+    assert "secret-provider" not in response.text
