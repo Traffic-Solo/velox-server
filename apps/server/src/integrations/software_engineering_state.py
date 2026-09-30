@@ -414,49 +414,90 @@ class SqliteSoftwareEngineeringRunRepository:
                     "SELECT version FROM velox_schema WHERE name = ?",
                     (_SCHEMA_NAME,),
                 ).fetchone()
-                if row is not None and int(row["version"]) != _SCHEMA_VERSION:
-                    raise SoftwareEngineeringRunStateError(
-                        "unsupported software engineering state schema version"
+                if row is None:
+                    self._create_v2_table(connection)
+                    connection.execute(
+                        "INSERT INTO velox_schema(name, version) VALUES (?, ?)",
+                        (_SCHEMA_NAME, _SCHEMA_VERSION),
                     )
-                connection.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS software_engineering_runs (
-                        action_id TEXT PRIMARY KEY,
-                        executor_role TEXT NOT NULL,
-                        capability TEXT NOT NULL,
-                        target TEXT NOT NULL,
-                        delegation_status TEXT,
-                        execution_status TEXT,
-                        execution_finished_at TEXT,
-                        external_execution_performed INTEGER,
-                        disposition TEXT,
-                        disposition_succeeded INTEGER,
-                        worktree_present INTEGER,
-                        branch_present INTEGER,
-                        canonical_unchanged INTEGER,
-                        promotion_commit_sha TEXT,
-                        pull_request_number INTEGER,
-                        pull_request_url TEXT,
-                        promotion_base_branch TEXT,
-                        promotion_head_branch TEXT,
-                        promotion_finished_at TEXT,
-                        created_at TEXT NOT NULL,
-                        updated_at TEXT NOT NULL
-                    )
-                    """
-                )
-                connection.execute(
-                    """
-                    INSERT INTO velox_schema(name, version)
-                    VALUES (?, ?)
-                    ON CONFLICT(name) DO NOTHING
-                    """,
-                    (_SCHEMA_NAME, _SCHEMA_VERSION),
-                )
+                else:
+                    version = int(row["version"])
+                    if version == 1:
+                        self._migrate_v1_to_v2(connection)
+                        connection.execute(
+                            "UPDATE velox_schema SET version = ? WHERE name = ?",
+                            (_SCHEMA_VERSION, _SCHEMA_NAME),
+                        )
+                    elif version == _SCHEMA_VERSION:
+                        self._create_v2_table(connection)
+                    else:
+                        raise SoftwareEngineeringRunStateError(
+                            "unsupported software engineering state schema version"
+                        )
         except sqlite3.Error:
             raise SoftwareEngineeringRunStateError(
                 "software engineering state database is unavailable"
             ) from None
+
+    @staticmethod
+    def _create_v2_table(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS software_engineering_runs (
+                action_id TEXT PRIMARY KEY,
+                executor_role TEXT NOT NULL,
+                capability TEXT NOT NULL,
+                target TEXT NOT NULL,
+                delegation_status TEXT,
+                pending_objective TEXT,
+                approval_status TEXT,
+                approved_at TEXT,
+                rejected_at TEXT,
+                claim_id TEXT,
+                claimed_at TEXT,
+                execution_started_at TEXT,
+                execution_status TEXT,
+                execution_finished_at TEXT,
+                external_execution_performed INTEGER,
+                disposition TEXT,
+                disposition_succeeded INTEGER,
+                worktree_present INTEGER,
+                branch_present INTEGER,
+                canonical_unchanged INTEGER,
+                promotion_commit_sha TEXT,
+                pull_request_number INTEGER,
+                pull_request_url TEXT,
+                promotion_base_branch TEXT,
+                promotion_head_branch TEXT,
+                promotion_finished_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+    @staticmethod
+    def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in connection.execute(
+                "PRAGMA table_info(software_engineering_runs)"
+            ).fetchall()
+        }
+        additions = {
+            "pending_objective": "TEXT",
+            "approval_status": "TEXT",
+            "approved_at": "TEXT",
+            "rejected_at": "TEXT",
+            "claim_id": "TEXT",
+            "claimed_at": "TEXT",
+            "execution_started_at": "TEXT",
+        }
+        for name, sql_type in additions.items():
+            if name not in columns:
+                connection.execute(
+                    f"ALTER TABLE software_engineering_runs ADD COLUMN {name} {sql_type}"
+                )
 
     @property
     def path(self) -> Path:
