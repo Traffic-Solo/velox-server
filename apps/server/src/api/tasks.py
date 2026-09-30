@@ -17,6 +17,14 @@ from apps.server.src.integrations.software_engineering_continuation import (
     SoftwareEngineeringContinuationStateError,
     WorkProductReviewStatus,
 )
+from apps.server.src.integrations.software_engineering_disposition import (
+    SoftwareEngineeringDispositionNotFoundError,
+    SoftwareEngineeringDispositionRouteError,
+    SoftwareEngineeringDispositionStateError,
+)
+from apps.server.src.integrations.software_engineering_work_product import (
+    WorkProductDisposition,
+)
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict
 
@@ -66,6 +74,26 @@ class SoftwareEngineeringExecutionHttpResponse(BaseModel):
     external_execution_performed: bool
     review_status: WorkProductReviewStatus
     review: SoftwareEngineeringWorkProductReviewHttpResponse | None
+
+
+class SoftwareEngineeringDispositionHttpRequest(BaseModel):
+    """Caller chooses only KEEP or DISCARD; work-product identity remains trusted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    disposition: WorkProductDisposition
+
+
+class SoftwareEngineeringDispositionHttpResponse(BaseModel):
+    """Provider-neutral disposition result without path or branch disclosure."""
+
+    action_id: UUID
+    disposition: WorkProductDisposition
+    succeeded: bool
+    worktree_present: bool
+    branch_present: bool
+    canonical_unchanged: bool
+    remaining: list[str]
 
 
 @router.post("/tasks/software-engineering")
@@ -148,4 +176,44 @@ def execute_software_engineering_task(
         external_execution_performed=result.external_execution_performed,
         review_status=result.review_status,
         review=review_response,
+    )
+
+
+@router.post("/tasks/software-engineering/{action_id}/work-product/disposition")
+def dispose_software_engineering_work_product(
+    action_id: UUID,
+    request: SoftwareEngineeringDispositionHttpRequest,
+    container: Annotated[ApplicationContainer, Depends(get_container)],
+) -> SoftwareEngineeringDispositionHttpResponse:
+    """Apply one trusted KEEP/DISCARD decision to an executed SE Action."""
+    try:
+        result = container.software_engineering_work_product_disposition.apply(
+            action_id,
+            request.disposition,
+        )
+    except SoftwareEngineeringDispositionNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+    except (
+        SoftwareEngineeringDispositionStateError,
+        SoftwareEngineeringDispositionRouteError,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="software engineering work product is not disposable",
+        ) from None
+    except Exception:
+        logger.exception("software engineering work-product disposition failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="software engineering work-product disposition failed",
+        ) from None
+
+    return SoftwareEngineeringDispositionHttpResponse(
+        action_id=result.action_id,
+        disposition=result.disposition,
+        succeeded=result.succeeded,
+        worktree_present=result.worktree_present,
+        branch_present=result.branch_present,
+        canonical_unchanged=result.canonical_unchanged,
+        remaining=list(result.remaining),
     )
