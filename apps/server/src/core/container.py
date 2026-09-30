@@ -62,6 +62,9 @@ from apps.server.src.integrations.gmail import GMAIL_ACCOUNT_CONTEXT, GmailWorke
 from apps.server.src.integrations.software_engineering_continuation import (
     SoftwareEngineeringTaskContinuation,
 )
+from apps.server.src.integrations.software_engineering_disposition import (
+    SoftwareEngineeringWorkProductDispositionService,
+)
 from apps.server.src.integrations.software_engineering_ingress import (
     SoftwareEngineeringTaskIngress,
 )
@@ -179,6 +182,13 @@ class ApplicationContainer:
             lifecycle_repository=self.action_lifecycle_repository,
             worker_runtime=self.worker_runtime,
             work_product_reviewer=self.software_engineering_work_products,
+        )
+        self.software_engineering_work_product_disposition = (
+            SoftwareEngineeringWorkProductDispositionService(
+                lifecycle_repository=self.action_lifecycle_repository,
+                execution_observer=self.worker_execution_observer,
+                work_products=self.software_engineering_work_products,
+            )
         )
         self.event_classifier: EventClassifier = RuleBasedEventClassifier()
         self.context_resolver: ContextResolver = BaseContextResolver()

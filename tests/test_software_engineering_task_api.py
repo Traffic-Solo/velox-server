@@ -17,7 +17,12 @@ from apps.server.src.integrations.software_engineering import (
 from apps.server.src.integrations.software_engineering_continuation import (
     SoftwareEngineeringTaskContinuation,
 )
+from apps.server.src.integrations.software_engineering_disposition import (
+    SoftwareEngineeringWorkProductDispositionService,
+)
 from apps.server.src.integrations.software_engineering_work_product import (
+    WorkProductDisposition,
+    WorkProductDispositionResult,
     WorkProductIdentityError,
     WorkProductReview,
 )
@@ -250,9 +255,16 @@ class RecordingSoftwareEngineeringExecutor:
 
 
 class RecordingWorkProductReviewer:
-    def __init__(self, *, unavailable: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        unavailable: bool = False,
+        disposition_unavailable: bool = False,
+    ) -> None:
         self.unavailable = unavailable
+        self.disposition_unavailable = disposition_unavailable
         self.calls: list[UUID] = []
+        self.apply_calls: list[tuple[UUID, WorkProductDisposition]] = []
 
     def review(self, action_id: UUID) -> WorkProductReview:
         self.calls.append(action_id)
@@ -269,6 +281,28 @@ class RecordingWorkProductReviewer:
             diff_truncated=False,
             dirty=True,
             canonical_clean=True,
+            canonical_unchanged=True,
+        )
+
+
+    def apply(
+        self,
+        action_id: UUID,
+        disposition: WorkProductDisposition,
+    ) -> WorkProductDispositionResult:
+        self.apply_calls.append((action_id, disposition))
+        if self.disposition_unavailable:
+            raise WorkProductIdentityError(
+                "hidden /trusted/secret/worktree velox/secret-branch"
+            )
+        keep = disposition is WorkProductDisposition.KEEP
+        return WorkProductDispositionResult(
+            action_id=action_id,
+            disposition=disposition,
+            worktree_path=Path("/trusted/hidden/worktree"),
+            branch=f"velox/se-{action_id}",
+            worktree_present=keep,
+            branch_present=keep,
             canonical_unchanged=True,
         )
 
@@ -291,6 +325,13 @@ def configure_exact_execution(
         lifecycle_repository=container.action_lifecycle_repository,
         worker_runtime=container.worker_runtime,
         work_product_reviewer=reviewer,
+    )
+    container.software_engineering_work_product_disposition = (
+        SoftwareEngineeringWorkProductDispositionService(
+            lifecycle_repository=container.action_lifecycle_repository,
+            execution_observer=container.worker_execution_observer,
+            work_products=reviewer,
+        )
     )
 
 
@@ -456,3 +497,212 @@ def test_exact_execute_redacts_worker_failure_reason(
     assert body["execution_reason"] == "worker execution failed"
     assert "sk-test-secret" not in response.text
     assert "secret-provider" not in response.text
+
+
+
+def execute_task(client: TestClient, container: ApplicationContainer) -> UUID:
+    action_id = create_task(client)
+    approve(container, action_id)
+    response = client.post(f"/tasks/software-engineering/{action_id}/execute")
+    assert response.status_code == 200
+    return action_id
+
+
+def test_work_product_keep_requires_executed_exact_software_engineering_action(
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    executor = RecordingSoftwareEngineeringExecutor()
+    reviewer = RecordingWorkProductReviewer()
+    configure_exact_execution(container, executor, reviewer)
+    action_id = execute_task(client, container)
+
+    response = client.post(
+        f"/tasks/software-engineering/{action_id}/work-product/disposition",
+        json={"disposition": "keep"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "action_id": str(action_id),
+        "disposition": "keep",
+        "succeeded": True,
+        "worktree_present": True,
+        "branch_present": True,
+        "canonical_unchanged": True,
+        "remaining": [],
+    }
+    assert reviewer.apply_calls == [(action_id, WorkProductDisposition.KEEP)]
+    assert "/trusted/hidden/worktree" not in response.text
+    assert f"velox/se-{action_id}" not in response.text
+    assert "execution-test-provider" not in response.text
+
+
+def test_work_product_discard_returns_only_safe_cleanup_state(
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    executor = RecordingSoftwareEngineeringExecutor()
+    reviewer = RecordingWorkProductReviewer()
+    configure_exact_execution(container, executor, reviewer)
+    action_id = execute_task(client, container)
+
+    response = client.post(
+        f"/tasks/software-engineering/{action_id}/work-product/disposition",
+        json={"disposition": "discard"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "action_id": str(action_id),
+        "disposition": "discard",
+        "succeeded": True,
+        "worktree_present": False,
+        "branch_present": False,
+        "canonical_unchanged": True,
+        "remaining": [],
+    }
+    assert reviewer.apply_calls == [(action_id, WorkProductDisposition.DISCARD)]
+
+
+def test_work_product_disposition_never_runs_before_execution_finishes(
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    executor = RecordingSoftwareEngineeringExecutor()
+    reviewer = RecordingWorkProductReviewer()
+    configure_exact_execution(container, executor, reviewer)
+    action_id = create_task(client)
+    approve(container, action_id)
+
+    response = client.post(
+        f"/tasks/software-engineering/{action_id}/work-product/disposition",
+        json={"disposition": "discard"},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "software engineering work product is not disposable"
+    }
+    assert reviewer.apply_calls == []
+
+
+def test_work_product_disposition_rejects_wrong_route_execution_evidence(
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    executor = RecordingSoftwareEngineeringExecutor()
+    reviewer = RecordingWorkProductReviewer()
+    configure_exact_execution(container, executor, reviewer)
+    wrong = Action(
+        type="summarize_email",
+        target="message-1",
+        payload={"capability": "summarize_email"},
+        executor_role=ExecutorRole.CONTENT_SUMMARY,
+    )
+    container.action_lifecycle_repository.set(
+        wrong.id,
+        ActionLifecycleState(status=ActionStatus.COMPLETED),
+    )
+    observation = container.worker_execution_observer.start(
+        action=wrong,
+        requested_role=ExecutorRole.CONTENT_SUMMARY.value,
+        executor_registered=True,
+        requested_capability="summarize_email",
+    )
+    container.worker_execution_observer.finish(
+        observation,
+        status=WorkerExecutionStatus.SUCCEEDED,
+        metadata={},
+    )
+
+    response = client.post(
+        f"/tasks/software-engineering/{wrong.id}/work-product/disposition",
+        json={"disposition": "discard"},
+    )
+
+    assert response.status_code == 409
+    assert reviewer.apply_calls == []
+
+
+def test_work_product_disposition_unknown_action_is_404(
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    executor = RecordingSoftwareEngineeringExecutor()
+    reviewer = RecordingWorkProductReviewer()
+    configure_exact_execution(container, executor, reviewer)
+
+    response = client.post(
+        f"/tasks/software-engineering/{uuid4()}/work-product/disposition",
+        json={"disposition": "keep"},
+    )
+
+    assert response.status_code == 404
+    assert reviewer.apply_calls == []
+
+
+def test_work_product_identity_failure_is_redacted_as_generic_conflict(
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    executor = RecordingSoftwareEngineeringExecutor()
+    reviewer = RecordingWorkProductReviewer(disposition_unavailable=True)
+    configure_exact_execution(container, executor, reviewer)
+    action_id = execute_task(client, container)
+
+    response = client.post(
+        f"/tasks/software-engineering/{action_id}/work-product/disposition",
+        json={"disposition": "discard"},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "software engineering work product is not disposable"
+    }
+    assert "/trusted/secret/worktree" not in response.text
+    assert "velox/secret-branch" not in response.text
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"disposition": "delete"},
+        {"disposition": "discard", "path": "/tmp/other"},
+        {"disposition": "keep", "branch": "main"},
+        {"disposition": "keep", "provider": "claude_code"},
+    ],
+)
+def test_work_product_disposition_schema_accepts_only_keep_or_discard(
+    client: TestClient,
+    container: ApplicationContainer,
+    body: dict[str, str],
+) -> None:
+    executor = RecordingSoftwareEngineeringExecutor()
+    reviewer = RecordingWorkProductReviewer()
+    configure_exact_execution(container, executor, reviewer)
+
+    response = client.post(
+        f"/tasks/software-engineering/{uuid4()}/work-product/disposition",
+        json=body,
+    )
+
+    assert response.status_code == 422
+    assert reviewer.apply_calls == []
+
+
+def test_openapi_work_product_disposition_exposes_only_disposition_choice(
+    client: TestClient,
+) -> None:
+    schema = client.get("/openapi.json").json()
+    operation = schema["paths"][
+        "/tasks/software-engineering/{action_id}/work-product/disposition"
+    ]["post"]
+    request_ref = operation["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+    schema_name = request_ref.rsplit("/", 1)[-1]
+    request_schema = schema["components"]["schemas"][schema_name]
+
+    assert set(request_schema["properties"]) == {"disposition"}
+    assert set(request_schema["required"]) == {"disposition"}
+    assert request_schema["additionalProperties"] is False
