@@ -71,6 +71,9 @@ from apps.server.src.integrations.software_engineering_ingress import (
 from apps.server.src.integrations.software_engineering_promotion import (
     SoftwareEngineeringPromotionService,
 )
+from apps.server.src.integrations.software_engineering_recovery import (
+    SoftwareEngineeringActionRecovery,
+)
 from apps.server.src.integrations.software_engineering_runtime import (
     configured_software_engineering,
 )
@@ -149,6 +152,11 @@ class ApplicationContainer:
             if software_engineering is not None
             else InMemorySoftwareEngineeringRunRepository()
         )
+        self.software_engineering_action_recovery = (
+            SoftwareEngineeringActionRecovery(
+                self.software_engineering_run_repository
+            )
+        )
         if self.software_engineering_executor is not None:
             self.worker_executor_registry.register_manifest(
                 self.software_engineering_executor.provider_manifest
@@ -206,6 +214,7 @@ class ApplicationContainer:
             action_queue=self.action_queue,
             lifecycle_repository=self.action_lifecycle_repository,
             worker_runtime=self.worker_runtime,
+            action_recovery=self.software_engineering_action_recovery,
             work_product_reviewer=self.software_engineering_work_products,
         )
         self.software_engineering_work_product_disposition = (
