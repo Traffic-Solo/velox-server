@@ -349,3 +349,51 @@ def test_acceptance_base_url_must_be_loopback_and_uncredentialed(url: str) -> No
 )
 def test_acceptance_base_url_accepts_loopback(url: str) -> None:
     assert acceptance._validated_base_url(url) == url.rstrip("/")
+
+
+
+@pytest.mark.parametrize(
+    ("environ", "message"),
+    [
+        (
+            {
+                "VELOX_SOFTWARE_ENGINEERING_WORKSPACE": "/tmp/velox-server",
+                "VELOX_SOFTWARE_ENGINEERING_PROMOTION_ENABLED": "true",
+            },
+            "PROVIDER=claude_code",
+        ),
+        (
+            {
+                "VELOX_SOFTWARE_ENGINEERING_PROVIDER": "claude_code",
+                "VELOX_SOFTWARE_ENGINEERING_PROMOTION_ENABLED": "true",
+            },
+            "WORKSPACE",
+        ),
+        (
+            {
+                "VELOX_SOFTWARE_ENGINEERING_PROVIDER": "claude_code",
+                "VELOX_SOFTWARE_ENGINEERING_WORKSPACE": "/tmp/velox-server",
+            },
+            "PROMOTION_ENABLED=true",
+        ),
+    ],
+)
+def test_live_acceptance_environment_preflight_rejects_missing_required_opt_ins(
+    environ: dict[str, str],
+    message: str,
+) -> None:
+    with pytest.raises(SoftwareEngineeringAcceptanceError, match=message):
+        acceptance._validate_live_acceptance_environment(environ)
+
+
+@pytest.mark.parametrize("value", ["true", "TRUE", "1", "yes", "on"])
+def test_live_acceptance_environment_preflight_accepts_enabled_promotion(
+    value: str,
+) -> None:
+    acceptance._validate_live_acceptance_environment(
+        {
+            "VELOX_SOFTWARE_ENGINEERING_PROVIDER": "claude_code",
+            "VELOX_SOFTWARE_ENGINEERING_WORKSPACE": "/tmp/velox-server",
+            "VELOX_SOFTWARE_ENGINEERING_PROMOTION_ENABLED": value,
+        }
+    )
