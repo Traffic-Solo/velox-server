@@ -17,6 +17,7 @@ from apps.server.src.integrations.software_engineering_state import (
     DurableSoftwareEngineeringExecutionObserver,
     InMemorySoftwareEngineeringRunRepository,
     SoftwareEngineeringApprovalStatus,
+    SoftwareEngineeringClaimResolution,
     SoftwareEngineeringRunStateError,
     SqliteSoftwareEngineeringRunRepository,
     default_software_engineering_state_path,
@@ -112,7 +113,7 @@ def test_sqlite_run_state_rejects_action_identity_conflict(tmp_path: Path) -> No
         )
 
 
-def test_sqlite_v1_state_migrates_to_v2_without_losing_existing_evidence(
+def test_sqlite_v1_state_migrates_to_v3_without_losing_existing_evidence(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "state.sqlite3"
@@ -190,7 +191,101 @@ def test_sqlite_v1_state_migrates_to_v2_without_losing_existing_evidence(
             "SELECT version FROM velox_schema WHERE name = ?",
             ("software_engineering_runs",),
         ).fetchone()
-    assert version == (2,)
+    assert version == (3,)
+
+
+def test_sqlite_v2_state_migrates_to_v3_with_claim_evidence_intact(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state-v2.sqlite3"
+    action_id = uuid4()
+    now = datetime.now(UTC).isoformat()
+    claim_id = uuid4()
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE velox_schema (
+            name TEXT PRIMARY KEY,
+            version INTEGER NOT NULL
+        );
+        CREATE TABLE software_engineering_runs (
+            action_id TEXT PRIMARY KEY,
+            executor_role TEXT NOT NULL,
+            capability TEXT NOT NULL,
+            target TEXT NOT NULL,
+            delegation_status TEXT,
+            pending_objective TEXT,
+            approval_status TEXT,
+            approved_at TEXT,
+            rejected_at TEXT,
+            claim_id TEXT,
+            claimed_at TEXT,
+            execution_started_at TEXT,
+            execution_status TEXT,
+            execution_finished_at TEXT,
+            external_execution_performed INTEGER,
+            disposition TEXT,
+            disposition_succeeded INTEGER,
+            worktree_present INTEGER,
+            branch_present INTEGER,
+            canonical_unchanged INTEGER,
+            promotion_commit_sha TEXT,
+            pull_request_number INTEGER,
+            pull_request_url TEXT,
+            promotion_base_branch TEXT,
+            promotion_head_branch TEXT,
+            promotion_finished_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """
+    )
+    connection.execute(
+        "INSERT INTO velox_schema(name, version) VALUES (?, 2)",
+        ("software_engineering_runs",),
+    )
+    connection.execute(
+        """
+        INSERT INTO software_engineering_runs (
+            action_id, executor_role, capability, target,
+            delegation_status, pending_objective, approval_status,
+            approved_at, claim_id, claimed_at, execution_started_at,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(action_id),
+            ExecutorRole.SOFTWARE_ENGINEERING.value,
+            SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
+            "velox-server",
+            "awaiting_approval",
+            "Recover claim",
+            SoftwareEngineeringApprovalStatus.APPROVED.value,
+            now,
+            str(claim_id),
+            now,
+            now,
+            now,
+            now,
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    repository = SqliteSoftwareEngineeringRunRepository(path)
+    state = repository.get(action_id)
+
+    assert state is not None
+    assert state.claim_id == claim_id
+    assert state.execution_started_at == datetime.fromisoformat(now)
+    assert state.claim_resolution is None
+    assert state.claim_reconciled_at is None
+    with sqlite3.connect(path) as migrated:
+        version = migrated.execute(
+            "SELECT version FROM velox_schema WHERE name = ?",
+            ("software_engineering_runs",),
+        ).fetchone()
+    assert version == (3,)
 
 
 def test_pending_objective_and_approval_survive_reopen_then_scrub_on_completion(
@@ -262,6 +357,113 @@ def test_sqlite_claim_is_atomic_across_repository_instances(tmp_path: Path) -> N
         match="durable execution claim",
     ):
         second.claim_approved(action_id)
+
+
+def test_unstarted_claim_release_is_cas_and_retriable(tmp_path: Path) -> None:
+    path = tmp_path / "state.sqlite3"
+    action_id = uuid4()
+    repository = SqliteSoftwareEngineeringRunRepository(path)
+    repository.register_action(
+        action_id=action_id,
+        target="velox-server",
+        executor_role=ExecutorRole.SOFTWARE_ENGINEERING.value,
+        capability=SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
+        objective="Recover release",
+        approval_status=SoftwareEngineeringApprovalStatus.APPROVED,
+    )
+    repository.claim_approved(action_id)
+    claimed = repository.get(action_id)
+    assert claimed is not None
+    assert claimed.updated_at is not None
+
+    reconciled_at = datetime.now(UTC)
+    released = repository.release_unstarted_claim(
+        action_id=action_id,
+        expected_updated_at=claimed.updated_at,
+        reconciled_at=reconciled_at,
+    )
+
+    assert released.claim_id is None
+    assert released.claimed_at is None
+    assert (
+        released.claim_resolution
+        is SoftwareEngineeringClaimResolution.RELEASED_BEFORE_START
+    )
+    assert released.claim_reconciled_at == reconciled_at
+    assert released.pending_objective == "Recover release"
+    retry_claim = repository.claim_approved(action_id)
+    assert retry_claim.action_id == action_id
+    retried = repository.get(action_id)
+    assert retried is not None
+    assert retried.claim_resolution is None
+    assert retried.claim_reconciled_at is None
+
+
+def test_unstarted_claim_release_rejects_stale_state_version(tmp_path: Path) -> None:
+    repository = SqliteSoftwareEngineeringRunRepository(tmp_path / "state.sqlite3")
+    action_id = uuid4()
+    repository.register_action(
+        action_id=action_id,
+        target="velox-server",
+        executor_role=ExecutorRole.SOFTWARE_ENGINEERING.value,
+        capability=SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
+        objective="Stale release",
+        approval_status=SoftwareEngineeringApprovalStatus.APPROVED,
+    )
+    repository.claim_approved(action_id)
+    claimed = repository.get(action_id)
+    assert claimed is not None
+    assert claimed.updated_at is not None
+    stale = claimed.updated_at
+    repository.record_execution_started(
+        action_id=action_id,
+        started_at=datetime.now(UTC),
+    )
+
+    with pytest.raises(SoftwareEngineeringRunStateError):
+        repository.release_unstarted_claim(
+            action_id=action_id,
+            expected_updated_at=stale,
+            reconciled_at=datetime.now(UTC),
+        )
+
+
+def test_started_claim_abandon_scrubs_objective_and_remains_non_retriable(
+    tmp_path: Path,
+) -> None:
+    repository = SqliteSoftwareEngineeringRunRepository(tmp_path / "state.sqlite3")
+    action_id = uuid4()
+    repository.register_action(
+        action_id=action_id,
+        target="velox-server",
+        executor_role=ExecutorRole.SOFTWARE_ENGINEERING.value,
+        capability=SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
+        objective="Potential side effect",
+        approval_status=SoftwareEngineeringApprovalStatus.APPROVED,
+    )
+    repository.claim_approved(action_id)
+    repository.record_execution_started(
+        action_id=action_id,
+        started_at=datetime.now(UTC),
+    )
+    started = repository.get(action_id)
+    assert started is not None
+    assert started.updated_at is not None
+
+    abandoned = repository.abandon_started_claim(
+        action_id=action_id,
+        expected_updated_at=started.updated_at,
+        reconciled_at=datetime.now(UTC),
+    )
+
+    assert abandoned.pending_objective is None
+    assert abandoned.claim_id is not None
+    assert (
+        abandoned.claim_resolution
+        is SoftwareEngineeringClaimResolution.ABANDONED_AFTER_START
+    )
+    with pytest.raises(SoftwareEngineeringRunStateError):
+        repository.claim_approved(action_id)
 
 
 def test_rejection_scrubs_pending_objective(tmp_path: Path) -> None:

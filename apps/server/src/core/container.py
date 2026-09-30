@@ -74,6 +74,9 @@ from apps.server.src.integrations.software_engineering_promotion import (
 from apps.server.src.integrations.software_engineering_recovery import (
     SoftwareEngineeringActionRecovery,
 )
+from apps.server.src.integrations.software_engineering_run_control import (
+    SoftwareEngineeringRunControlService,
+)
 from apps.server.src.integrations.software_engineering_runtime import (
     configured_software_engineering,
 )
@@ -155,6 +158,12 @@ class ApplicationContainer:
         self.software_engineering_action_recovery = (
             SoftwareEngineeringActionRecovery(
                 self.software_engineering_run_repository
+            )
+        )
+        self.software_engineering_run_control = (
+            SoftwareEngineeringRunControlService(
+                repository=self.software_engineering_run_repository,
+                work_product_inspector=self.software_engineering_work_products,
             )
         )
         if self.software_engineering_executor is not None:

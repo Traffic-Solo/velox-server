@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -23,6 +24,9 @@ from apps.server.src.integrations.software_engineering_disposition import (
 from apps.server.src.integrations.software_engineering_promotion import (
     SoftwareEngineeringPromotionResult,
     SoftwareEngineeringPromotionStateError,
+)
+from apps.server.src.integrations.software_engineering_run_control import (
+    SoftwareEngineeringRunControlService,
 )
 from apps.server.src.integrations.software_engineering_work_product import (
     WorkProductDisposition,
@@ -908,4 +912,272 @@ def test_openapi_promotion_request_exposes_only_pr_copy(client: TestClient) -> N
 
     assert set(request_schema["properties"]) == {"title", "body"}
     assert set(request_schema["required"]) == {"title"}
+    assert request_schema["additionalProperties"] is False
+
+
+
+def configure_run_control(
+    container: ApplicationContainer,
+    reviewer: RecordingWorkProductReviewer | None = None,
+) -> None:
+    container.software_engineering_run_control = SoftwareEngineeringRunControlService(
+        repository=container.software_engineering_run_repository,
+        work_product_inspector=reviewer,
+    )
+
+
+def test_run_status_hides_objective_claim_identity_and_provider_details(
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    register_software_engineering_route(container)
+    action_id = create_task(client)
+    approve(container, action_id)
+    container.software_engineering_run_repository.claim_approved(action_id)
+
+    response = client.get(f"/tasks/software-engineering/{action_id}/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["phase"] == "claimed"
+    assert body["claimed"] is True
+    assert body["worker_started"] is False
+    assert body["reconciliation_options"] == ["release"]
+    assert body["retriable"] is False
+    assert len(body["state_token"]) == 64
+    rendered = json.dumps(body)
+    assert "Add one regression test for the task ingress" not in rendered
+    assert "claim_id" not in rendered
+    assert "test_software_engineering" not in rendered
+    assert "/trusted/" not in rendered
+
+
+def test_run_status_unknown_action_is_404(
+    client: TestClient,
+) -> None:
+    response = client.get(f"/tasks/software-engineering/{uuid4()}/status")
+    assert response.status_code == 404
+
+
+def test_claim_release_never_executes_worker_and_restores_retriable_state(
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    executor = RecordingSoftwareEngineeringExecutor()
+    reviewer = RecordingWorkProductReviewer()
+    configure_exact_execution(container, executor, reviewer)
+    configure_run_control(container, reviewer)
+    action_id = create_task(client)
+    approve(container, action_id)
+    container.software_engineering_run_repository.claim_approved(action_id)
+    before = client.get(f"/tasks/software-engineering/{action_id}/status").json()
+
+    response = client.post(
+        f"/tasks/software-engineering/{action_id}/claim/reconcile",
+        json={
+            "resolution": "release",
+            "state_token": before["state_token"],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["resolution"] == "release"
+    assert body["run"]["phase"] == "approved"
+    assert body["run"]["claimed"] is False
+    assert body["run"]["retriable"] is True
+    assert executor.called_actions == []
+
+
+def test_released_claim_runs_only_after_separate_exact_execute_request(
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    executor = RecordingSoftwareEngineeringExecutor()
+    reviewer = RecordingWorkProductReviewer()
+    configure_exact_execution(container, executor, reviewer)
+    configure_run_control(container, reviewer)
+    action_id = create_task(client)
+    approve(container, action_id)
+    container.software_engineering_run_repository.claim_approved(action_id)
+    before = client.get(f"/tasks/software-engineering/{action_id}/status").json()
+
+    released = client.post(
+        f"/tasks/software-engineering/{action_id}/claim/reconcile",
+        json={
+            "resolution": "release",
+            "state_token": before["state_token"],
+        },
+    )
+
+    assert released.status_code == 200
+    assert executor.called_actions == []
+
+    executed = client.post(f"/tasks/software-engineering/{action_id}/execute")
+
+    assert executed.status_code == 200
+    assert executed.json()["execution_status"] == "succeeded"
+    assert [action.id for action in executor.called_actions] == [action_id]
+
+
+def test_claim_reconciliation_rejects_stale_state_token(
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    register_software_engineering_route(container)
+    action_id = create_task(client)
+    approve(container, action_id)
+    container.software_engineering_run_repository.claim_approved(action_id)
+    before = client.get(f"/tasks/software-engineering/{action_id}/status").json()
+    container.software_engineering_run_repository.record_execution_started(
+        action_id=action_id,
+        started_at=datetime.now(UTC),
+    )
+
+    response = client.post(
+        f"/tasks/software-engineering/{action_id}/claim/reconcile",
+        json={
+            "resolution": "release",
+            "state_token": before["state_token"],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "software engineering claim is not reconcilable"
+    }
+
+
+def test_started_ambiguous_status_exposes_only_bounded_work_product_summary(
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    executor = RecordingSoftwareEngineeringExecutor()
+    reviewer = RecordingWorkProductReviewer()
+    configure_exact_execution(container, executor, reviewer)
+    configure_run_control(container, reviewer)
+    action_id = create_task(client)
+    approve(container, action_id)
+    container.software_engineering_run_repository.claim_approved(action_id)
+    container.software_engineering_run_repository.record_execution_started(
+        action_id=action_id,
+        started_at=datetime.now(UTC),
+    )
+
+    response = client.get(f"/tasks/software-engineering/{action_id}/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["phase"] == "running_or_ambiguous"
+    assert body["reconciliation_options"] == ["abandon"]
+    assert body["work_product"] == {
+        "status": "available",
+        "dirty": True,
+        "changed_files_count": 1,
+        "untracked_files_count": 1,
+        "canonical_clean": True,
+        "canonical_unchanged": True,
+    }
+    rendered = json.dumps(body)
+    assert "/trusted/hidden/worktree" not in rendered
+    assert f"velox/se-{action_id}" not in rendered
+    assert "diff --git" not in rendered
+
+
+def test_started_claim_abandon_requires_ack_and_never_makes_action_retriable(
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    executor = RecordingSoftwareEngineeringExecutor()
+    reviewer = RecordingWorkProductReviewer()
+    configure_exact_execution(container, executor, reviewer)
+    configure_run_control(container, reviewer)
+    action_id = create_task(client)
+    approve(container, action_id)
+    container.software_engineering_run_repository.claim_approved(action_id)
+    container.software_engineering_run_repository.record_execution_started(
+        action_id=action_id,
+        started_at=datetime.now(UTC),
+    )
+    before = client.get(f"/tasks/software-engineering/{action_id}/status").json()
+
+    denied = client.post(
+        f"/tasks/software-engineering/{action_id}/claim/reconcile",
+        json={
+            "resolution": "abandon",
+            "state_token": before["state_token"],
+        },
+    )
+    assert denied.status_code == 409
+
+    response = client.post(
+        f"/tasks/software-engineering/{action_id}/claim/reconcile",
+        json={
+            "resolution": "abandon",
+            "state_token": before["state_token"],
+            "acknowledge_possible_external_side_effects": True,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["resolution"] == "abandon"
+    assert body["run"]["phase"] == "abandoned"
+    assert body["run"]["claimed"] is True
+    assert body["run"]["retriable"] is False
+    assert body["run"]["reconciliation_options"] == []
+    assert executor.called_actions == []
+
+    execution = client.post(f"/tasks/software-engineering/{action_id}/execute")
+    assert execution.status_code == 409
+    assert executor.called_actions == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"resolution": "release"},
+        {"resolution": "retry", "state_token": "a" * 64},
+        {"resolution": "release", "state_token": "short"},
+        {
+            "resolution": "release",
+            "state_token": "a" * 64,
+            "provider": "claude_code",
+        },
+        {
+            "resolution": "release",
+            "state_token": "a" * 64,
+            "path": "/tmp/worktree",
+        },
+    ],
+)
+def test_claim_reconciliation_schema_exposes_no_execution_authority(
+    client: TestClient,
+    body: dict[str, object],
+) -> None:
+    response = client.post(
+        f"/tasks/software-engineering/{uuid4()}/claim/reconcile",
+        json=body,
+    )
+    assert response.status_code == 422
+
+
+def test_openapi_claim_reconciliation_exposes_only_safe_operator_fields(
+    client: TestClient,
+) -> None:
+    schema = client.get("/openapi.json").json()
+    operation = schema["paths"][
+        "/tasks/software-engineering/{action_id}/claim/reconcile"
+    ]["post"]
+    request_ref = operation["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+    schema_name = request_ref.rsplit("/", 1)[-1]
+    request_schema = schema["components"]["schemas"][schema_name]
+
+    assert set(request_schema["properties"]) == {
+        "resolution",
+        "state_token",
+        "acknowledge_possible_external_side_effects",
+    }
+    assert set(request_schema["required"]) == {"resolution", "state_token"}
     assert request_schema["additionalProperties"] is False

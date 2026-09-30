@@ -27,6 +27,18 @@ from apps.server.src.integrations.software_engineering_promotion import (
     SoftwareEngineeringPromotionNotFoundError,
     SoftwareEngineeringPromotionStateError,
 )
+from apps.server.src.integrations.software_engineering_run_control import (
+    SoftwareEngineeringClaimReconciliation,
+    SoftwareEngineeringRunControlNotFoundError,
+    SoftwareEngineeringRunControlStateError,
+    SoftwareEngineeringRunPhase,
+    SoftwareEngineeringRunStatus,
+    WorkProductInspectionStatus,
+)
+from apps.server.src.integrations.software_engineering_state import (
+    SoftwareEngineeringApprovalStatus,
+    SoftwareEngineeringClaimResolution,
+)
 from apps.server.src.integrations.software_engineering_work_product import (
     WorkProductDisposition,
 )
@@ -127,6 +139,96 @@ class SoftwareEngineeringPromotionHttpResponse(BaseModel):
     base_branch: str
     head_branch: str
     pull_request_created: bool
+
+
+class SoftwareEngineeringRunWorkProductHttpResponse(BaseModel):
+    """Safe ambiguous-claim work-product summary."""
+
+    status: WorkProductInspectionStatus
+    dirty: bool | None
+    changed_files_count: int | None
+    untracked_files_count: int | None
+    canonical_clean: bool | None
+    canonical_unchanged: bool | None
+
+
+class SoftwareEngineeringRunStatusHttpResponse(BaseModel):
+    """Provider-neutral durable Software Engineering status."""
+
+    action_id: UUID
+    target: str
+    phase: SoftwareEngineeringRunPhase
+    approval_status: SoftwareEngineeringApprovalStatus | None
+    claimed: bool
+    worker_started: bool
+    execution_status: str | None
+    external_execution_performed: bool | None
+    disposition: WorkProductDisposition | None
+    claim_resolution: SoftwareEngineeringClaimResolution | None
+    promoted: bool
+    pull_request_number: int | None
+    pull_request_url: str | None
+    promotion_base_branch: str | None
+    promotion_head_branch: str | None
+    reconciliation_options: list[SoftwareEngineeringClaimReconciliation]
+    retriable: bool
+    state_token: str
+    work_product: SoftwareEngineeringRunWorkProductHttpResponse
+
+
+class SoftwareEngineeringClaimReconciliationHttpRequest(BaseModel):
+    """Operator claim decision with optimistic-concurrency state token."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    resolution: SoftwareEngineeringClaimReconciliation
+    state_token: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    acknowledge_possible_external_side_effects: bool = False
+
+
+class SoftwareEngineeringClaimReconciliationHttpResponse(BaseModel):
+    """Applied reconciliation plus the resulting safe run status."""
+
+    resolution: SoftwareEngineeringClaimReconciliation
+    run: SoftwareEngineeringRunStatusHttpResponse
+
+
+def _run_status_http(
+    result: SoftwareEngineeringRunStatus,
+) -> SoftwareEngineeringRunStatusHttpResponse:
+    summary = result.work_product
+    return SoftwareEngineeringRunStatusHttpResponse(
+        action_id=result.action_id,
+        target=result.target,
+        phase=result.phase,
+        approval_status=result.approval_status,
+        claimed=result.claimed,
+        worker_started=result.worker_started,
+        execution_status=result.execution_status,
+        external_execution_performed=result.external_execution_performed,
+        disposition=result.disposition,
+        claim_resolution=result.claim_resolution,
+        promoted=result.promoted,
+        pull_request_number=result.pull_request_number,
+        pull_request_url=result.pull_request_url,
+        promotion_base_branch=result.promotion_base_branch,
+        promotion_head_branch=result.promotion_head_branch,
+        reconciliation_options=list(result.reconciliation_options),
+        retriable=result.retriable,
+        state_token=result.state_token,
+        work_product=SoftwareEngineeringRunWorkProductHttpResponse(
+            status=summary.status,
+            dirty=summary.dirty,
+            changed_files_count=summary.changed_files_count,
+            untracked_files_count=summary.untracked_files_count,
+            canonical_clean=summary.canonical_clean,
+            canonical_unchanged=summary.canonical_unchanged,
+        ),
+    )
 
 
 @router.post("/tasks/software-engineering")
@@ -292,4 +394,64 @@ def promote_software_engineering_work_product(
         base_branch=result.base_branch,
         head_branch=result.head_branch,
         pull_request_created=result.pull_request_created,
+    )
+
+
+
+@router.get("/tasks/software-engineering/{action_id}/status")
+def get_software_engineering_run_status(
+    action_id: UUID,
+    container: Annotated[ApplicationContainer, Depends(get_container)],
+) -> SoftwareEngineeringRunStatusHttpResponse:
+    """Return durable SE status without provider or local workspace internals."""
+    try:
+        result = container.software_engineering_run_control.status(action_id)
+    except SoftwareEngineeringRunControlNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+    except SoftwareEngineeringRunControlStateError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="software engineering run status is unavailable",
+        ) from None
+    except Exception:
+        logger.exception("software engineering run status failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="software engineering run status failed",
+        ) from None
+    return _run_status_http(result)
+
+
+@router.post("/tasks/software-engineering/{action_id}/claim/reconcile")
+def reconcile_software_engineering_claim(
+    action_id: UUID,
+    request: SoftwareEngineeringClaimReconciliationHttpRequest,
+    container: Annotated[ApplicationContainer, Depends(get_container)],
+) -> SoftwareEngineeringClaimReconciliationHttpResponse:
+    """Reconcile one stranded claim without invoking WorkerRuntime."""
+    try:
+        result = container.software_engineering_run_control.reconcile(
+            action_id,
+            resolution=request.resolution,
+            state_token=request.state_token,
+            acknowledge_possible_external_side_effects=(
+                request.acknowledge_possible_external_side_effects
+            ),
+        )
+    except SoftwareEngineeringRunControlNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+    except SoftwareEngineeringRunControlStateError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="software engineering claim is not reconcilable",
+        ) from None
+    except Exception:
+        logger.exception("software engineering claim reconciliation failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="software engineering claim reconciliation failed",
+        ) from None
+    return SoftwareEngineeringClaimReconciliationHttpResponse(
+        resolution=request.resolution,
+        run=_run_status_http(result),
     )
