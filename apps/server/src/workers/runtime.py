@@ -200,18 +200,51 @@ class WorkerRuntime:
         return self._action_queue.count()
 
     def process_next(self) -> WorkerProcessingResult:
-        """Process one queued action if available."""
+        """Process the next FIFO action if available."""
         action = self._action_queue.dequeue()
         if action is None:
+            return self._unprocessed_result()
+        return self._process_dequeued_action(action)
+
+    def process_action(self, action_id: UUID) -> WorkerProcessingResult:
+        """Process exactly one queued Action without consuming unrelated work."""
+        action = self._action_queue.get(action_id)
+        if action is None:
+            return self._unprocessed_result("action is not queued")
+
+        lifecycle_state = self._lifecycle_repository.get(action.id)
+        if (
+            lifecycle_state is not None
+            and lifecycle_state.status == ActionStatus.QUEUED
+            and lifecycle_state.metadata.get("approval_required")
+        ):
             return WorkerProcessingResult(
-                action=None,
-                lifecycle_state=None,
+                action=action,
+                lifecycle_state=lifecycle_state,
                 execution_status=None,
-                execution_reason=None,
+                execution_reason="action awaits explicit approval",
                 processed=False,
                 external_execution_performed=False,
             )
 
+        claimed = self._action_queue.remove(action_id)
+        if claimed is None:
+            return self._unprocessed_result("action is not queued")
+        return self._process_dequeued_action(claimed)
+
+    @staticmethod
+    def _unprocessed_result(reason: str | None = None) -> WorkerProcessingResult:
+        return WorkerProcessingResult(
+            action=None,
+            lifecycle_state=None,
+            execution_status=None,
+            execution_reason=reason,
+            processed=False,
+            external_execution_performed=False,
+        )
+
+    def _process_dequeued_action(self, action: Action) -> WorkerProcessingResult:
+        """Run the existing governed execution path for one claimed Action."""
         lifecycle_state = self._lifecycle_repository.get(action.id)
         if lifecycle_state is None:
             lifecycle_state = ActionLifecycleState(status=ActionStatus.QUEUED)
