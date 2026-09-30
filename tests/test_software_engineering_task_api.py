@@ -989,6 +989,37 @@ def test_claim_release_never_executes_worker_and_restores_retriable_state(
     assert executor.called_actions == []
 
 
+def test_released_claim_runs_only_after_separate_exact_execute_request(
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    executor = RecordingSoftwareEngineeringExecutor()
+    reviewer = RecordingWorkProductReviewer()
+    configure_exact_execution(container, executor, reviewer)
+    configure_run_control(container, reviewer)
+    action_id = create_task(client)
+    approve(container, action_id)
+    container.software_engineering_run_repository.claim_approved(action_id)
+    before = client.get(f"/tasks/software-engineering/{action_id}/status").json()
+
+    released = client.post(
+        f"/tasks/software-engineering/{action_id}/claim/reconcile",
+        json={
+            "resolution": "release",
+            "state_token": before["state_token"],
+        },
+    )
+
+    assert released.status_code == 200
+    assert executor.called_actions == []
+
+    executed = client.post(f"/tasks/software-engineering/{action_id}/execute")
+
+    assert executed.status_code == 200
+    assert executed.json()["execution_status"] == "succeeded"
+    assert [action.id for action in executor.called_actions] == [action_id]
+
+
 def test_claim_reconciliation_rejects_stale_state_token(
     client: TestClient,
     container: ApplicationContainer,
