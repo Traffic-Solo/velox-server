@@ -9,6 +9,7 @@ from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionSt
 from apps.server.src.core.approval_decisions import (
     PendingActionNotFoundError,
     approve_pending_action,
+    reject_pending_action,
 )
 from apps.server.src.core.container import get_container
 from apps.server.src.core.events import (
@@ -78,6 +79,8 @@ def approve_action(action_id: UUID) -> dict[str, Any]:
             lifecycle_repository=container.action_lifecycle_repository,
             lifecycle_manager=container.action_lifecycle_manager,
             action_queue=container.action_queue,
+            pending_action_recovery=container.software_engineering_action_recovery,
+            approval_recorder=container.software_engineering_action_recovery,
         )
     except PendingActionNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
@@ -101,32 +104,25 @@ def reject_action(
 ) -> dict[str, Any]:
     """Reject a pending action so it never reaches the execution queue."""
     container = get_container()
-    action = container.pending_approval_registry.get(action_id)
-    if action is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-
-    lifecycle_state = container.action_lifecycle_repository.get(action_id)
-    if lifecycle_state is None:
-        lifecycle_state = ActionLifecycleState(
-            status=ActionStatus.QUEUED,
-            metadata={"approval_required": True},
-        )
-
     reason = body.reason if body is not None and body.reason else "rejected by user"
     try:
-        rejected_state = container.action_lifecycle_manager.transition(
-            lifecycle_state,
-            ActionStatus.REJECTED,
+        rejected_state = reject_pending_action(
+            action_id,
+            pending_approval_registry=container.pending_approval_registry,
+            lifecycle_repository=container.action_lifecycle_repository,
+            lifecycle_manager=container.action_lifecycle_manager,
             reason=reason,
+            pending_action_recovery=container.software_engineering_action_recovery,
+            approval_recorder=container.software_engineering_action_recovery,
         )
+    except PendingActionNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
     except ValueError as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(error),
         ) from error
 
-    container.action_lifecycle_repository.set(action_id, rejected_state)
-    container.pending_approval_registry.remove(action_id)
     return {
         "status": "rejected",
         "action_id": str(action_id),
