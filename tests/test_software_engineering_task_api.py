@@ -1,8 +1,8 @@
 """Offline coverage for the Software Engineering task HTTP ingress."""
 
 import json
-from datetime import UTC, datetime
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
