@@ -183,17 +183,23 @@ class InMemorySoftwareEngineeringRunRepository:
         executor_role: str,
         capability: str,
         delegation_status: str | None = None,
+        objective: str | None = None,
+        approval_status: SoftwareEngineeringApprovalStatus | None = None,
     ) -> SoftwareEngineeringRunState:
+        normalized_objective = _normalize_objective(objective)
         current = self._states.get(action_id)
         if current is not None:
             _require_same_identity(current, target, executor_role, capability)
+            _require_compatible_objective(current, normalized_objective)
+            updates: dict[str, object] = {"updated_at": _utcnow()}
             if delegation_status is not None:
-                current = replace(
-                    current,
-                    delegation_status=delegation_status,
-                    updated_at=_utcnow(),
-                )
-                self._states[action_id] = current
+                updates["delegation_status"] = delegation_status
+            if normalized_objective is not None and current.pending_objective is None:
+                updates["pending_objective"] = normalized_objective
+            if approval_status is not None:
+                updates["approval_status"] = approval_status
+            current = replace(current, **updates)
+            self._states[action_id] = current
             return current
         now = _utcnow()
         state = SoftwareEngineeringRunState(
@@ -202,8 +208,113 @@ class InMemorySoftwareEngineeringRunRepository:
             capability=capability,
             target=target,
             delegation_status=delegation_status,
+            pending_objective=normalized_objective,
+            approval_status=approval_status,
             created_at=now,
             updated_at=now,
+        )
+        self._states[action_id] = state
+        return state
+
+    def record_approval(
+        self,
+        *,
+        action_id: UUID,
+        objective: str,
+        approved_at: datetime,
+    ) -> SoftwareEngineeringRunState:
+        current = self._require(action_id)
+        normalized = _normalize_required_objective(objective)
+        _require_compatible_objective(current, normalized)
+        if current.approval_status is SoftwareEngineeringApprovalStatus.REJECTED:
+            raise SoftwareEngineeringRunStateError(
+                "rejected software engineering action cannot be approved"
+            )
+        state = replace(
+            current,
+            pending_objective=normalized,
+            approval_status=SoftwareEngineeringApprovalStatus.APPROVED,
+            approved_at=_require_aware(approved_at),
+            updated_at=_utcnow(),
+        )
+        self._states[action_id] = state
+        return state
+
+    def record_rejection(
+        self,
+        *,
+        action_id: UUID,
+        rejected_at: datetime,
+    ) -> SoftwareEngineeringRunState:
+        current = self._require(action_id)
+        if current.claim_id is not None or current.execution_status is not None:
+            raise SoftwareEngineeringRunStateError(
+                "claimed or executed software engineering action cannot be rejected"
+            )
+        state = replace(
+            current,
+            pending_objective=None,
+            approval_status=SoftwareEngineeringApprovalStatus.REJECTED,
+            rejected_at=_require_aware(rejected_at),
+            updated_at=_utcnow(),
+        )
+        self._states[action_id] = state
+        return state
+
+    def claim_approved(
+        self,
+        action_id: UUID,
+    ) -> SoftwareEngineeringActionClaim:
+        current = self._require(action_id)
+        if current.approval_status is not SoftwareEngineeringApprovalStatus.APPROVED:
+            raise SoftwareEngineeringRunStateError(
+                "software engineering action is not durably approved"
+            )
+        if current.execution_status is not None:
+            raise SoftwareEngineeringRunStateError(
+                "software engineering action already has an execution result"
+            )
+        if current.claim_id is not None:
+            raise SoftwareEngineeringRunStateError(
+                "software engineering action already has a durable execution claim"
+            )
+        objective = _normalize_required_objective(current.pending_objective)
+        claim_id = uuid4()
+        claimed_at = _utcnow()
+        state = replace(
+            current,
+            claim_id=claim_id,
+            claimed_at=claimed_at,
+            updated_at=claimed_at,
+        )
+        self._states[action_id] = state
+        return SoftwareEngineeringActionClaim(
+            action_id=action_id,
+            claim_id=claim_id,
+            target=current.target,
+            objective=objective,
+            claimed_at=claimed_at,
+        )
+
+    def record_execution_started(
+        self,
+        *,
+        action_id: UUID,
+        started_at: datetime,
+    ) -> SoftwareEngineeringRunState:
+        current = self._require(action_id)
+        if current.claim_id is None:
+            raise SoftwareEngineeringRunStateError(
+                "software engineering execution has no durable claim"
+            )
+        if current.execution_status is not None:
+            raise SoftwareEngineeringRunStateError(
+                "software engineering action already has an execution result"
+            )
+        state = replace(
+            current,
+            execution_started_at=_require_aware(started_at),
+            updated_at=_utcnow(),
         )
         self._states[action_id] = state
         return state
@@ -219,6 +330,7 @@ class InMemorySoftwareEngineeringRunRepository:
         current = self._require(action_id)
         state = replace(
             current,
+            pending_objective=None,
             execution_status=status,
             execution_finished_at=_require_aware(finished_at),
             external_execution_performed=external_execution_performed,
