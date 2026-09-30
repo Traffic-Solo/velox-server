@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, TextIO
@@ -63,6 +63,29 @@ def _parser() -> argparse.ArgumentParser:
         help="Per-request timeout; exact execution may legitimately take several minutes.",
     )
     return parser
+
+
+def _validate_live_acceptance_environment(environ: Mapping[str, str]) -> None:
+    """Fail before delegation when required local live SE opt-ins are absent."""
+    provider = environ.get("VELOX_SOFTWARE_ENGINEERING_PROVIDER", "").strip()
+    if provider != "claude_code":
+        raise SoftwareEngineeringAcceptanceError(
+            "live acceptance requires VELOX_SOFTWARE_ENGINEERING_PROVIDER=claude_code"
+        )
+    workspace = environ.get("VELOX_SOFTWARE_ENGINEERING_WORKSPACE", "").strip()
+    if not workspace:
+        raise SoftwareEngineeringAcceptanceError(
+            "live acceptance requires VELOX_SOFTWARE_ENGINEERING_WORKSPACE"
+        )
+    promotion = environ.get(
+        "VELOX_SOFTWARE_ENGINEERING_PROMOTION_ENABLED",
+        "",
+    ).strip().lower()
+    if promotion not in {"1", "true", "yes", "on"}:
+        raise SoftwareEngineeringAcceptanceError(
+            "live acceptance requires "
+            "VELOX_SOFTWARE_ENGINEERING_PROMOTION_ENABLED=true"
+        )
 
 
 def _validated_base_url(value: str) -> str:
@@ -382,6 +405,7 @@ def main(
 ) -> int:
     args = _parser().parse_args(argv)
     try:
+        _validate_live_acceptance_environment(os.environ)
         base_url = _validated_base_url(args.base_url)
         if args.timeout_seconds <= 0:
             raise SoftwareEngineeringAcceptanceError(
