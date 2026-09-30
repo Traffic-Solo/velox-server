@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -29,12 +29,12 @@ from apps.server.src.integrations.software_engineering_work_product import (
 
 class RecordingInspector:
     def __init__(self) -> None:
-        self.calls: list[object] = []
+        self.calls: list[UUID] = []
 
-    def review(self, action_id: object) -> WorkProductReview:
+    def review(self, action_id: UUID) -> WorkProductReview:
         self.calls.append(action_id)
         return WorkProductReview(
-            action_id=action_id,  # type: ignore[arg-type]
+            action_id=action_id,
             worktree_path=Path("/hidden/worktree"),
             branch="velox/se-hidden",
             changed_files=("apps/a.py", "tests/test_a.py"),
@@ -48,7 +48,7 @@ class RecordingInspector:
         )
 
 
-def approved_repository() -> tuple[InMemorySoftwareEngineeringRunRepository, object]:
+def approved_repository() -> tuple[InMemorySoftwareEngineeringRunRepository, UUID]:
     repository = InMemorySoftwareEngineeringRunRepository()
     action_id = uuid4()
     repository.register_action(
@@ -64,13 +64,13 @@ def approved_repository() -> tuple[InMemorySoftwareEngineeringRunRepository, obj
 
 def test_status_for_unstarted_claim_allows_release_only() -> None:
     repository, action_id = approved_repository()
-    repository.claim_approved(action_id)  # type: ignore[arg-type]
+    repository.claim_approved(action_id)
     service = SoftwareEngineeringRunControlService(
         repository=repository,
         work_product_inspector=None,
     )
 
-    status = service.status(action_id)  # type: ignore[arg-type]
+    status = service.status(action_id)
 
     assert status.phase is SoftwareEngineeringRunPhase.CLAIMED
     assert status.claimed is True
@@ -85,15 +85,15 @@ def test_status_for_unstarted_claim_allows_release_only() -> None:
 
 def test_release_uses_state_token_and_restores_retriable_approved_state() -> None:
     repository, action_id = approved_repository()
-    repository.claim_approved(action_id)  # type: ignore[arg-type]
+    repository.claim_approved(action_id)
     service = SoftwareEngineeringRunControlService(
         repository=repository,
         work_product_inspector=None,
     )
-    before = service.status(action_id)  # type: ignore[arg-type]
+    before = service.status(action_id)
 
     after = service.reconcile(
-        action_id,  # type: ignore[arg-type]
+        action_id,
         resolution=SoftwareEngineeringClaimReconciliation.RELEASE,
         state_token=before.state_token,
         acknowledge_possible_external_side_effects=False,
@@ -103,7 +103,7 @@ def test_release_uses_state_token_and_restores_retriable_approved_state() -> Non
     assert after.claimed is False
     assert after.retriable is True
     assert after.reconciliation_options == ()
-    persisted = repository.get(action_id)  # type: ignore[arg-type]
+    persisted = repository.get(action_id)
     assert persisted is not None
     assert (
         persisted.claim_resolution
@@ -113,20 +113,20 @@ def test_release_uses_state_token_and_restores_retriable_approved_state() -> Non
 
 def test_release_refuses_stale_status_token() -> None:
     repository, action_id = approved_repository()
-    repository.claim_approved(action_id)  # type: ignore[arg-type]
+    repository.claim_approved(action_id)
     service = SoftwareEngineeringRunControlService(
         repository=repository,
         work_product_inspector=None,
     )
-    before = service.status(action_id)  # type: ignore[arg-type]
-    repository.record_execution_started(  # type: ignore[arg-type]
+    before = service.status(action_id)
+    repository.record_execution_started(
         action_id=action_id,
         started_at=datetime.now(UTC),
     )
 
     with pytest.raises(SoftwareEngineeringRunControlStateError, match="changed"):
         service.reconcile(
-            action_id,  # type: ignore[arg-type]
+            action_id,
             resolution=SoftwareEngineeringClaimReconciliation.RELEASE,
             state_token=before.state_token,
             acknowledge_possible_external_side_effects=False,
@@ -135,8 +135,8 @@ def test_release_refuses_stale_status_token() -> None:
 
 def test_started_ambiguous_status_inspects_work_product_summary_only() -> None:
     repository, action_id = approved_repository()
-    repository.claim_approved(action_id)  # type: ignore[arg-type]
-    repository.record_execution_started(  # type: ignore[arg-type]
+    repository.claim_approved(action_id)
+    repository.record_execution_started(
         action_id=action_id,
         started_at=datetime.now(UTC),
     )
@@ -146,7 +146,7 @@ def test_started_ambiguous_status_inspects_work_product_summary_only() -> None:
         work_product_inspector=inspector,
     )
 
-    status = service.status(action_id)  # type: ignore[arg-type]
+    status = service.status(action_id)
 
     assert status.phase is SoftwareEngineeringRunPhase.RUNNING_OR_AMBIGUOUS
     assert status.reconciliation_options == (
@@ -162,8 +162,8 @@ def test_started_ambiguous_status_inspects_work_product_summary_only() -> None:
 
 def test_started_claim_requires_acknowledgement_before_abandon() -> None:
     repository, action_id = approved_repository()
-    repository.claim_approved(action_id)  # type: ignore[arg-type]
-    repository.record_execution_started(  # type: ignore[arg-type]
+    repository.claim_approved(action_id)
+    repository.record_execution_started(
         action_id=action_id,
         started_at=datetime.now(UTC),
     )
@@ -172,14 +172,14 @@ def test_started_claim_requires_acknowledgement_before_abandon() -> None:
         repository=repository,
         work_product_inspector=inspector,
     )
-    before = service.status(action_id)  # type: ignore[arg-type]
+    before = service.status(action_id)
 
     with pytest.raises(
         SoftwareEngineeringRunControlStateError,
         match="not acknowledged",
     ):
         service.reconcile(
-            action_id,  # type: ignore[arg-type]
+            action_id,
             resolution=SoftwareEngineeringClaimReconciliation.ABANDON,
             state_token=before.state_token,
             acknowledge_possible_external_side_effects=False,
@@ -188,8 +188,8 @@ def test_started_claim_requires_acknowledgement_before_abandon() -> None:
 
 def test_abandon_started_claim_keeps_it_non_retriable_and_scrubs_objective() -> None:
     repository, action_id = approved_repository()
-    repository.claim_approved(action_id)  # type: ignore[arg-type]
-    repository.record_execution_started(  # type: ignore[arg-type]
+    repository.claim_approved(action_id)
+    repository.record_execution_started(
         action_id=action_id,
         started_at=datetime.now(UTC),
     )
@@ -198,10 +198,10 @@ def test_abandon_started_claim_keeps_it_non_retriable_and_scrubs_objective() -> 
         repository=repository,
         work_product_inspector=inspector,
     )
-    before = service.status(action_id)  # type: ignore[arg-type]
+    before = service.status(action_id)
 
     after = service.reconcile(
-        action_id,  # type: ignore[arg-type]
+        action_id,
         resolution=SoftwareEngineeringClaimReconciliation.ABANDON,
         state_token=before.state_token,
         acknowledge_possible_external_side_effects=True,
@@ -211,7 +211,7 @@ def test_abandon_started_claim_keeps_it_non_retriable_and_scrubs_objective() -> 
     assert after.claimed is True
     assert after.retriable is False
     assert after.reconciliation_options == ()
-    persisted = repository.get(action_id)  # type: ignore[arg-type]
+    persisted = repository.get(action_id)
     assert persisted is not None
     assert persisted.pending_objective is None
     assert (
@@ -223,12 +223,12 @@ def test_abandon_started_claim_keeps_it_non_retriable_and_scrubs_objective() -> 
 
 def test_terminal_execution_has_no_reconciliation_options() -> None:
     repository, action_id = approved_repository()
-    repository.claim_approved(action_id)  # type: ignore[arg-type]
-    repository.record_execution_started(  # type: ignore[arg-type]
+    repository.claim_approved(action_id)
+    repository.record_execution_started(
         action_id=action_id,
         started_at=datetime.now(UTC),
     )
-    repository.record_execution(  # type: ignore[arg-type]
+    repository.record_execution(
         action_id=action_id,
         status="succeeded",
         finished_at=datetime.now(UTC),
@@ -239,7 +239,7 @@ def test_terminal_execution_has_no_reconciliation_options() -> None:
         work_product_inspector=None,
     )
 
-    status = service.status(action_id)  # type: ignore[arg-type]
+    status = service.status(action_id)
 
     assert status.phase is SoftwareEngineeringRunPhase.SUCCEEDED
     assert status.reconciliation_options == ()
