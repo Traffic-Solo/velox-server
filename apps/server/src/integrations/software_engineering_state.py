@@ -4,7 +4,7 @@ import sqlite3
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
 from apps.server.src.core.actions import Action, ExecutorRole
@@ -550,7 +550,7 @@ class DurableSoftwareEngineeringExecutionObserver:
         self,
         observation: WorkerExecutionObservation,
         status: WorkerExecutionStatus,
-        metadata: dict[str, object],
+        metadata: dict[str, Any],
         reason: str | None = None,
         failure: WorkerExecutionFailure | None = None,
         duration_ms: float | None = None,
