@@ -138,6 +138,33 @@ def test_ingress_maps_to_trusted_software_engineering_route_and_stops_at_approva
     assert "test_software_engineering" not in json.dumps(body)
 
 
+
+def test_pending_approval_is_listed_and_approvable_after_local_state_loss(
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    register_software_engineering_route(container)
+    action_id = create_task(client)
+
+    container.pending_approval_registry.clear()
+    container.action_lifecycle_repository.clear()
+
+    pending = client.get("/actions/pending-approval")
+    assert pending.status_code == 200
+    assert [item["action"]["id"] for item in pending.json()] == [str(action_id)]
+    assert pending.json()[0]["lifecycle"]["status"] == "queued"
+
+    approved = client.post(f"/actions/{action_id}/approve")
+
+    assert approved.status_code == 200
+    assert approved.json()["lifecycle"]["status"] == "approved"
+    [queued] = container.action_queue.list()
+    assert queued.id == action_id
+    durable = container.software_engineering_run_repository.get(action_id)
+    assert durable is not None
+    assert durable.approval_status == "approved"
+
+
 @pytest.mark.parametrize("field", ["objective", "target"])
 @pytest.mark.parametrize("value", ["", "   ", "\t"])
 def test_blank_task_fields_fail_before_delegation_side_effects(
@@ -401,6 +428,53 @@ def test_exact_execute_processes_only_requested_action_and_returns_review(
     assert "/trusted/hidden/worktree" not in rendered
     assert "execution-test-provider" not in rendered
     assert "secret-provider" not in rendered
+
+
+
+def test_exact_execute_recovers_approved_action_after_local_queue_loss(
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    executor = RecordingSoftwareEngineeringExecutor()
+    reviewer = RecordingWorkProductReviewer()
+    configure_exact_execution(container, executor, reviewer)
+    action_id = create_task(client)
+    approve(container, action_id)
+
+    container.action_queue.clear()
+    container.action_lifecycle_repository.clear()
+    container.pending_approval_registry.clear()
+
+    response = client.post(f"/tasks/software-engineering/{action_id}/execute")
+
+    assert response.status_code == 200
+    assert response.json()["execution_status"] == "succeeded"
+    assert [action.id for action in executor.called_actions] == [action_id]
+    durable = container.software_engineering_run_repository.get(action_id)
+    assert durable is not None
+    assert durable.claim_id is not None
+    assert durable.execution_status == "succeeded"
+    assert durable.pending_objective is None
+
+
+def test_exact_execute_refuses_ambiguous_preexisting_durable_claim(
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    executor = RecordingSoftwareEngineeringExecutor()
+    reviewer = RecordingWorkProductReviewer()
+    configure_exact_execution(container, executor, reviewer)
+    action_id = create_task(client)
+    approve(container, action_id)
+    container.software_engineering_run_repository.claim_approved(action_id)
+
+    container.action_queue.clear()
+    container.action_lifecycle_repository.clear()
+
+    response = client.post(f"/tasks/software-engineering/{action_id}/execute")
+
+    assert response.status_code == 409
+    assert executor.called_actions == []
 
 
 def test_exact_execute_never_auto_approves(
