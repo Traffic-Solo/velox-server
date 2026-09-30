@@ -1,5 +1,6 @@
 """Durable Software Engineering state coverage."""
 
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -15,6 +16,7 @@ from apps.server.src.integrations.software_engineering_disposition import (
 from apps.server.src.integrations.software_engineering_state import (
     DurableSoftwareEngineeringExecutionObserver,
     InMemorySoftwareEngineeringRunRepository,
+    SoftwareEngineeringApprovalStatus,
     SoftwareEngineeringRunStateError,
     SqliteSoftwareEngineeringRunRepository,
     default_software_engineering_state_path,
@@ -108,6 +110,181 @@ def test_sqlite_run_state_rejects_action_identity_conflict(tmp_path: Path) -> No
             executor_role=ExecutorRole.SOFTWARE_ENGINEERING.value,
             capability=SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
         )
+
+
+def test_sqlite_v1_state_migrates_to_v2_without_losing_existing_evidence(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.sqlite3"
+    action_id = uuid4()
+    now = datetime.now(UTC).isoformat()
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE velox_schema (
+            name TEXT PRIMARY KEY,
+            version INTEGER NOT NULL
+        );
+        CREATE TABLE software_engineering_runs (
+            action_id TEXT PRIMARY KEY,
+            executor_role TEXT NOT NULL,
+            capability TEXT NOT NULL,
+            target TEXT NOT NULL,
+            delegation_status TEXT,
+            execution_status TEXT,
+            execution_finished_at TEXT,
+            external_execution_performed INTEGER,
+            disposition TEXT,
+            disposition_succeeded INTEGER,
+            worktree_present INTEGER,
+            branch_present INTEGER,
+            canonical_unchanged INTEGER,
+            promotion_commit_sha TEXT,
+            pull_request_number INTEGER,
+            pull_request_url TEXT,
+            promotion_base_branch TEXT,
+            promotion_head_branch TEXT,
+            promotion_finished_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """
+    )
+    connection.execute(
+        "INSERT INTO velox_schema(name, version) VALUES (?, 1)",
+        ("software_engineering_runs",),
+    )
+    connection.execute(
+        """
+        INSERT INTO software_engineering_runs (
+            action_id, executor_role, capability, target,
+            delegation_status, execution_status, execution_finished_at,
+            external_execution_performed, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(action_id),
+            ExecutorRole.SOFTWARE_ENGINEERING.value,
+            SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
+            "velox-server",
+            "awaiting_approval",
+            "succeeded",
+            now,
+            1,
+            now,
+            now,
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    repository = SqliteSoftwareEngineeringRunRepository(path)
+    state = repository.get(action_id)
+
+    assert state is not None
+    assert state.execution_status == "succeeded"
+    assert state.pending_objective is None
+    assert state.approval_status is None
+    with sqlite3.connect(path) as migrated:
+        version = migrated.execute(
+            "SELECT version FROM velox_schema WHERE name = ?",
+            ("software_engineering_runs",),
+        ).fetchone()
+    assert version == (2,)
+
+
+def test_pending_objective_and_approval_survive_reopen_then_scrub_on_completion(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.sqlite3"
+    action_id = uuid4()
+    repository = SqliteSoftwareEngineeringRunRepository(path)
+    repository.register_action(
+        action_id=action_id,
+        target="velox-server",
+        executor_role=ExecutorRole.SOFTWARE_ENGINEERING.value,
+        capability=SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
+        delegation_status="awaiting_approval",
+        objective="Implement restart recovery",
+        approval_status=SoftwareEngineeringApprovalStatus.AWAITING_APPROVAL,
+    )
+    repository.record_approval(
+        action_id=action_id,
+        objective="Implement restart recovery",
+        approved_at=datetime.now(UTC),
+    )
+
+    restarted = SqliteSoftwareEngineeringRunRepository(path)
+    state = restarted.get(action_id)
+    assert state is not None
+    assert state.pending_objective == "Implement restart recovery"
+    assert state.approval_status is SoftwareEngineeringApprovalStatus.APPROVED
+
+    claim = restarted.claim_approved(action_id)
+    restarted.record_execution_started(
+        action_id=action_id,
+        started_at=datetime.now(UTC),
+    )
+    restarted.record_execution(
+        action_id=action_id,
+        status="succeeded",
+        finished_at=datetime.now(UTC),
+        external_execution_performed=True,
+    )
+
+    terminal = SqliteSoftwareEngineeringRunRepository(path).get(action_id)
+    assert terminal is not None
+    assert terminal.pending_objective is None
+    assert terminal.claim_id == claim.claim_id
+    assert terminal.execution_started_at is not None
+    assert terminal.execution_status == "succeeded"
+
+
+def test_sqlite_claim_is_atomic_across_repository_instances(tmp_path: Path) -> None:
+    path = tmp_path / "state.sqlite3"
+    action_id = uuid4()
+    first = SqliteSoftwareEngineeringRunRepository(path)
+    first.register_action(
+        action_id=action_id,
+        target="velox-server",
+        executor_role=ExecutorRole.SOFTWARE_ENGINEERING.value,
+        capability=SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
+        objective="Implement one thing",
+        approval_status=SoftwareEngineeringApprovalStatus.APPROVED,
+    )
+    second = SqliteSoftwareEngineeringRunRepository(path)
+
+    claim = first.claim_approved(action_id)
+
+    assert claim.action_id == action_id
+    with pytest.raises(
+        SoftwareEngineeringRunStateError,
+        match="durable execution claim",
+    ):
+        second.claim_approved(action_id)
+
+
+def test_rejection_scrubs_pending_objective(tmp_path: Path) -> None:
+    repository = SqliteSoftwareEngineeringRunRepository(tmp_path / "state.sqlite3")
+    action_id = uuid4()
+    repository.register_action(
+        action_id=action_id,
+        target="velox-server",
+        executor_role=ExecutorRole.SOFTWARE_ENGINEERING.value,
+        capability=SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
+        objective="Sensitive pending task",
+        approval_status=SoftwareEngineeringApprovalStatus.AWAITING_APPROVAL,
+    )
+
+    repository.record_rejection(
+        action_id=action_id,
+        rejected_at=datetime.now(UTC),
+    )
+
+    state = repository.get(action_id)
+    assert state is not None
+    assert state.pending_objective is None
+    assert state.approval_status is SoftwareEngineeringApprovalStatus.REJECTED
 
 
 def test_durable_observer_records_only_canonical_software_engineering_route() -> None:
