@@ -307,6 +307,17 @@ class SoftwareEngineeringPromotionService:
             )
         self._git("remote", "get-url", self._remote, cwd=root)
         canonical_head = self._git("rev-parse", "HEAD", cwd=root)
+        remote_base = self._git(
+            "ls-remote",
+            "--heads",
+            self._remote,
+            f"refs/heads/{self._base_branch}",
+            cwd=root,
+        ).split()
+        if not remote_base or remote_base[0] != canonical_head:
+            raise SoftwareEngineeringPromotionStateError(
+                "trusted remote base does not match canonical HEAD"
+            )
         expected = workspace.expected_worktree(action_id)
         commit_sha = self._create_or_recover_commit(
             action_id=action_id,
@@ -316,6 +327,14 @@ class SoftwareEngineeringPromotionService:
             canonical_head=canonical_head,
             dirty=review.dirty,
         )
+
+        if (
+            self._git("rev-parse", "HEAD", cwd=root) != canonical_head
+            or workspace.status(root).strip()
+        ):
+            raise SoftwareEngineeringPromotionStateError(
+                "canonical checkout changed before promotion push"
+            )
 
         push = workspace.run_git(
             "push",
