@@ -8,7 +8,7 @@ from uuid import UUID
 from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionStatus
 from apps.server.src.core.action_lifecycle_repository import ActionLifecycleRepository
 from apps.server.src.core.action_queue import ActionQueue
-from apps.server.src.core.actions import ExecutorRole
+from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.integrations.software_engineering import (
     SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
 )
@@ -171,16 +171,11 @@ class SoftwareEngineeringTaskContinuation:
 
 
     @staticmethod
-    def _require_canonical_action(action: object) -> None:
-        if not hasattr(action, "executor_role"):
-            raise SoftwareEngineeringContinuationRouteError(
-                "queued action is not a Software Engineering Action"
-            )
-        typed = action
+    def _require_canonical_action(action: Action) -> None:
         if (
-            typed.executor_role != ExecutorRole.SOFTWARE_ENGINEERING
-            or typed.type != SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY
-            or typed.payload.get("capability")
+            action.executor_role != ExecutorRole.SOFTWARE_ENGINEERING
+            or action.type != SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY
+            or action.payload.get("capability")
             != SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY
         ):
             raise SoftwareEngineeringContinuationRouteError(
