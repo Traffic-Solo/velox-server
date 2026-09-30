@@ -5,7 +5,6 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-
 from apps.server.src.core.actions import ExecutorRole
 from apps.server.src.integrations.software_engineering import (
     SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
