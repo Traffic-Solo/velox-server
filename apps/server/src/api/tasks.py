@@ -22,11 +22,16 @@ from apps.server.src.integrations.software_engineering_disposition import (
     SoftwareEngineeringDispositionRouteError,
     SoftwareEngineeringDispositionStateError,
 )
+from apps.server.src.integrations.software_engineering_promotion import (
+    SoftwareEngineeringPromotionExternalError,
+    SoftwareEngineeringPromotionNotFoundError,
+    SoftwareEngineeringPromotionStateError,
+)
 from apps.server.src.integrations.software_engineering_work_product import (
     WorkProductDisposition,
 )
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["tasks"], dependencies=[Depends(require_api_token)])
@@ -94,6 +99,27 @@ class SoftwareEngineeringDispositionHttpResponse(BaseModel):
     branch_present: bool
     canonical_unchanged: bool
     remaining: list[str]
+
+
+class SoftwareEngineeringPromotionHttpRequest(BaseModel):
+    """Caller supplies PR copy only; git and provider authority remain trusted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=200)
+    body: str = Field(default="", max_length=10_000)
+
+
+class SoftwareEngineeringPromotionHttpResponse(BaseModel):
+    """Safe promotion result after VELOX-owned commit, push and PR publication."""
+
+    action_id: UUID
+    commit_sha: str
+    pull_request_number: int
+    pull_request_url: str
+    base_branch: str
+    head_branch: str
+    pull_request_created: bool
 
 
 @router.post("/tasks/software-engineering")
@@ -216,4 +242,47 @@ def dispose_software_engineering_work_product(
         branch_present=result.branch_present,
         canonical_unchanged=result.canonical_unchanged,
         remaining=list(result.remaining),
+    )
+
+
+@router.post("/tasks/software-engineering/{action_id}/promote")
+def promote_software_engineering_work_product(
+    action_id: UUID,
+    request: SoftwareEngineeringPromotionHttpRequest,
+    container: Annotated[ApplicationContainer, Depends(get_container)],
+) -> SoftwareEngineeringPromotionHttpResponse:
+    """Promote one explicitly kept SE work product under VELOX authority."""
+    try:
+        result = container.software_engineering_promotion.promote(
+            action_id,
+            title=request.title,
+            body=request.body,
+        )
+    except SoftwareEngineeringPromotionNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+    except SoftwareEngineeringPromotionStateError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="software engineering work product is not promotable",
+        ) from None
+    except SoftwareEngineeringPromotionExternalError:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="software engineering promotion failed",
+        ) from None
+    except Exception:
+        logger.exception("software engineering promotion failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="software engineering promotion failed",
+        ) from None
+
+    return SoftwareEngineeringPromotionHttpResponse(
+        action_id=result.action_id,
+        commit_sha=result.commit_sha,
+        pull_request_number=result.pull_request_number,
+        pull_request_url=result.pull_request_url,
+        base_branch=result.base_branch,
+        head_branch=result.head_branch,
+        pull_request_created=result.pull_request_created,
     )
