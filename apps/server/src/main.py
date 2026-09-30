@@ -5,6 +5,7 @@ from contextlib import ExitStack, asynccontextmanager
 from apps.server.src.api.calendar import router as calendar_router
 from apps.server.src.api.events import router as events_router
 from apps.server.src.api.semantic import router as semantic_router
+from apps.server.src.api.tasks import router as tasks_router
 from apps.server.src.core.config import get_settings
 from apps.server.src.core.container import get_container
 from apps.server.src.core.log import configure_logging
@@ -56,6 +57,7 @@ app = FastAPI(title=SERVICE_NAME, version=SERVICE_VERSION, lifespan=lifespan)
 app.include_router(events_router)
 app.include_router(calendar_router)
 app.include_router(semantic_router)
+app.include_router(tasks_router)
 
 
 @app.get("/")

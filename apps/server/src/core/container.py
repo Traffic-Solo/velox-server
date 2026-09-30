@@ -59,6 +59,9 @@ from apps.server.src.integrations.calendar_ingress import (
     CalendarIngressAdapter,
 )
 from apps.server.src.integrations.gmail import GMAIL_ACCOUNT_CONTEXT, GmailWorkerExecutor
+from apps.server.src.integrations.software_engineering_ingress import (
+    SoftwareEngineeringTaskIngress,
+)
 from apps.server.src.integrations.software_engineering_runtime import (
     configured_software_engineering,
 )
@@ -127,6 +130,9 @@ class ApplicationContainer:
             executor_registry=self.worker_executor_registry,
             permission_runtime=self.permission_runtime,
             action_queue=self.action_queue,
+        )
+        self.software_engineering_task_ingress = SoftwareEngineeringTaskIngress(
+            self.task_delegator
         )
         self.calendar_event_list_orchestrator = CalendarEventListOrchestrator(
             self.calendar_worker_executor
