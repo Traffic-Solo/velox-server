@@ -5,6 +5,7 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from apps.server.src.api.dependencies import require_api_token
+from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionStatus
 from apps.server.src.core.approval_decisions import (
     PendingActionNotFoundError,
     approve_pending_action,
@@ -52,22 +53,37 @@ def list_action_queue() -> list[dict[str, Any]]:
 
 @router.get("/actions/pending-approval")
 def list_pending_approval_actions() -> list[dict[str, Any]]:
-    """Return actions held for explicit approval, with their lifecycle state."""
+    """Return process-local plus restart-recovered SE approval work."""
     container = get_container()
-    return [
-        {
-            "action": action.model_dump(mode="json"),
-            "lifecycle": (
-                lifecycle.model_dump(mode="json")
-                if (
-                    lifecycle := container.action_lifecycle_repository.get(action.id)
-                )
-                is not None
-                else None
-            ),
-        }
-        for action in container.pending_approval_registry.list_pending()
-    ]
+    actions = list(container.pending_approval_registry.list_pending())
+    known = {action.id for action in actions}
+    try:
+        for action in container.software_engineering_action_recovery.list_pending():
+            if action.id not in known:
+                actions.append(action)
+                known.add(action.id)
+    except SoftwareEngineeringRecoveryError:
+        logger.exception("software engineering pending approval recovery failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="pending approval recovery failed",
+        ) from None
+
+    response: list[dict[str, Any]] = []
+    for action in actions:
+        lifecycle = container.action_lifecycle_repository.get(action.id)
+        if lifecycle is None:
+            lifecycle = ActionLifecycleState(
+                status=ActionStatus.QUEUED,
+                metadata={"approval_required": True, "durable_recovery": True},
+            )
+        response.append(
+            {
+                "action": action.model_dump(mode="json"),
+                "lifecycle": lifecycle.model_dump(mode="json"),
+            }
+        )
+    return response
 
 
 @router.post("/actions/{action_id}/approve")
