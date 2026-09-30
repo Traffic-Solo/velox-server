@@ -46,13 +46,12 @@ def configured_software_engineering(
     if settings.software_engineering_provider != "claude_code":
         return None
     process_runner = runner or SubprocessRunner()
-    workspace = TrustedGitWorkspace(
-        Path(settings.software_engineering_workspace or ""), process_runner,
-    )
+    workspace_root = Path(settings.software_engineering_workspace or "").expanduser()
+    workspace = TrustedGitWorkspace(workspace_root, process_runner)
     state_path = (
         Path(settings.software_engineering_state_database_path).expanduser()
         if settings.software_engineering_state_database_path is not None
-        else default_software_engineering_state_path(workspace._root)
+        else default_software_engineering_state_path(workspace_root)
     )
     run_repository = SqliteSoftwareEngineeringRunRepository(state_path)
     publisher: PullRequestPublisher | None = None
