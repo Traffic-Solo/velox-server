@@ -3,9 +3,10 @@
 import sqlite3
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.integrations.software_engineering import (
@@ -24,12 +25,31 @@ from apps.server.src.workers.runtime import (
     WorkerExecutionObserver,
 )
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _SCHEMA_NAME = "software_engineering_runs"
 
 
 class SoftwareEngineeringRunStateError(RuntimeError):
     """Durable Software Engineering state is unavailable, invalid or inconsistent."""
+
+
+class SoftwareEngineeringApprovalStatus(StrEnum):
+    """Durable approval state for one recoverable SE Action."""
+
+    AWAITING_APPROVAL = "awaiting_approval"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+@dataclass(frozen=True, slots=True)
+class SoftwareEngineeringActionClaim:
+    """One durable, non-expiring claim for exact SE execution."""
+
+    action_id: UUID
+    claim_id: UUID
+    target: str
+    objective: str
+    claimed_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
