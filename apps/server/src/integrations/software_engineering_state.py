@@ -665,7 +665,13 @@ def _optional_text(value: object) -> str | None:
 
 
 def _optional_bool(value: object) -> bool | None:
-    return bool(int(value)) if value is not None else None
+    if value is None:
+        return None
+    if isinstance(value, (bool, int)):
+        return bool(value)
+    raise SoftwareEngineeringRunStateError(
+        "software engineering durable boolean state is invalid"
+    )
 
 
 def _optional_datetime(value: object) -> datetime | None:
