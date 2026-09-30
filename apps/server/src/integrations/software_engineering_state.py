@@ -537,22 +537,31 @@ class SqliteSoftwareEngineeringRunRepository:
         executor_role: str,
         capability: str,
         delegation_status: str | None = None,
+        objective: str | None = None,
+        approval_status: SoftwareEngineeringApprovalStatus | None = None,
     ) -> SoftwareEngineeringRunState:
+        normalized_objective = _normalize_objective(objective)
         current = self.get(action_id)
         if current is not None:
             _require_same_identity(current, target, executor_role, capability)
+            _require_compatible_objective(current, normalized_objective)
+            assignments = ["updated_at = ?"]
+            values: list[object] = [_utcnow().isoformat()]
             if delegation_status is not None:
-                self._update(
-                    action_id,
-                    "delegation_status = ?, updated_at = ?",
-                    (delegation_status, _utcnow().isoformat()),
-                )
-            state = self.get(action_id)
-            if state is None:
-                raise SoftwareEngineeringRunStateError(
-                    "software engineering run disappeared during update"
-                )
-            return state
+                assignments.append("delegation_status = ?")
+                values.append(delegation_status)
+            if normalized_objective is not None and current.pending_objective is None:
+                assignments.append("pending_objective = ?")
+                values.append(normalized_objective)
+            if approval_status is not None:
+                assignments.append("approval_status = ?")
+                values.append(approval_status.value)
+            self._update(
+                action_id,
+                ", ".join(assignments),
+                tuple(values),
+            )
+            return self._require(action_id)
 
         now = _utcnow().isoformat()
         try:
@@ -561,8 +570,9 @@ class SqliteSoftwareEngineeringRunRepository:
                     """
                     INSERT INTO software_engineering_runs (
                         action_id, executor_role, capability, target,
-                        delegation_status, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        delegation_status, pending_objective, approval_status,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         str(action_id),
@@ -570,6 +580,8 @@ class SqliteSoftwareEngineeringRunRepository:
                         capability,
                         target,
                         delegation_status,
+                        normalized_objective,
+                        approval_status.value if approval_status is not None else None,
                         now,
                         now,
                     ),
@@ -581,17 +593,164 @@ class SqliteSoftwareEngineeringRunRepository:
                     "software engineering action identity could not be registered"
                 ) from None
             _require_same_identity(current, target, executor_role, capability)
+            _require_compatible_objective(current, normalized_objective)
         except sqlite3.Error:
             raise SoftwareEngineeringRunStateError(
                 "software engineering action identity could not be registered"
             ) from None
 
-        state = self.get(action_id)
-        if state is None:
+        return self._require(action_id)
+
+    def record_approval(
+        self,
+        *,
+        action_id: UUID,
+        objective: str,
+        approved_at: datetime,
+    ) -> SoftwareEngineeringRunState:
+        current = self._require(action_id)
+        normalized = _normalize_required_objective(objective)
+        _require_compatible_objective(current, normalized)
+        if current.approval_status is SoftwareEngineeringApprovalStatus.REJECTED:
             raise SoftwareEngineeringRunStateError(
-                "software engineering action identity could not be read back"
+                "rejected software engineering action cannot be approved"
             )
-        return state
+        self._update(
+            action_id,
+            """
+            pending_objective = ?,
+            approval_status = ?,
+            approved_at = ?,
+            updated_at = ?
+            """,
+            (
+                normalized,
+                SoftwareEngineeringApprovalStatus.APPROVED.value,
+                _require_aware(approved_at).isoformat(),
+                _utcnow().isoformat(),
+            ),
+        )
+        return self._require(action_id)
+
+    def record_rejection(
+        self,
+        *,
+        action_id: UUID,
+        rejected_at: datetime,
+    ) -> SoftwareEngineeringRunState:
+        current = self._require(action_id)
+        if current.claim_id is not None or current.execution_status is not None:
+            raise SoftwareEngineeringRunStateError(
+                "claimed or executed software engineering action cannot be rejected"
+            )
+        self._update(
+            action_id,
+            """
+            pending_objective = NULL,
+            approval_status = ?,
+            rejected_at = ?,
+            updated_at = ?
+            """,
+            (
+                SoftwareEngineeringApprovalStatus.REJECTED.value,
+                _require_aware(rejected_at).isoformat(),
+                _utcnow().isoformat(),
+            ),
+        )
+        return self._require(action_id)
+
+    def claim_approved(
+        self,
+        action_id: UUID,
+    ) -> SoftwareEngineeringActionClaim:
+        claim_id = uuid4()
+        claimed_at = _utcnow()
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT * FROM software_engineering_runs WHERE action_id = ?",
+                    (str(action_id),),
+                ).fetchone()
+                if row is None:
+                    raise SoftwareEngineeringRunStateError(
+                        "software engineering run state does not exist"
+                    )
+                current = _state_from_row(row)
+                if (
+                    current.approval_status
+                    is not SoftwareEngineeringApprovalStatus.APPROVED
+                ):
+                    raise SoftwareEngineeringRunStateError(
+                        "software engineering action is not durably approved"
+                    )
+                if current.execution_status is not None:
+                    raise SoftwareEngineeringRunStateError(
+                        "software engineering action already has an execution result"
+                    )
+                if current.claim_id is not None:
+                    raise SoftwareEngineeringRunStateError(
+                        "software engineering action already has a durable execution claim"
+                    )
+                objective = _normalize_required_objective(current.pending_objective)
+                cursor = connection.execute(
+                    """
+                    UPDATE software_engineering_runs
+                    SET claim_id = ?, claimed_at = ?, updated_at = ?
+                    WHERE action_id = ?
+                      AND approval_status = ?
+                      AND claim_id IS NULL
+                      AND execution_status IS NULL
+                    """,
+                    (
+                        str(claim_id),
+                        claimed_at.isoformat(),
+                        claimed_at.isoformat(),
+                        str(action_id),
+                        SoftwareEngineeringApprovalStatus.APPROVED.value,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise SoftwareEngineeringRunStateError(
+                        "software engineering action could not be claimed atomically"
+                    )
+        except sqlite3.Error:
+            raise SoftwareEngineeringRunStateError(
+                "software engineering execution claim could not be persisted"
+            ) from None
+
+        return SoftwareEngineeringActionClaim(
+            action_id=action_id,
+            claim_id=claim_id,
+            target=current.target,
+            objective=objective,
+            claimed_at=claimed_at,
+        )
+
+    def record_execution_started(
+        self,
+        *,
+        action_id: UUID,
+        started_at: datetime,
+    ) -> SoftwareEngineeringRunState:
+        current = self._require(action_id)
+        if current.claim_id is None:
+            raise SoftwareEngineeringRunStateError(
+                "software engineering execution has no durable claim"
+            )
+        if current.execution_status is not None:
+            raise SoftwareEngineeringRunStateError(
+                "software engineering action already has an execution result"
+            )
+        self._update(
+            action_id,
+            "execution_started_at = ?, updated_at = ?",
+            (
+                _require_aware(started_at).isoformat(),
+                _utcnow().isoformat(),
+            ),
+        )
+        return self._require(action_id)
 
     def record_execution(
         self,
@@ -605,6 +764,7 @@ class SqliteSoftwareEngineeringRunRepository:
         self._update(
             action_id,
             """
+            pending_objective = NULL,
             execution_status = ?,
             execution_finished_at = ?,
             external_execution_performed = ?,
