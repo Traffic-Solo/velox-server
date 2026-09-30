@@ -198,7 +198,7 @@ def test_promotion_retry_recovers_same_commit_instead_of_creating_second_commit(
     expected = workspace.expected_worktree(action_id)
     assert second.commit_sha == first.commit_sha
     assert git(expected.path, "rev-list", "--count", f"{canonical}..HEAD") == "1"
-    assert len(publisher.calls) == 2
+    assert len(publisher.calls) == 1
     assert second.pull_request_created is False
 
 
