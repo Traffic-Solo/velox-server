@@ -977,6 +977,19 @@ def _state_from_row(row: sqlite3.Row) -> SoftwareEngineeringRunState:
             capability=str(row["capability"]),
             target=str(row["target"]),
             delegation_status=_optional_text(row["delegation_status"]),
+            pending_objective=_optional_text(row["pending_objective"]),
+            approval_status=(
+                SoftwareEngineeringApprovalStatus(str(row["approval_status"]))
+                if row["approval_status"] is not None
+                else None
+            ),
+            approved_at=_optional_datetime(row["approved_at"]),
+            rejected_at=_optional_datetime(row["rejected_at"]),
+            claim_id=(
+                UUID(str(row["claim_id"])) if row["claim_id"] is not None else None
+            ),
+            claimed_at=_optional_datetime(row["claimed_at"]),
+            execution_started_at=_optional_datetime(row["execution_started_at"]),
             execution_status=_optional_text(row["execution_status"]),
             execution_finished_at=_optional_datetime(row["execution_finished_at"]),
             external_execution_performed=_optional_bool(
@@ -1008,6 +1021,40 @@ def _state_from_row(row: sqlite3.Row) -> SoftwareEngineeringRunState:
         raise SoftwareEngineeringRunStateError(
             "software engineering durable state is invalid"
         ) from None
+
+
+def _normalize_objective(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        raise SoftwareEngineeringRunStateError(
+            "software engineering pending objective must not be blank"
+        )
+    return normalized
+
+
+def _normalize_required_objective(value: str | None) -> str:
+    normalized = _normalize_objective(value)
+    if normalized is None:
+        raise SoftwareEngineeringRunStateError(
+            "software engineering pending objective is unavailable"
+        )
+    return normalized
+
+
+def _require_compatible_objective(
+    state: SoftwareEngineeringRunState,
+    objective: str | None,
+) -> None:
+    if (
+        objective is not None
+        and state.pending_objective is not None
+        and state.pending_objective != objective
+    ):
+        raise SoftwareEngineeringRunStateError(
+            "software engineering pending objective conflicts with durable state"
+        )
 
 
 def _require_same_identity(
