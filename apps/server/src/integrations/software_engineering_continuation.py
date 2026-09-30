@@ -169,7 +169,6 @@ class SoftwareEngineeringTaskContinuation:
             review=review,
         )
 
-
     @staticmethod
     def _require_canonical_action(action: Action) -> None:
         if (
