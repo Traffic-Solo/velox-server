@@ -611,6 +611,8 @@ After every implementation slice, update this file in the same commit if the imp
 - Shared Google provider composition retains separate principal/account arguments for backward-compatible direct integration tests; worker adapter execution uses only account context embedded from the matched routing result.
 - Refresh-token rotation persistence remains unimplemented; a rotated refresh token is not written back to the Keychain.
 - `tests/test_worker_executor.py` keeps Gmail capability fixtures module-local; `tests/conftest.py` holds only suite-wide settings isolation.
+- Software Engineering pending objective text is plaintext in the local SQLite database until rejection or terminal execution scrubs it.
+- Software Engineering has no worker heartbeat/process-liveness evidence after `execution_started_at`, no durable non-SE queue/approval layer, and no multi-node claim coordination.
 
 ## Known Limitations
 
@@ -629,17 +631,20 @@ After every implementation slice, update this file in the same commit if the imp
   paths are unchanged and not reachable from semantic dispatch.
 - `POST /calendar/agenda/query` is a deprecated compatibility adapter with no
   removal date.
-- `TaskDelegator` callers are limited to tests and the Software Engineering pilot
-  entrypoint; there is no Goal Planner and no public delegation endpoint.
-- Software Engineering: one provider (Claude Code) and one capability
-  (`code.implement`); no Codex adapter or provider ranking. Kept work products stay
-  as local worktrees and branches; there is no promotion (commit/push/PR) yet, and
-  review shows untracked file names but not their content. Review/disposition runs
-  only in the pilot process that executed the task (stores are in-memory), though the
-  service itself only needs the Action UUID. Bash permission rules are prefix rules,
-  not a sandbox; the canonical-checkout check and the absence of any git write rule
-  are the independent safeguards, and pushing is not technically blocked at the OS
-  level.
+- Software Engineering has a public governed delegation endpoint
+  (`POST /tasks/software-engineering`) plus explicit approval, exact-Action
+  continuation, durable SE state, bounded review, KEEP/DISCARD, guarded VELOX-owned
+  promotion, run status and ambiguous-claim reconciliation. There is still no Goal
+  Planner, so conversational goals do not autonomously become delegated coding work.
+- Software Engineering still has one provider (Claude Code) and one capability
+  (`code.implement`); there is no Codex adapter, provider ranking or provider
+  failover. SE approval/execution/disposition/promotion evidence is durable in SQLite,
+  but non-SE approval/queue state remains process-local. A started nonterminal claim
+  remains deliberately `running_or_ambiguous` because no heartbeat/provider-process
+  evidence exists yet. Multi-node claim coordination is not implemented. Bash
+  permission rules remain prefix rules rather than an OS sandbox; trusted workspace,
+  Action-derived worktrees, bounded review and VELOX-owned promotion are the current
+  independent safeguards.
 - Semantic resolution has no confidence, ambiguity or multi-intent result; add these
   only when a resolver produces meaningful values.
 - Gmail read, send and archive capabilities use deterministic in-memory fake data only. Executor resolution supports explicit capability-provider routing and returns `SKIPPED` through `NoOpWorkerExecutor` when no registered handler matches.

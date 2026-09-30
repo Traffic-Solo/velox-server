@@ -4,7 +4,8 @@ VELOX Server is the always-on runtime for VELOX - a personal operating intellige
 
 ## Current status
 
-Status: Sprint 1 - VELOX Core Platform (post-audit hardening complete)
+Status: Sprint 4 complete - Software Engineering control plane live-accepted
+Next: Sprint 5 bootstrap - guarded VELOX engineering dogfooding
 Version: 0.0.1
 
 ## Run
@@ -87,11 +88,14 @@ Calendar:
   `VELOX_OLLAMA_MODEL` to opt in to local-only Ollama classification; the
   configured base URL must use a loopback host.
 - The Software Engineering worker (`software_engineering` / `code.implement`) is
-  disabled by default. With `VELOX_SOFTWARE_ENGINEERING_PROVIDER=claude_code` and a
-  trusted `VELOX_SOFTWARE_ENGINEERING_WORKSPACE`, delegated coding tasks always
-  require explicit approval and run the local Claude Code CLI in a new git worktree
-  outside the canonical checkout; the worker cannot commit, push or merge. See
-  `docs/engineering/CODEX_CONTEXT.md` for the pilot procedure.
+  disabled by default. `POST /tasks/software-engineering` creates governed coding
+  Actions that require explicit approval and execute through the registered provider
+  in an Action-derived isolated worktree. SE approval, execution evidence, disposition,
+  promotion and ambiguous-claim reconciliation are durably tracked in SQLite.
+  Guarded promotion is a separate opt-in owned by VELOX, not the coding worker:
+  `VELOX_SOFTWARE_ENGINEERING_PROMOTION_ENABLED=true` enables VELOX commit,
+  non-force push and GitHub PR publication after an explicit KEEP. See
+  `docs/engineering/SOFTWARE_ENGINEERING_ACCEPTANCE.md` for the live acceptance flow.
 
 ## Development
 
