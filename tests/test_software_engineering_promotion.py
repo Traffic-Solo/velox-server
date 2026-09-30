@@ -2,12 +2,11 @@
 
 import json
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionStatus
-from apps.server.src.core.action_lifecycle_repository import InMemoryActionLifecycleRepository
 from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.integrations.github_pull_request import GitHubCliPullRequestPublisher
 from apps.server.src.integrations.pull_request import (
@@ -20,20 +19,18 @@ from apps.server.src.integrations.software_engineering import (
     SubprocessRunner,
     TrustedGitWorkspace,
 )
-from apps.server.src.integrations.software_engineering_disposition import (
-    InMemorySoftwareEngineeringDispositionRepository,
-)
 from apps.server.src.integrations.software_engineering_promotion import (
     SoftwareEngineeringPromotionService,
     SoftwareEngineeringPromotionStateError,
+)
+from apps.server.src.integrations.software_engineering_state import (
+    InMemorySoftwareEngineeringRunRepository,
 )
 from apps.server.src.integrations.software_engineering_work_product import (
     SoftwareEngineeringWorkProductService,
     WorkProductDisposition,
     WorkProductDispositionResult,
 )
-from apps.server.src.workers.executor import WorkerExecutionStatus
-from apps.server.src.workers.runtime import InMemoryWorkerExecutionObserver
 
 GIT_USER = ("-c", "user.email=velox@example.test", "-c", "user.name=VELOX Test")
 
@@ -120,25 +117,21 @@ def promotion_fixture(
     worktree = workspace.create_worktree(action_id)
     (worktree.path / "app.py").write_text("print('hello, velox')\n")
 
-    lifecycle = InMemoryActionLifecycleRepository()
-    lifecycle.set(action_id, ActionLifecycleState(status=ActionStatus.COMPLETED))
-
-    observer = InMemoryWorkerExecutionObserver()
-    observation = observer.start(
-        action=action,
-        requested_role=ExecutorRole.SOFTWARE_ENGINEERING.value,
-        executor_registered=True,
-        requested_capability=SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
-        matched_provider="test-worker",
+    run_repository = InMemorySoftwareEngineeringRunRepository()
+    run_repository.register_action(
+        action_id=action_id,
+        target=action.target,
+        executor_role=ExecutorRole.SOFTWARE_ENGINEERING.value,
+        capability=SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
+        delegation_status="awaiting_approval",
     )
-    observer.finish(
-        observation,
-        WorkerExecutionStatus.SUCCEEDED,
-        metadata={"external_execution_performed": True},
+    run_repository.record_execution(
+        action_id=action_id,
+        status="succeeded",
+        finished_at=datetime.now(UTC),
+        external_execution_performed=True,
     )
-
-    dispositions = InMemorySoftwareEngineeringDispositionRepository()
-    dispositions.set(
+    run_repository.record_disposition(
         WorkProductDispositionResult(
             action_id=action_id,
             disposition=WorkProductDisposition.KEEP,
@@ -151,9 +144,7 @@ def promotion_fixture(
     )
     publisher = FakePublisher()
     service = SoftwareEngineeringPromotionService(
-        lifecycle_repository=lifecycle,
-        execution_observer=observer,
-        disposition_repository=dispositions,
+        run_repository=run_repository,
         workspace=workspace,
         work_products=SoftwareEngineeringWorkProductService(workspace),
         pull_request_publisher=publisher,
@@ -213,9 +204,22 @@ def test_promotion_retry_recovers_same_commit_instead_of_creating_second_commit(
 
 def test_promotion_refuses_without_explicit_keep(tmp_path: Path) -> None:
     service, _, _, action_id, publisher = promotion_fixture(tmp_path)
-    service._disposition_repository = (
-        InMemorySoftwareEngineeringDispositionRepository()
+    state = service._run_repository.get(action_id)
+    assert state is not None
+    fresh = InMemorySoftwareEngineeringRunRepository()
+    fresh.register_action(
+        action_id=action_id,
+        target=state.target,
+        executor_role=state.executor_role,
+        capability=state.capability,
     )
+    fresh.record_execution(
+        action_id=action_id,
+        status="succeeded",
+        finished_at=datetime.now(UTC),
+        external_execution_performed=True,
+    )
+    service._run_repository = fresh
 
     with pytest.raises(SoftwareEngineeringPromotionStateError, match="explicitly kept"):
         service.promote(action_id, title="Slice 10", body="")
