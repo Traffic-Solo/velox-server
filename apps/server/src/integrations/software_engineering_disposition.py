@@ -47,6 +47,29 @@ class WorkerExecutionEvidenceSource(Protocol):
         ...
 
 
+class SoftwareEngineeringDispositionRepository(Protocol):
+    """Record the latest successful work-product disposition by Action."""
+
+    def get(self, action_id: UUID) -> WorkProductDispositionResult | None:
+        ...
+
+    def set(self, result: WorkProductDispositionResult) -> None:
+        ...
+
+
+class InMemorySoftwareEngineeringDispositionRepository:
+    """Process-local disposition evidence used by guarded promotion."""
+
+    def __init__(self) -> None:
+        self._results: dict[UUID, WorkProductDispositionResult] = {}
+
+    def get(self, action_id: UUID) -> WorkProductDispositionResult | None:
+        return self._results.get(action_id)
+
+    def set(self, result: WorkProductDispositionResult) -> None:
+        self._results[result.action_id] = result
+
+
 class SoftwareEngineeringWorkProductDispositionService:
     """Apply KEEP/DISCARD only to a verified executed Software Engineering Action."""
 
@@ -64,10 +87,12 @@ class SoftwareEngineeringWorkProductDispositionService:
         lifecycle_repository: ActionLifecycleRepository,
         execution_observer: WorkerExecutionEvidenceSource,
         work_products: SoftwareEngineeringWorkProductDisposer | None,
+        disposition_repository: SoftwareEngineeringDispositionRepository | None = None,
     ) -> None:
         self._lifecycle_repository = lifecycle_repository
         self._execution_observer = execution_observer
         self._work_products = work_products
+        self._disposition_repository = disposition_repository
 
     def apply(
         self,
@@ -111,8 +136,11 @@ class SoftwareEngineeringWorkProductDispositionService:
                 "software engineering work-product service is unavailable"
             )
         try:
-            return self._work_products.apply(action_id, disposition)
+            result = self._work_products.apply(action_id, disposition)
         except WorkProductIdentityError:
             raise SoftwareEngineeringDispositionStateError(
                 "software engineering work product is unavailable or unverifiable"
             ) from None
+        if result.succeeded and self._disposition_repository is not None:
+            self._disposition_repository.set(result)
+        return result

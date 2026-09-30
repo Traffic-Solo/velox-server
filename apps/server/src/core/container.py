@@ -63,10 +63,14 @@ from apps.server.src.integrations.software_engineering_continuation import (
     SoftwareEngineeringTaskContinuation,
 )
 from apps.server.src.integrations.software_engineering_disposition import (
+    InMemorySoftwareEngineeringDispositionRepository,
     SoftwareEngineeringWorkProductDispositionService,
 )
 from apps.server.src.integrations.software_engineering_ingress import (
     SoftwareEngineeringTaskIngress,
+)
+from apps.server.src.integrations.software_engineering_promotion import (
+    SoftwareEngineeringPromotionService,
 )
 from apps.server.src.integrations.software_engineering_runtime import (
     configured_software_engineering,
@@ -121,12 +125,21 @@ class ApplicationContainer:
         self.worker_executor_registry.register_manifest(
             self.calendar_worker_executor.provider_manifest
         )
+        settings = get_settings()
         software_engineering = configured_software_engineering()
         self.software_engineering_executor = (
             software_engineering.executor if software_engineering is not None else None
         )
+        self.software_engineering_workspace = (
+            software_engineering.workspace if software_engineering is not None else None
+        )
         self.software_engineering_work_products = (
             software_engineering.work_products if software_engineering is not None else None
+        )
+        self.software_engineering_pull_request_publisher = (
+            software_engineering.pull_request_publisher
+            if software_engineering is not None
+            else None
         )
         if self.software_engineering_executor is not None:
             self.worker_executor_registry.register_manifest(
@@ -172,7 +185,7 @@ class ApplicationContainer:
             executor_registry=self.worker_executor_registry,
             execution_observer=self.worker_execution_observer,
             lifecycle_repository=self.action_lifecycle_repository,
-            max_transient_retries=get_settings().max_transient_retries,
+            max_transient_retries=settings.max_transient_retries,
         )
         self.worker_runtime_invocation = WorkerRuntimeInvocationService(
             worker_runtime=self.worker_runtime,
@@ -183,12 +196,29 @@ class ApplicationContainer:
             worker_runtime=self.worker_runtime,
             work_product_reviewer=self.software_engineering_work_products,
         )
+        self.software_engineering_disposition_repository = (
+            InMemorySoftwareEngineeringDispositionRepository()
+        )
         self.software_engineering_work_product_disposition = (
             SoftwareEngineeringWorkProductDispositionService(
                 lifecycle_repository=self.action_lifecycle_repository,
                 execution_observer=self.worker_execution_observer,
                 work_products=self.software_engineering_work_products,
+                disposition_repository=self.software_engineering_disposition_repository,
             )
+        )
+        self.software_engineering_promotion = SoftwareEngineeringPromotionService(
+            lifecycle_repository=self.action_lifecycle_repository,
+            execution_observer=self.worker_execution_observer,
+            disposition_repository=self.software_engineering_disposition_repository,
+            workspace=self.software_engineering_workspace,
+            work_products=self.software_engineering_work_products,
+            pull_request_publisher=self.software_engineering_pull_request_publisher,
+            enabled=settings.software_engineering_promotion_enabled,
+            remote=settings.software_engineering_promotion_remote,
+            base_branch=settings.software_engineering_promotion_base_branch,
+            author_name=settings.software_engineering_promotion_author_name,
+            author_email=settings.software_engineering_promotion_author_email,
         )
         self.event_classifier: EventClassifier = RuleBasedEventClassifier()
         self.context_resolver: ContextResolver = BaseContextResolver()

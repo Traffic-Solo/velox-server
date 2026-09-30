@@ -20,6 +20,10 @@ from apps.server.src.integrations.software_engineering_continuation import (
 from apps.server.src.integrations.software_engineering_disposition import (
     SoftwareEngineeringWorkProductDispositionService,
 )
+from apps.server.src.integrations.software_engineering_promotion import (
+    SoftwareEngineeringPromotionResult,
+    SoftwareEngineeringPromotionStateError,
+)
 from apps.server.src.integrations.software_engineering_work_product import (
     WorkProductDisposition,
     WorkProductDispositionResult,
@@ -705,4 +709,122 @@ def test_openapi_work_product_disposition_exposes_only_disposition_choice(
 
     assert set(request_schema["properties"]) == {"disposition"}
     assert set(request_schema["required"]) == {"disposition"}
+    assert request_schema["additionalProperties"] is False
+
+
+
+class FakePromotionService:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls: list[tuple[UUID, str, str]] = []
+
+    def promote(
+        self,
+        action_id: UUID,
+        *,
+        title: str,
+        body: str,
+    ) -> SoftwareEngineeringPromotionResult:
+        self.calls.append((action_id, title, body))
+        if self.fail:
+            raise SoftwareEngineeringPromotionStateError(
+                "hidden /trusted/worktree provider-secret"
+            )
+        return SoftwareEngineeringPromotionResult(
+            action_id=action_id,
+            commit_sha="a" * 40,
+            pull_request_number=42,
+            pull_request_url="https://github.example/owner/repo/pull/42",
+            base_branch="main",
+            head_branch=f"velox/se-{action_id}",
+            pull_request_created=True,
+        )
+
+
+def test_promotion_endpoint_returns_only_safe_provider_neutral_result(
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    fake = FakePromotionService()
+    monkeypatch.setattr(container, "software_engineering_promotion", fake)
+    action_id = uuid4()
+
+    response = client.post(
+        f"/tasks/software-engineering/{action_id}/promote",
+        json={"title": "Slice 10", "body": "Guarded promotion"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "action_id": str(action_id),
+        "commit_sha": "a" * 40,
+        "pull_request_number": 42,
+        "pull_request_url": "https://github.example/owner/repo/pull/42",
+        "base_branch": "main",
+        "head_branch": f"velox/se-{action_id}",
+        "pull_request_created": True,
+    }
+    assert fake.calls == [(action_id, "Slice 10", "Guarded promotion")]
+    rendered = response.text
+    assert "/trusted/" not in rendered
+    assert "provider-secret" not in rendered
+
+
+def test_promotion_endpoint_redacts_state_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    fake = FakePromotionService(fail=True)
+    monkeypatch.setattr(container, "software_engineering_promotion", fake)
+
+    response = client.post(
+        f"/tasks/software-engineering/{uuid4()}/promote",
+        json={"title": "Slice 10"},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "software engineering work product is not promotable"
+    }
+    assert "/trusted/worktree" not in response.text
+    assert "provider-secret" not in response.text
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"title": ""},
+        {"title": "   "},
+        {"title": "x" * 201},
+        {"title": "Slice 10", "remote": "evil"},
+        {"title": "Slice 10", "base_branch": "release"},
+        {"title": "Slice 10", "head_branch": "attacker"},
+        {"title": "Slice 10", "path": "/tmp/other"},
+        {"title": "Slice 10", "provider": "claude_code"},
+        {"title": "Slice 10", "force": True},
+    ],
+)
+def test_promotion_schema_exposes_no_git_or_provider_authority(
+    client: TestClient,
+    body: dict[str, object],
+) -> None:
+    response = client.post(
+        f"/tasks/software-engineering/{uuid4()}/promote",
+        json=body,
+    )
+    assert response.status_code == 422
+
+
+def test_openapi_promotion_request_exposes_only_pr_copy(client: TestClient) -> None:
+    schema = client.get("/openapi.json").json()
+    operation = schema["paths"]["/tasks/software-engineering/{action_id}/promote"]["post"]
+    request_ref = operation["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+    schema_name = request_ref.rsplit("/", 1)[-1]
+    request_schema = schema["components"]["schemas"][schema_name]
+
+    assert set(request_schema["properties"]) == {"title", "body"}
+    assert set(request_schema["required"]) == {"title"}
     assert request_schema["additionalProperties"] is False
