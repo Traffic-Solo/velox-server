@@ -341,6 +341,8 @@ class InMemorySoftwareEngineeringRunRepository:
             current,
             claim_id=claim_id,
             claimed_at=claimed_at,
+            claim_resolution=None,
+            claim_reconciled_at=None,
             updated_at=claimed_at,
         )
         self._states[action_id] = state
@@ -371,6 +373,77 @@ class InMemorySoftwareEngineeringRunRepository:
             current,
             execution_started_at=_require_aware(started_at),
             updated_at=_utcnow(),
+        )
+        self._states[action_id] = state
+        return state
+
+    def release_unstarted_claim(
+        self,
+        *,
+        action_id: UUID,
+        expected_updated_at: datetime,
+        reconciled_at: datetime,
+    ) -> SoftwareEngineeringRunState:
+        current = self._require(action_id)
+        if current.updated_at != _require_aware(expected_updated_at):
+            raise SoftwareEngineeringRunStateError(
+                "software engineering run state changed during reconciliation"
+            )
+        if current.claim_id is None:
+            raise SoftwareEngineeringRunStateError(
+                "software engineering action has no durable execution claim"
+            )
+        if current.execution_started_at is not None:
+            raise SoftwareEngineeringRunStateError(
+                "software engineering execution already started"
+            )
+        if current.execution_status is not None:
+            raise SoftwareEngineeringRunStateError(
+                "software engineering action already has an execution result"
+            )
+        reconciled = _require_aware(reconciled_at)
+        state = replace(
+            current,
+            claim_id=None,
+            claimed_at=None,
+            claim_resolution=SoftwareEngineeringClaimResolution.RELEASED_BEFORE_START,
+            claim_reconciled_at=reconciled,
+            updated_at=reconciled,
+        )
+        self._states[action_id] = state
+        return state
+
+    def abandon_started_claim(
+        self,
+        *,
+        action_id: UUID,
+        expected_updated_at: datetime,
+        reconciled_at: datetime,
+    ) -> SoftwareEngineeringRunState:
+        current = self._require(action_id)
+        if current.updated_at != _require_aware(expected_updated_at):
+            raise SoftwareEngineeringRunStateError(
+                "software engineering run state changed during reconciliation"
+            )
+        if current.claim_id is None:
+            raise SoftwareEngineeringRunStateError(
+                "software engineering action has no durable execution claim"
+            )
+        if current.execution_started_at is None:
+            raise SoftwareEngineeringRunStateError(
+                "software engineering execution never started"
+            )
+        if current.execution_status is not None:
+            raise SoftwareEngineeringRunStateError(
+                "software engineering action already has an execution result"
+            )
+        reconciled = _require_aware(reconciled_at)
+        state = replace(
+            current,
+            pending_objective=None,
+            claim_resolution=SoftwareEngineeringClaimResolution.ABANDONED_AFTER_START,
+            claim_reconciled_at=reconciled,
+            updated_at=reconciled,
         )
         self._states[action_id] = state
         return state
