@@ -99,6 +99,7 @@ class SoftwareEngineeringRunStatus:
     promotion_base_branch: str | None
     promotion_head_branch: str | None
     reconciliation_options: tuple[SoftwareEngineeringClaimReconciliation, ...]
+    retriable: bool
     state_token: str
     work_product: SoftwareEngineeringWorkProductSummary
 
@@ -229,6 +230,13 @@ class SoftwareEngineeringRunControlService:
             promotion_base_branch=state.promotion_base_branch,
             promotion_head_branch=state.promotion_head_branch,
             reconciliation_options=options,
+            retriable=(
+                state.approval_status is SoftwareEngineeringApprovalStatus.APPROVED
+                and state.claim_id is None
+                and state.execution_status is None
+                and state.claim_resolution
+                is not SoftwareEngineeringClaimResolution.ABANDONED_AFTER_START
+            ),
             state_token=self._state_token(state),
             work_product=work_product,
         )
