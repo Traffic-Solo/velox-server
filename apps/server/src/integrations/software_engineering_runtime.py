@@ -12,6 +12,11 @@ from apps.server.src.integrations.software_engineering import (
     SubprocessRunner,
     TrustedGitWorkspace,
 )
+from apps.server.src.integrations.software_engineering_state import (
+    SoftwareEngineeringRunRepository,
+    SqliteSoftwareEngineeringRunRepository,
+    default_software_engineering_state_path,
+)
 from apps.server.src.integrations.software_engineering_work_product import (
     SoftwareEngineeringWorkProductService,
 )
@@ -25,6 +30,7 @@ class SoftwareEngineeringComposition:
     workspace: TrustedGitWorkspace
     work_products: SoftwareEngineeringWorkProductService
     pull_request_publisher: PullRequestPublisher | None
+    run_repository: SoftwareEngineeringRunRepository
 
 
 def configured_software_engineering(
@@ -43,6 +49,12 @@ def configured_software_engineering(
     workspace = TrustedGitWorkspace(
         Path(settings.software_engineering_workspace or ""), process_runner,
     )
+    state_path = (
+        Path(settings.software_engineering_state_database_path).expanduser()
+        if settings.software_engineering_state_database_path is not None
+        else default_software_engineering_state_path(workspace._root)
+    )
+    run_repository = SqliteSoftwareEngineeringRunRepository(state_path)
     publisher: PullRequestPublisher | None = None
     if settings.software_engineering_promotion_enabled:
         publisher = GitHubCliPullRequestPublisher(
@@ -59,4 +71,5 @@ def configured_software_engineering(
         workspace=workspace,
         work_products=SoftwareEngineeringWorkProductService(workspace),
         pull_request_publisher=publisher,
+        run_repository=run_repository,
     )
