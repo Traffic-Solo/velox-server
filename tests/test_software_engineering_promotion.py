@@ -235,6 +235,25 @@ def test_promotion_refuses_if_canonical_head_changed_after_worker_branch(
     assert publisher.calls == []
 
 
+def test_promotion_refuses_when_remote_base_advanced_past_local_canonical(
+    tmp_path: Path,
+) -> None:
+    service, _, repo, action_id, publisher = promotion_fixture(tmp_path)
+    canonical = git(repo, "rev-parse", "HEAD")
+    (repo / "remote-only.txt").write_text("remote advance\n")
+    git(repo, "add", "remote-only.txt")
+    git(repo, "commit", "-q", "-m", "advance remote base")
+    git(repo, "push", "-q", "origin", "main")
+    git(repo, "reset", "--hard", canonical)
+
+    with pytest.raises(
+        SoftwareEngineeringPromotionStateError,
+        match="remote base",
+    ):
+        service.promote(action_id, title="Slice 10", body="")
+    assert publisher.calls == []
+
+
 class FakeGhRunner:
     def __init__(self, responses: list[ProcessResult]) -> None:
         self.responses = list(responses)
@@ -302,3 +321,38 @@ def test_github_publisher_rejects_existing_pr_with_unexpected_base(tmp_path: Pat
             title="Slice 10",
             body="",
         )
+
+
+
+def test_github_publisher_creates_then_reads_back_exact_pr(tmp_path: Path) -> None:
+    empty = json.dumps([])
+    created = process("https://github.example/owner/repo/pull/77\n")
+    found = json.dumps(
+        [{
+            "number": 77,
+            "url": "https://github.example/owner/repo/pull/77",
+            "headRefName": "velox/se-action",
+            "baseRefName": "main",
+        }]
+    )
+    runner = FakeGhRunner([process(empty), created, process(found)])
+    publisher = GitHubCliPullRequestPublisher(runner)
+
+    result = publisher.publish(
+        repository_root=tmp_path,
+        base_branch="main",
+        head_branch="velox/se-action",
+        title="Literal title",
+        body="Literal body",
+    )
+
+    assert result.number == 77
+    assert result.created is True
+    assert [call[:3] for call in runner.calls] == [
+        ["gh", "pr", "list"],
+        ["gh", "pr", "create"],
+        ["gh", "pr", "list"],
+    ]
+    create_call = runner.calls[1]
+    assert create_call[create_call.index("--title") + 1] == "Literal title"
+    assert create_call[create_call.index("--body") + 1] == "Literal body"
