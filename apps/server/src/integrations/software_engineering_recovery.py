@@ -19,6 +19,10 @@ class SoftwareEngineeringRecoveryError(RuntimeError):
     """Durable SE approval or claim recovery failed closed."""
 
 
+class SoftwareEngineeringRecoveryNotFoundError(LookupError):
+    """No durable SE Action exists for the requested id."""
+
+
 class SoftwareEngineeringActionRecovery:
     """Recover only canonical SE Actions from durable state."""
 
@@ -79,7 +83,7 @@ class SoftwareEngineeringActionRecovery:
         """Atomically claim one approved Action and reconstruct its exact envelope."""
         state = self._repository.get(action_id)
         if state is None:
-            raise SoftwareEngineeringRecoveryError(
+            raise SoftwareEngineeringRecoveryNotFoundError(
                 "software engineering action was not found"
             )
         self._require_canonical_state(state)
