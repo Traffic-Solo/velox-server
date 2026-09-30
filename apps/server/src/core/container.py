@@ -196,12 +196,29 @@ class ApplicationContainer:
             worker_runtime=self.worker_runtime,
             work_product_reviewer=self.software_engineering_work_products,
         )
+        self.software_engineering_disposition_repository = (
+            InMemorySoftwareEngineeringDispositionRepository()
+        )
         self.software_engineering_work_product_disposition = (
             SoftwareEngineeringWorkProductDispositionService(
                 lifecycle_repository=self.action_lifecycle_repository,
                 execution_observer=self.worker_execution_observer,
                 work_products=self.software_engineering_work_products,
+                disposition_repository=self.software_engineering_disposition_repository,
             )
+        )
+        self.software_engineering_promotion = SoftwareEngineeringPromotionService(
+            lifecycle_repository=self.action_lifecycle_repository,
+            execution_observer=self.worker_execution_observer,
+            disposition_repository=self.software_engineering_disposition_repository,
+            workspace=self.software_engineering_workspace,
+            work_products=self.software_engineering_work_products,
+            pull_request_publisher=self.software_engineering_pull_request_publisher,
+            enabled=settings.software_engineering_promotion_enabled,
+            remote=settings.software_engineering_promotion_remote,
+            base_branch=settings.software_engineering_promotion_base_branch,
+            author_name=settings.software_engineering_promotion_author_name,
+            author_email=settings.software_engineering_promotion_author_email,
         )
         self.event_classifier: EventClassifier = RuleBasedEventClassifier()
         self.context_resolver: ContextResolver = BaseContextResolver()
