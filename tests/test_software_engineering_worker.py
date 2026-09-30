@@ -267,6 +267,22 @@ def test_invalid_provider_configuration_is_rejected(
         Settings()
 
 
+def test_promotion_requires_explicit_worker_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VELOX_SOFTWARE_ENGINEERING_PROMOTION_ENABLED", "true")
+    with pytest.raises(ValueError, match="requires a worker provider"):
+        Settings()
+
+
+def test_worker_opt_in_does_not_enable_promotion_by_default(opt_in: FakeRunner) -> None:
+    container = ApplicationContainer()
+    assert container.software_engineering_executor is not None
+    assert container.software_engineering_pull_request_publisher is None
+    assert get_settings().software_engineering_promotion_enabled is False
+    assert opt_in.calls == []
+
+
 # --- Delegation, approval and runtime ------------------------------------------
 
 def test_engineering_task_requires_approval_and_never_runs_unapproved(
