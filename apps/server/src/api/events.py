@@ -5,13 +5,15 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from apps.server.src.api.dependencies import require_api_token
-from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionStatus
 from apps.server.src.core.approval_decisions import (
     PendingActionNotFoundError,
     approve_pending_action,
     reject_pending_action,
 )
 from apps.server.src.core.container import get_container
+from apps.server.src.integrations.software_engineering_recovery import (
+    SoftwareEngineeringRecoveryError,
+)
 from apps.server.src.core.events import (
     DuplicateEventError,
     EventLifecycleConflictError,
@@ -89,6 +91,12 @@ def approve_action(action_id: UUID) -> dict[str, Any]:
             status_code=status.HTTP_409_CONFLICT,
             detail=str(error),
         ) from error
+    except SoftwareEngineeringRecoveryError:
+        logger.exception("software engineering approval persistence failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="action approval persistence failed",
+        ) from None
 
     return {
         "status": "approved",
@@ -122,6 +130,12 @@ def reject_action(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(error),
         ) from error
+    except SoftwareEngineeringRecoveryError:
+        logger.exception("software engineering rejection persistence failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="action rejection persistence failed",
+        ) from None
 
     return {
         "status": "rejected",
