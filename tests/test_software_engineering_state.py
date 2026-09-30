@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from apps.server.src.core.actions import Action, ExecutorRole
@@ -175,16 +175,16 @@ def test_sqlite_repository_requires_absolute_path() -> None:
 class RecordingDisposer:
     def __init__(self, worktree: Path) -> None:
         self.worktree = worktree
-        self.calls: list[tuple[object, WorkProductDisposition]] = []
+        self.calls: list[tuple[UUID, WorkProductDisposition]] = []
 
     def apply(
         self,
-        action_id: object,
+        action_id: UUID,
         disposition: WorkProductDisposition,
     ) -> WorkProductDispositionResult:
         self.calls.append((action_id, disposition))
         return WorkProductDispositionResult(
-            action_id=action_id,  # type: ignore[arg-type]
+            action_id=action_id,
             disposition=disposition,
             worktree_path=self.worktree,
             branch=f"velox/se-{action_id}",
