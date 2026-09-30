@@ -1,5 +1,6 @@
-from apps.server.src.core.action_lifecycle import ActionStatus
+from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionStatus
 from apps.server.src.core.action_lifecycle_manager import ActionLifecycleManager
+from apps.server.src.core.action_lifecycle_repository import InMemoryActionLifecycleRepository
 from apps.server.src.core.action_queue import ActionQueue
 from apps.server.src.core.actions import Action, ExecutorRole
 from apps.server.src.workers.executor import (
@@ -584,3 +585,64 @@ def test_worker_runtime_invocation_does_not_introduce_vendor_specific_behavior()
     assert "calendar" not in processed_result.action.metadata
     assert "notion" not in processed_result.action.metadata
     assert "slack" not in processed_result.action.metadata
+
+
+def test_worker_runtime_process_action_executes_only_requested_uuid() -> None:
+    queue = ActionQueue()
+    first = Action(type="first", target="one")
+    target = Action(type="target", target="two")
+    third = Action(type="third", target="three")
+    queue.enqueue_many([first, target, third])
+    executor = RecordingExecutor(result_status=WorkerExecutionStatus.SUCCEEDED)
+    runtime = create_runtime(queue, executor)
+
+    result = runtime.process_action(target.id)
+
+    assert result.processed is True
+    assert result.action is not None and result.action.id == target.id
+    assert executor.called_actions == [target]
+    assert queue.list() == [first, third]
+
+
+def test_worker_runtime_process_action_missing_uuid_consumes_nothing() -> None:
+    queue = ActionQueue()
+    first = Action(type="first", target="one")
+    second = Action(type="second", target="two")
+    queue.enqueue_many([first, second])
+    runtime = create_runtime(queue)
+
+    result = runtime.process_action(Action(type="missing", target="three").id)
+
+    assert result.processed is False
+    assert result.execution_reason == "action is not queued"
+    assert queue.list() == [first, second]
+
+
+def test_worker_runtime_process_action_does_not_claim_unapproved_action() -> None:
+    queue = ActionQueue()
+    first = Action(type="first", target="one")
+    target = Action(type="target", target="two")
+    third = Action(type="third", target="three")
+    queue.enqueue_many([first, target, third])
+    repository = InMemoryActionLifecycleRepository()
+    repository.set(
+        target.id,
+        ActionLifecycleState(
+            status=ActionStatus.QUEUED,
+            metadata={"approval_required": True},
+        ),
+    )
+    executor = RecordingExecutor(result_status=WorkerExecutionStatus.SUCCEEDED)
+    runtime = WorkerRuntime(
+        action_queue=queue,
+        action_lifecycle_manager=ActionLifecycleManager(),
+        worker_executor=executor,
+        lifecycle_repository=repository,
+    )
+
+    result = runtime.process_action(target.id)
+
+    assert result.processed is False
+    assert result.execution_reason == "action awaits explicit approval"
+    assert executor.called_actions == []
+    assert queue.list() == [first, target, third]
