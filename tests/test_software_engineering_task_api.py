@@ -797,6 +797,7 @@ def test_promotion_endpoint_redacts_state_failure(
     [
         {},
         {"title": ""},
+        {"title": "   "},
         {"title": "x" * 201},
         {"title": "Slice 10", "remote": "evil"},
         {"title": "Slice 10", "base_branch": "release"},
