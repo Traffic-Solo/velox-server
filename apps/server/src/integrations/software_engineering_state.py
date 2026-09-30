@@ -871,7 +871,9 @@ class SqliteSoftwareEngineeringRunRepository:
                 cursor = connection.execute(
                     """
                     UPDATE software_engineering_runs
-                    SET claim_id = ?, claimed_at = ?, updated_at = ?
+                    SET claim_id = ?, claimed_at = ?,
+                        claim_resolution = NULL, claim_reconciled_at = NULL,
+                        updated_at = ?
                     WHERE action_id = ?
                       AND approval_status = ?
                       AND claim_id IS NULL
@@ -925,6 +927,93 @@ class SqliteSoftwareEngineeringRunRepository:
                 _utcnow().isoformat(),
             ),
         )
+        return self._require(action_id)
+
+    def release_unstarted_claim(
+        self,
+        *,
+        action_id: UUID,
+        expected_updated_at: datetime,
+        reconciled_at: datetime,
+    ) -> SoftwareEngineeringRunState:
+        expected = _require_aware(expected_updated_at).isoformat()
+        reconciled = _require_aware(reconciled_at).isoformat()
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    """
+                    UPDATE software_engineering_runs
+                    SET claim_id = NULL,
+                        claimed_at = NULL,
+                        claim_resolution = ?,
+                        claim_reconciled_at = ?,
+                        updated_at = ?
+                    WHERE action_id = ?
+                      AND approval_status = ?
+                      AND claim_id IS NOT NULL
+                      AND execution_started_at IS NULL
+                      AND execution_status IS NULL
+                      AND updated_at = ?
+                    """,
+                    (
+                        SoftwareEngineeringClaimResolution.RELEASED_BEFORE_START.value,
+                        reconciled,
+                        reconciled,
+                        str(action_id),
+                        SoftwareEngineeringApprovalStatus.APPROVED.value,
+                        expected,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise SoftwareEngineeringRunStateError(
+                        "software engineering unstarted claim could not be released"
+                    )
+        except sqlite3.Error:
+            raise SoftwareEngineeringRunStateError(
+                "software engineering claim release could not be persisted"
+            ) from None
+        return self._require(action_id)
+
+    def abandon_started_claim(
+        self,
+        *,
+        action_id: UUID,
+        expected_updated_at: datetime,
+        reconciled_at: datetime,
+    ) -> SoftwareEngineeringRunState:
+        expected = _require_aware(expected_updated_at).isoformat()
+        reconciled = _require_aware(reconciled_at).isoformat()
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    """
+                    UPDATE software_engineering_runs
+                    SET pending_objective = NULL,
+                        claim_resolution = ?,
+                        claim_reconciled_at = ?,
+                        updated_at = ?
+                    WHERE action_id = ?
+                      AND claim_id IS NOT NULL
+                      AND execution_started_at IS NOT NULL
+                      AND execution_status IS NULL
+                      AND updated_at = ?
+                    """,
+                    (
+                        SoftwareEngineeringClaimResolution.ABANDONED_AFTER_START.value,
+                        reconciled,
+                        reconciled,
+                        str(action_id),
+                        expected,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise SoftwareEngineeringRunStateError(
+                        "software engineering started claim could not be abandoned"
+                    )
+        except sqlite3.Error:
+            raise SoftwareEngineeringRunStateError(
+                "software engineering claim abandonment could not be persisted"
+            ) from None
         return self._require(action_id)
 
     def record_execution(
@@ -1170,6 +1259,12 @@ def _state_from_row(row: sqlite3.Row) -> SoftwareEngineeringRunState:
             ),
             claimed_at=_optional_datetime(row["claimed_at"]),
             execution_started_at=_optional_datetime(row["execution_started_at"]),
+            claim_resolution=(
+                SoftwareEngineeringClaimResolution(str(row["claim_resolution"]))
+                if row["claim_resolution"] is not None
+                else None
+            ),
+            claim_reconciled_at=_optional_datetime(row["claim_reconciled_at"]),
             execution_status=_optional_text(row["execution_status"]),
             execution_finished_at=_optional_datetime(row["execution_finished_at"]),
             external_execution_performed=_optional_bool(
