@@ -1,11 +1,10 @@
 """Guarded VELOX-owned promotion of one kept Software Engineering work product."""
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
-from apps.server.src.core.action_lifecycle import ActionStatus
-from apps.server.src.core.action_lifecycle_repository import ActionLifecycleRepository
 from apps.server.src.core.actions import ExecutorRole
 from apps.server.src.integrations.pull_request import (
     PullRequestPublicationError,
@@ -16,15 +15,15 @@ from apps.server.src.integrations.software_engineering import (
     TrustedGitWorkspace,
     WorkspaceUnavailableError,
 )
-from apps.server.src.integrations.software_engineering_disposition import (
-    SoftwareEngineeringDispositionRepository,
+from apps.server.src.integrations.software_engineering_state import (
+    SoftwareEngineeringRunRepository,
+    SoftwareEngineeringRunState,
 )
 from apps.server.src.integrations.software_engineering_work_product import (
     SoftwareEngineeringWorkProductService,
     WorkProductDisposition,
     WorkProductIdentityError,
 )
-from apps.server.src.workers.runtime import InMemoryWorkerExecutionObserver
 
 
 class SoftwareEngineeringPromotionNotFoundError(LookupError):
@@ -58,9 +57,7 @@ class SoftwareEngineeringPromotionService:
     def __init__(
         self,
         *,
-        lifecycle_repository: ActionLifecycleRepository,
-        execution_observer: InMemoryWorkerExecutionObserver,
-        disposition_repository: SoftwareEngineeringDispositionRepository,
+        run_repository: SoftwareEngineeringRunRepository,
         workspace: TrustedGitWorkspace | None,
         work_products: SoftwareEngineeringWorkProductService | None,
         pull_request_publisher: PullRequestPublisher | None,
@@ -70,9 +67,7 @@ class SoftwareEngineeringPromotionService:
         author_name: str,
         author_email: str,
     ) -> None:
-        self._lifecycle_repository = lifecycle_repository
-        self._execution_observer = execution_observer
-        self._disposition_repository = disposition_repository
+        self._run_repository = run_repository
         self._workspace = workspace
         self._work_products = work_products
         self._pull_request_publisher = pull_request_publisher
@@ -95,47 +90,34 @@ class SoftwareEngineeringPromotionService:
             )
         return result.stdout.strip()
 
-    def _verify_action(self, action_id: UUID) -> None:
-        lifecycle = self._lifecycle_repository.get(action_id)
-        if lifecycle is None:
+    def _verify_action(self, action_id: UUID) -> SoftwareEngineeringRunState:
+        state = self._run_repository.get(action_id)
+        if state is None:
             raise SoftwareEngineeringPromotionNotFoundError(
                 "software engineering action was not found"
             )
-        if lifecycle.status is not ActionStatus.COMPLETED:
+        if (
+            state.executor_role != ExecutorRole.SOFTWARE_ENGINEERING.value
+            or state.capability != SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY
+        ):
+            raise SoftwareEngineeringPromotionStateError(
+                "software engineering durable route evidence is invalid"
+            )
+        if state.execution_status != "succeeded" or state.execution_finished_at is None:
             raise SoftwareEngineeringPromotionStateError(
                 "software engineering action did not complete successfully"
             )
-        observation = next(
-            (
-                item
-                for item in reversed(self._execution_observer.list())
-                if item.action_id == action_id
-            ),
-            None,
-        )
         if (
-            observation is None
-            or observation.finished_at is None
-            or observation.status != "succeeded"
-            or observation.requested_role != ExecutorRole.SOFTWARE_ENGINEERING.value
-            or observation.requested_capability
-            != SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY
-        ):
-            raise SoftwareEngineeringPromotionStateError(
-                "successful software engineering execution evidence is unavailable"
-            )
-        disposition = self._disposition_repository.get(action_id)
-        if (
-            disposition is None
-            or disposition.disposition is not WorkProductDisposition.KEEP
-            or not disposition.succeeded
-            or not disposition.worktree_present
-            or not disposition.branch_present
-            or not disposition.canonical_unchanged
+            state.disposition is not WorkProductDisposition.KEEP
+            or state.disposition_succeeded is not True
+            or state.worktree_present is not True
+            or state.branch_present is not True
+            or state.canonical_unchanged is not True
         ):
             raise SoftwareEngineeringPromotionStateError(
                 "work product has not been explicitly kept"
             )
+        return state
 
     def _verify_commit(
         self,
@@ -266,13 +248,44 @@ class SoftwareEngineeringPromotionService:
             raise SoftwareEngineeringPromotionStateError(
                 "software engineering promotion is disabled"
             )
-        self._verify_action(action_id)
+        state = self._verify_action(action_id)
         workspace = self._workspace
         work_products = self._work_products
         publisher = self._pull_request_publisher
         if workspace is None or work_products is None or publisher is None:
             raise SoftwareEngineeringPromotionStateError(
                 "software engineering promotion is unavailable"
+            )
+
+        expected = workspace.expected_worktree(action_id)
+        promotion_values = (
+            state.promotion_commit_sha,
+            state.pull_request_number,
+            state.pull_request_url,
+            state.promotion_base_branch,
+            state.promotion_head_branch,
+            state.promotion_finished_at,
+        )
+        if any(value is not None for value in promotion_values):
+            if not all(value is not None for value in promotion_values):
+                raise SoftwareEngineeringPromotionStateError(
+                    "durable promotion state is incomplete"
+                )
+            if (
+                state.promotion_base_branch != self._base_branch
+                or state.promotion_head_branch != expected.branch
+            ):
+                raise SoftwareEngineeringPromotionStateError(
+                    "durable promotion identity does not match trusted branches"
+                )
+            return SoftwareEngineeringPromotionResult(
+                action_id=action_id,
+                commit_sha=state.promotion_commit_sha or "",
+                pull_request_number=state.pull_request_number or 0,
+                pull_request_url=state.pull_request_url or "",
+                base_branch=state.promotion_base_branch or "",
+                head_branch=state.promotion_head_branch or "",
+                pull_request_created=False,
             )
         try:
             root = workspace.validate()
@@ -318,7 +331,6 @@ class SoftwareEngineeringPromotionService:
             raise SoftwareEngineeringPromotionStateError(
                 "trusted remote base does not match canonical HEAD"
             )
-        expected = workspace.expected_worktree(action_id)
         commit_sha = self._create_or_recover_commit(
             action_id=action_id,
             root=root,
@@ -378,6 +390,15 @@ class SoftwareEngineeringPromotionService:
             raise SoftwareEngineeringPromotionExternalError(
                 "pull-request identity did not match trusted promotion branches"
             )
+        self._run_repository.record_promotion(
+            action_id=action_id,
+            commit_sha=commit_sha,
+            pull_request_number=publication.number,
+            pull_request_url=publication.url,
+            base_branch=publication.base_branch,
+            head_branch=publication.head_branch,
+            finished_at=datetime.now(UTC),
+        )
         return SoftwareEngineeringPromotionResult(
             action_id=action_id,
             commit_sha=commit_sha,
