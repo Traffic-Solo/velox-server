@@ -423,6 +423,37 @@ approval (VELOX-owned commit on the `velox/se-*` branch, push and a draft PR), s
 reviewed change reaches GitHub without manual git steps. Goal Planner and Codex stay
 deferred.
 
+Sprint 5 Slice 1: `integrations/software_engineering_task_cli.py` adds a reusable
+local operator CLI that drives one Software Engineering task strictly over the
+existing public VELOX HTTP API (no container, git, filesystem or provider
+credential access). Required `--objective` and defaulted `--target velox-server`
+are the only caller-owned task fields; `--base-url` is validated as loopback
+(`127.0.0.1`, `localhost`, `::1`), rejects embedded credentials and non-http(s)
+schemes, and defaults to `http://127.0.0.1:8000`. `VELOX_API_TOKEN` is read from
+the environment when set, sent only as an `Authorization: Bearer` header and
+never printed. Provider, workspace, credential, account, branch, retry and
+approval authority are not accepted from CLI input.
+
+Flow: `GET /health` -> `POST /tasks/software-engineering` (must return
+`awaiting_approval`) -> explicit typed Action UUID confirmation ->
+`POST /actions/{id}/approve` -> `POST /tasks/software-engineering/{id}/execute`
+(must return `succeeded` with the bounded review) -> render the API-provided
+review (no worktree path, branch, provider name, claim UUID or raw subprocess
+output) -> explicit `keep` or `discard`. `discard` calls the disposition
+endpoint and stops without promotion; `keep` calls the disposition endpoint and
+then asks separately whether to `promote`. Promotion calls the promote endpoint
+and re-fetches `GET /tasks/software-engineering/{id}/status` to verify
+`promoted=true` and matching `pull_request_number`, `pull_request_url`,
+`promotion_base_branch` and `promotion_head_branch`. Any invalid state or HTTP
+failure prints a bounded diagnostic and exits non-zero (2 for URL validation
+and 1 for every runtime failure).
+
+Slice 1 validation: `uv run ruff check .` passed; `uv run mypy` passed (122
+source files); focused `tests/test_software_engineering_task_cli.py` 12 passed
+with `httpx.MockTransport` covering happy promote, keep-only, discard, rejected
+approval, non-loopback URL rejection, health HTTP failure and promotion
+identity mismatch; `uv run pytest -q` 1251 passed, 6 deselected.
+
 ## Final Slice 10
 
 Slice 10 adds an opt-in local Ollama implementation of the existing
