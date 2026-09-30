@@ -206,14 +206,28 @@ class InMemorySoftwareEngineeringRunRepository:
         if current is not None:
             _require_same_identity(current, target, executor_role, capability)
             _require_compatible_objective(current, normalized_objective)
-            updates: dict[str, object] = {"updated_at": _utcnow()}
-            if delegation_status is not None:
-                updates["delegation_status"] = delegation_status
-            if normalized_objective is not None and current.pending_objective is None:
-                updates["pending_objective"] = normalized_objective
-            if approval_status is not None:
-                updates["approval_status"] = approval_status
-            current = replace(current, **updates)
+            current = replace(
+                current,
+                delegation_status=(
+                    delegation_status
+                    if delegation_status is not None
+                    else current.delegation_status
+                ),
+                pending_objective=(
+                    normalized_objective
+                    if (
+                        normalized_objective is not None
+                        and current.pending_objective is None
+                    )
+                    else current.pending_objective
+                ),
+                approval_status=(
+                    approval_status
+                    if approval_status is not None
+                    else current.approval_status
+                ),
+                updated_at=_utcnow(),
+            )
             self._states[action_id] = current
             return current
         now = _utcnow()
