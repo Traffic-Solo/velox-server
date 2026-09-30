@@ -140,10 +140,15 @@ def test_ingress_maps_to_trusted_software_engineering_route_and_stops_at_approva
 
 
 def test_pending_approval_is_listed_and_approvable_after_local_state_loss(
+    monkeypatch: pytest.MonkeyPatch,
     client: TestClient,
     container: ApplicationContainer,
 ) -> None:
     register_software_engineering_route(container)
+    monkeypatch.setattr(
+        "apps.server.src.api.events.get_container",
+        lambda: container,
+    )
     action_id = create_task(client)
 
     container.pending_approval_registry.clear()
