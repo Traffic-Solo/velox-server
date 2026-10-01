@@ -262,8 +262,14 @@ def test_openapi_request_schema_exposes_only_caller_owned_fields(client: TestCli
 
 
 class RecordingSoftwareEngineeringExecutor:
-    def __init__(self, *, failed: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        failed: bool = False,
+        failure_reason: str = "provider secret detail sk-test-secret",
+    ) -> None:
         self.failed = failed
+        self.failure_reason = failure_reason
         self.called_actions: list[Action] = []
 
     def execute(
@@ -278,7 +284,7 @@ class RecordingSoftwareEngineeringExecutor:
             return WorkerExecutionResult(
                 action=action,
                 status=WorkerExecutionStatus.FAILED,
-                reason="provider secret detail sk-test-secret",
+                reason=self.failure_reason,
                 metadata={
                     "external_execution_performed": True,
                     "provider": "secret-provider",
@@ -587,6 +593,28 @@ def test_exact_execute_redacts_worker_failure_reason(
     assert "sk-test-secret" not in response.text
     assert "secret-provider" not in response.text
 
+
+
+def test_exact_execute_exposes_allowlisted_safe_failure_reason(
+    client: TestClient,
+    container: ApplicationContainer,
+) -> None:
+    executor = RecordingSoftwareEngineeringExecutor(
+        failed=True,
+        failure_reason="timeout",
+    )
+    reviewer = RecordingWorkProductReviewer(unavailable=True)
+    configure_exact_execution(container, executor, reviewer)
+    action_id = create_task(client)
+    approve(container, action_id)
+
+    response = client.post(f"/tasks/software-engineering/{action_id}/execute")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["execution_status"] == "failed"
+    assert body["lifecycle_status"] == "failed"
+    assert body["execution_reason"] == "timeout"
 
 
 def execute_task(client: TestClient, container: ApplicationContainer) -> UUID:
