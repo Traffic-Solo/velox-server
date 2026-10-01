@@ -12,6 +12,7 @@ import pytest
 from apps.server.src.integrations.software_engineering_task_cli import (
     DEFAULT_BASE_URL,
     DEFAULT_TARGET,
+    DEFAULT_TIMEOUT_SECONDS,
     main,
 )
 
@@ -38,6 +39,8 @@ class FakeVeloxApi:
         }
     )
     health_status: int = 200
+    execution_status: str = "succeeded"
+    execution_reason: str | None = None
     disposition_recorded: str | None = None
     promotion_recorded: bool = False
     promotion_identity_mismatch: bool = False
@@ -84,9 +87,11 @@ class FakeVeloxApi:
                 json={
                     "action_id": self.action_id,
                     "processed": True,
-                    "execution_status": "succeeded",
-                    "lifecycle_status": "completed",
-                    "execution_reason": None,
+                    "execution_status": self.execution_status,
+                    "lifecycle_status": (
+                        "completed" if self.execution_status == "succeeded" else "failed"
+                    ),
+                    "execution_reason": self.execution_reason,
                     "external_execution_performed": True,
                     "review_status": "available",
                     "review": self.review,
@@ -306,6 +311,9 @@ def test_rejected_approval_stops_before_execution() -> None:
         "http://example.com:8000",
         "https://10.0.0.5:8000",
         "http://user:secret@127.0.0.1:8000",
+        "http://127.0.0.1:8000/api",
+        "http://127.0.0.1:8000?token=secret",
+        "http://127.0.0.1:8000#fragment",
         "ftp://127.0.0.1:8000",
     ],
 )
@@ -344,6 +352,29 @@ def test_http_failure_at_health_check_returns_non_zero_exit() -> None:
     assert paths_visited == [("GET", "/health")]
 
 
+def test_failed_execution_surfaces_safe_server_reason() -> None:
+    api = FakeVeloxApi(
+        execution_status="failed",
+        execution_reason="timeout",
+    )
+
+    exit_code, _stdout, stderr = run_cli(
+        api,
+        answers=[api.action_id],
+    )
+
+    assert exit_code == 1
+    assert "status='failed'" in stderr
+    assert "reason='timeout'" in stderr
+    paths_visited = [(method, path) for method, path, _headers, _body in api.requests]
+    assert paths_visited == [
+        ("GET", "/health"),
+        ("POST", "/tasks/software-engineering"),
+        ("POST", f"/actions/{api.action_id}/approve"),
+        ("POST", f"/tasks/software-engineering/{api.action_id}/execute"),
+    ]
+
+
 def test_promotion_identity_mismatch_fails_after_publication() -> None:
     api = FakeVeloxApi(promotion_identity_mismatch=True)
 
@@ -373,6 +404,30 @@ def test_api_token_is_sent_as_bearer_header_but_never_printed() -> None:
     assert "sk-test-secret-123" not in stderr
 
 
-def test_default_base_url_is_loopback() -> None:
+def test_default_base_url_is_loopback_and_timeout_covers_worker_budget() -> None:
     assert DEFAULT_BASE_URL.startswith("http://127.0.0.1")
     assert DEFAULT_TARGET == "velox-server"
+    assert DEFAULT_TIMEOUT_SECONDS == 1_900.0
+
+
+def test_non_positive_timeout_is_rejected_before_http() -> None:
+    def refuse(_request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("HTTP must not be contacted for an invalid timeout")
+
+    err = io.StringIO()
+    exit_code = main(
+        [
+            "--objective",
+            "verify timeout",
+            "--timeout-seconds",
+            "0",
+        ],
+        transport=httpx.MockTransport(refuse),
+        read_line=lambda: "unused",
+        env={},
+        out=io.StringIO(),
+        err=err,
+    )
+
+    assert exit_code == 2
+    assert "timeout-seconds must be positive" in err.getvalue()
