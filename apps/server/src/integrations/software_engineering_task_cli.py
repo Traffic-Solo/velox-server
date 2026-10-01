@@ -24,7 +24,7 @@ import httpx
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_TARGET = "velox-server"
-DEFAULT_TIMEOUT_SECONDS = 900.0
+DEFAULT_TIMEOUT_SECONDS = 1_900.0
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 DISPOSITION_KEEP = "keep"
@@ -82,6 +82,10 @@ def _validate_base_url(base_url: str) -> str:
         )
     if parts.username is not None or parts.password is not None:
         raise OperatorError("base URL must not embed credentials")
+    if parts.path not in {"", "/"}:
+        raise OperatorError("base URL must not contain a path")
+    if parts.query or parts.fragment:
+        raise OperatorError("base URL must not contain a query or fragment")
     return base_url.rstrip("/")
 
 
@@ -155,10 +159,17 @@ def _execute(
     )
     _expect_status(response, expected=200, step="exact execution")
     body = _parse_json(response, step="exact execution")
-    if body.get("execution_status") != "succeeded":
+    execution_status = body.get("execution_status")
+    if execution_status != "succeeded":
+        execution_reason = body.get("execution_reason")
+        reason_suffix = (
+            f", reason={execution_reason!r}"
+            if isinstance(execution_reason, str) and execution_reason
+            else ""
+        )
         raise OperatorError(
             "exact execution did not succeed "
-            f"(status={body.get('execution_status')!r})"
+            f"(status={execution_status!r}{reason_suffix})"
         )
     return body
 
@@ -348,6 +359,8 @@ def main(
     args = _parser().parse_args(argv)
     try:
         base_url = _validate_base_url(args.base_url)
+        if args.timeout_seconds <= 0:
+            raise OperatorError("timeout-seconds must be positive")
     except OperatorError as error:
         print(f"error: {error}", file=err)
         return EXIT_INVALID_INPUT

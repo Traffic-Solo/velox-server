@@ -44,6 +44,24 @@ class WorkProductReviewStatus(StrEnum):
     UNAVAILABLE = "unavailable"
 
 
+_SAFE_EXECUTION_FAILURE_REASONS = frozenset(
+    {
+        "unsupported_capability",
+        "invalid_task",
+        "executable_missing",
+        "workspace_unavailable",
+        "unsupported_cli",
+        "canonical_workspace_modified",
+        "timeout",
+        "authentication_failed",
+        "malformed_output",
+        "process_failed",
+        "invalid_result",
+        "worker_reported_blockers",
+    }
+)
+
+
 class SoftwareEngineeringWorkProductReviewer(Protocol):
     """Provider-neutral review boundary used after execution."""
 
@@ -154,7 +172,12 @@ class SoftwareEngineeringTaskContinuation:
 
         execution_reason = None
         if processing.execution_status is WorkerExecutionStatus.FAILED:
-            execution_reason = "worker execution failed"
+            raw_reason = processing.execution_reason
+            execution_reason = (
+                raw_reason
+                if raw_reason in _SAFE_EXECUTION_FAILURE_REASONS
+                else "worker execution failed"
+            )
         elif processing.execution_status is WorkerExecutionStatus.SKIPPED:
             execution_reason = "worker execution skipped"
 
