@@ -13,7 +13,11 @@ This file is the canonical repository handoff for Codex engineering sessions.
 
 ## Current Sprint
 
-Sprint 4 - Vendor-neutral Semantic Routing
+Sprint 5 - Guarded Software Engineering dogfooding. The operator CLI (Slice 1)
+and its initial hardening (Slice 2) are merged. This direct follow-up rejects
+non-finite CLI timeouts before HTTP; live CLI dogfooding remains pending.
+
+Sprint 4 - Vendor-neutral Semantic Routing (closed)
 
 Slice 1 implements explicit semantic dispatch for the existing Calendar query path.
 Slice 2 adds the vendor-neutral semantic resolver Role with typed intent output.
@@ -418,10 +422,8 @@ repositories; pilot tests use real git with a fake Claude CLI); focused Software
 Engineering/delegation/worker runtime/executor/approval/events tests 258 passed;
 `uv run pytest` 1110 passed, 6 deselected, 0 warnings; `git diff --check` passed.
 
-Next highest-priority slice: promotion of a kept work product behind its own explicit
-approval (VELOX-owned commit on the `velox/se-*` branch, push and a draft PR), so a
-reviewed change reaches GitHub without manual git steps. Goal Planner and Codex stay
-deferred.
+Guarded promotion of a kept work product was completed in Sprint 4. Goal Planner
+and Codex remain deferred.
 
 Sprint 5 Slice 1: `integrations/software_engineering_task_cli.py` adds a reusable
 local operator CLI that drives one Software Engineering task strictly over the
