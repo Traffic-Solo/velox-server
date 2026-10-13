@@ -14,6 +14,7 @@ when set, sent only in the ``Authorization`` header and never printed.
 """
 
 import argparse
+import math
 import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -359,8 +360,8 @@ def main(
     args = _parser().parse_args(argv)
     try:
         base_url = _validate_base_url(args.base_url)
-        if args.timeout_seconds <= 0:
-            raise OperatorError("timeout-seconds must be positive")
+        if not math.isfinite(args.timeout_seconds) or args.timeout_seconds <= 0:
+            raise OperatorError("timeout-seconds must be positive and finite")
     except OperatorError as error:
         print(f"error: {error}", file=err)
         return EXIT_INVALID_INPUT

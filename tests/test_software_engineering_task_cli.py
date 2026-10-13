@@ -410,7 +410,8 @@ def test_default_base_url_is_loopback_and_timeout_covers_worker_budget() -> None
     assert DEFAULT_TIMEOUT_SECONDS == 1_900.0
 
 
-def test_non_positive_timeout_is_rejected_before_http() -> None:
+@pytest.mark.parametrize("timeout", ["0", "-1", "nan", "inf", "-inf", "1e309"])
+def test_invalid_timeout_is_rejected_before_http(timeout: str) -> None:
     def refuse(_request: httpx.Request) -> httpx.Response:  # pragma: no cover
         raise AssertionError("HTTP must not be contacted for an invalid timeout")
 
@@ -419,8 +420,7 @@ def test_non_positive_timeout_is_rejected_before_http() -> None:
         [
             "--objective",
             "verify timeout",
-            "--timeout-seconds",
-            "0",
+            f"--timeout-seconds={timeout}",
         ],
         transport=httpx.MockTransport(refuse),
         read_line=lambda: "unused",
@@ -430,4 +430,4 @@ def test_non_positive_timeout_is_rejected_before_http() -> None:
     )
 
     assert exit_code == 2
-    assert "timeout-seconds must be positive" in err.getvalue()
+    assert "timeout-seconds must be positive and finite" in err.getvalue()
