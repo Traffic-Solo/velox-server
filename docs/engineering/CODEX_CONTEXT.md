@@ -15,7 +15,10 @@ This file is the canonical repository handoff for Codex engineering sessions.
 
 Sprint 5 - Guarded Software Engineering dogfooding. The operator CLI (Slice 1)
 and its initial hardening (Slice 2) are merged. This direct follow-up rejects
-non-finite CLI timeouts before HTTP; live CLI dogfooding remains pending.
+non-finite CLI timeouts before HTTP, and a provider-neutral dogfooding diagnostic
+appends concise re-authentication guidance when exact execution returns the safe
+reason `authentication_failed` without retrying or re-executing the failed Action;
+live CLI dogfooding remains pending.
 
 Sprint 4 - Vendor-neutral Semantic Routing (closed)
 
