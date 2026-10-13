@@ -375,6 +375,53 @@ def test_failed_execution_surfaces_safe_server_reason() -> None:
     ]
 
 
+def test_authentication_failed_execution_shows_reauth_guidance_only_for_that_reason() -> None:
+    auth_api = FakeVeloxApi(
+        execution_status="failed",
+        execution_reason="authentication_failed",
+    )
+    auth_exit, _auth_stdout, auth_stderr = run_cli(
+        auth_api,
+        answers=[auth_api.action_id],
+    )
+
+    assert auth_exit == 1
+    assert "status='failed'" in auth_stderr
+    assert "reason='authentication_failed'" in auth_stderr
+    assert "re-authenticate the configured worker locally" in auth_stderr
+    assert "create a new Action" in auth_stderr
+    assert "not retried automatically" in auth_stderr
+    auth_paths = [(method, path) for method, path, _headers, _body in auth_api.requests]
+    assert auth_paths == [
+        ("GET", "/health"),
+        ("POST", "/tasks/software-engineering"),
+        ("POST", f"/actions/{auth_api.action_id}/approve"),
+        ("POST", f"/tasks/software-engineering/{auth_api.action_id}/execute"),
+    ]
+
+    other_api = FakeVeloxApi(
+        execution_status="failed",
+        execution_reason="timeout",
+    )
+    other_exit, _other_stdout, other_stderr = run_cli(
+        other_api,
+        answers=[other_api.action_id],
+    )
+
+    assert other_exit == 1
+    assert "status='failed'" in other_stderr
+    assert "reason='timeout'" in other_stderr
+    assert "re-authenticate" not in other_stderr
+    assert "create a new Action" not in other_stderr
+    other_paths = [(method, path) for method, path, _headers, _body in other_api.requests]
+    assert other_paths == [
+        ("GET", "/health"),
+        ("POST", "/tasks/software-engineering"),
+        ("POST", f"/actions/{other_api.action_id}/approve"),
+        ("POST", f"/tasks/software-engineering/{other_api.action_id}/execute"),
+    ]
+
+
 def test_promotion_identity_mismatch_fails_after_publication() -> None:
     api = FakeVeloxApi(promotion_identity_mismatch=True)
 

@@ -168,9 +168,15 @@ def _execute(
             if isinstance(execution_reason, str) and execution_reason
             else ""
         )
+        guidance = (
+            "; re-authenticate the configured worker locally and create a new "
+            "Action (the failed Action is not retried automatically)"
+            if execution_reason == "authentication_failed"
+            else ""
+        )
         raise OperatorError(
             "exact execution did not succeed "
-            f"(status={execution_status!r}{reason_suffix})"
+            f"(status={execution_status!r}{reason_suffix}){guidance}"
         )
     return body
 
