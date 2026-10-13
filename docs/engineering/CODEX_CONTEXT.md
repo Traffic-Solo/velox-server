@@ -11,14 +11,17 @@ This file is the canonical repository handoff for Codex engineering sessions.
 - Do not rely on long previous chat history.
 - Never assume file names or repository structure. Search the repository first if uncertain.
 
-## Current Sprint
+## Sprint Status
 
-Sprint 5 - Guarded Software Engineering dogfooding. The operator CLI (Slice 1)
-and its initial hardening (Slice 2) are merged. This direct follow-up rejects
-non-finite CLI timeouts before HTTP, and a provider-neutral dogfooding diagnostic
-appends concise re-authentication guidance when exact execution returns the safe
-reason `authentication_failed` without retrying or re-executing the failed Action;
-live CLI dogfooding remains pending.
+Sprint 5 - Guarded Software Engineering dogfooding (closed). The operator CLI
+and its hardening are merged. PR [#42](https://github.com/Traffic-Solo/velox-server/pull/42)
+rejects non-finite CLI timeouts before HTTP. PR
+[#43](https://github.com/Traffic-Solo/velox-server/pull/43) adds provider-neutral
+re-authentication guidance for the safe `authentication_failed` reason without
+retrying the failed Action. The successful live pilot used Action
+`fa9667ff-cbb0-4856-8d64-4250d47f29f1` and completed explicit Approval →
+Execution → bounded Review → KEEP → PROMOTE → PR #43. Both PRs are merged;
+no Sprint 5 live CLI dogfooding gate remains pending.
 
 Sprint 4 - Vendor-neutral Semantic Routing (closed)
 
