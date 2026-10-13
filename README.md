@@ -4,8 +4,7 @@ VELOX Server is the always-on runtime for VELOX - a personal operating intellige
 
 ## Current status
 
-Status: Sprint 4 complete - Software Engineering control plane live-accepted
-Next: Sprint 5 bootstrap - guarded VELOX engineering dogfooding
+Status: Sprint 5 complete - guarded Software Engineering CLI live dogfooding accepted
 Version: 0.0.1
 
 ## Run
