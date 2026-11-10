@@ -1,6 +1,7 @@
 """Application service container."""
 
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import UUID
 
 from apps.server.src.core.action_lifecycle_manager import ActionLifecycleManager
@@ -9,11 +10,13 @@ from apps.server.src.core.action_lifecycle_repository import (
     InMemoryActionLifecycleRepository,
 )
 from apps.server.src.core.action_queue import ActionQueue
+from apps.server.src.core.actions import ExecutorRole
+from apps.server.src.core.approval_decisions import CompositeApprovalDecisionRecorder
 from apps.server.src.core.approvals import (
     InMemoryPendingApprovalRegistry,
     PendingApprovalRegistry,
 )
-from apps.server.src.core.config import get_settings
+from apps.server.src.core.config import Settings, get_settings
 from apps.server.src.core.delegation import ActionTaskDelegator, TaskDelegator
 from apps.server.src.core.events import (
     BaseContextResolver,
@@ -28,6 +31,15 @@ from apps.server.src.core.events import (
 )
 from apps.server.src.core.events.classifier import EventClassifier
 from apps.server.src.core.events.context import ContextResolver
+from apps.server.src.core.goal_plan_delegation import (
+    GoalPlanApprovalRecorder,
+    GoalPlanDelegationService,
+)
+from apps.server.src.core.goal_plan_repository import (
+    GoalPlanRepository,
+    InMemoryGoalPlanRepository,
+    SqliteGoalPlanRepository,
+)
 from apps.server.src.core.permission import (
     BasePermissionEngine,
     PermissionEngine,
@@ -59,6 +71,9 @@ from apps.server.src.integrations.calendar_ingress import (
     CalendarIngressAdapter,
 )
 from apps.server.src.integrations.gmail import GMAIL_ACCOUNT_CONTEXT, GmailWorkerExecutor
+from apps.server.src.integrations.software_engineering import (
+    SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
+)
 from apps.server.src.integrations.software_engineering_continuation import (
     SoftwareEngineeringTaskContinuation,
 )
@@ -179,6 +194,24 @@ class ApplicationContainer:
             self.task_delegator,
             self.software_engineering_run_repository,
         )
+        self.goal_plan_repository = _configured_goal_plan_repository(settings)
+        self.goal_plan_delegation = GoalPlanDelegationService(
+            repository=self.goal_plan_repository,
+            staged_delegator=self._staged_task_delegator,
+            action_queue=self.action_queue,
+            pending_approval_registry=self.pending_approval_registry,
+            lifecycle_repository=self.action_lifecycle_repository,
+            # Canonical SE work keeps its own durable ingress, approval and claim path.
+            reserved_routes=(
+                (ExecutorRole.SOFTWARE_ENGINEERING, SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY),
+            ),
+        )
+        self.action_approval_recorder = CompositeApprovalDecisionRecorder(
+            (
+                GoalPlanApprovalRecorder(self.goal_plan_repository),
+                self.software_engineering_action_recovery,
+            ),
+        )
         self.calendar_event_list_orchestrator = CalendarEventListOrchestrator(
             self.calendar_worker_executor
         )
@@ -265,6 +298,33 @@ class ApplicationContainer:
             normalizer=self.calendar_event_normalizer,
             workflow_service=self.event_workflow_service,
         )
+
+    def _staged_task_delegator(
+        self,
+        action_queue: ActionQueue,
+        pending_approval_registry: PendingApprovalRegistry,
+        lifecycle_repository: ActionLifecycleRepository,
+    ) -> TaskDelegator:
+        """The existing delegator, routing and permission engine over staging sinks."""
+        return ActionTaskDelegator(
+            executor_registry=self.worker_executor_registry,
+            permission_runtime=PermissionEngineRuntime(
+                permission_engine=self.permission_engine,
+                action_lifecycle_manager=self.action_lifecycle_manager,
+                lifecycle_repository=lifecycle_repository,
+                pending_approval_registry=pending_approval_registry,
+            ),
+            action_queue=action_queue,
+        )
+
+
+def _configured_goal_plan_repository(settings: Settings) -> GoalPlanRepository:
+    """Durable SQLite only when explicitly configured; otherwise process-local."""
+    if settings.goal_plan_state_database_path is None:
+        return InMemoryGoalPlanRepository()
+    return SqliteGoalPlanRepository(
+        Path(settings.goal_plan_state_database_path).expanduser(),
+    )
 
 
 _container: ApplicationContainer | None = None

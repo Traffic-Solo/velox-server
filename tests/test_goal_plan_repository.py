@@ -19,11 +19,15 @@ from apps.server.src.core.goal_lifecycle import GoalPlanTransitionError
 from apps.server.src.core.goal_plan_repository import (
     GoalPlanConflictError,
     GoalPlanCorruptedError,
+    GoalPlanDelegationExistsError,
     GoalPlanNotFoundError,
     GoalPlanRepository,
     GoalPlanRepositoryError,
     InMemoryGoalPlanRepository,
     SqliteGoalPlanRepository,
+    StepDelegation,
+    StepDelegationStatus,
+    StepHandoff,
     StoredGoal,
     StoredPlan,
 )
@@ -102,8 +106,14 @@ def db_path(tmp_path: Path) -> Path:
     return tmp_path / "goals.sqlite3"
 
 
-def seeded(repo: GoalPlanRepository) -> tuple[StoredGoal, StoredPlan]:
+def active_goal(repo: GoalPlanRepository) -> StoredGoal:
+    """Steps may only start under an active Goal (Sprint 6 Slice 3)."""
     goal = repo.create_goal(make_goal())
+    return repo.transition_goal(goal.goal.id, GoalStatus.ACTIVE, expected_revision=1)
+
+
+def seeded(repo: GoalPlanRepository) -> tuple[StoredGoal, StoredPlan]:
+    goal = active_goal(repo)
     return goal, repo.create_plan(make_chain(goal.goal.id))
 
 
@@ -414,7 +424,7 @@ STEP_PATHS = [
 
 
 def single_step_plan(repo: GoalPlanRepository) -> StoredPlan:
-    goal = repo.create_goal(make_goal())
+    goal = active_goal(repo)
     return repo.create_plan(Plan(goal_id=goal.goal.id, steps=(make_step(),)))
 
 
@@ -533,7 +543,6 @@ def test_step_dependencies_are_enforced_and_dependents_never_advance(
 
 def test_succeeded_steps_never_achieve_the_goal(repository: GoalPlanRepository) -> None:
     goal, stored = seeded(repository)
-    goal = repository.transition_goal(goal.goal.id, GoalStatus.ACTIVE, expected_revision=1)
     for step in reversed(stored.plan.steps):
         stored = move(repository, stored, step.id, PlanStepStatus.IN_PROGRESS)
         stored = move(repository, stored, step.id, PlanStepStatus.SUCCEEDED)
@@ -614,7 +623,7 @@ def test_in_progress_step_blocks_supersession_until_terminal(
 def test_every_in_progress_step_must_finish_before_supersession(
     repository: GoalPlanRepository,
 ) -> None:
-    goal = repository.create_goal(make_goal())
+    goal = active_goal(repository)
     a, b, c = make_step(), make_step(objective="Second root"), make_step(objective="Third root")
     stored = repository.create_plan(Plan(goal_id=goal.goal.id, steps=(a, b, c)))
     stored = move(repository, stored, a.id, PlanStepStatus.IN_PROGRESS)
@@ -652,7 +661,7 @@ def test_rejected_supersession_writes_nothing(db_path: Path) -> None:
 
 
 def test_stale_plan_revision_prevents_lost_update(repository: GoalPlanRepository) -> None:
-    goal = repository.create_goal(make_goal())
+    goal = active_goal(repository)
     a, b = make_step(), make_step(objective="Second root")
     snapshot = repository.create_plan(Plan(goal_id=goal.goal.id, steps=(a, b)))
 
@@ -675,6 +684,10 @@ def test_repository_role_exposes_no_raw_status_replacement() -> None:
         "get_plan",
         "get_latest_plan",
         "transition_step",
+        "get_step_delegation",
+        "get_step_delegation_for_action",
+        "delegate_step",
+        "resolve_step_approval",
     }
     for implementation in (InMemoryGoalPlanRepository, SqliteGoalPlanRepository):
         methods = {
@@ -691,7 +704,6 @@ def test_repository_role_exposes_no_raw_status_replacement() -> None:
 def test_sqlite_state_survives_repository_reopen(db_path: Path) -> None:
     repo = SqliteGoalPlanRepository(db_path)
     goal, stored = seeded(repo)
-    goal = repo.transition_goal(goal.goal.id, GoalStatus.ACTIVE, expected_revision=1)
     context_id = stored.plan.steps[2].id
     stored = move(repo, stored, context_id, PlanStepStatus.IN_PROGRESS)
 
@@ -971,7 +983,7 @@ def test_concurrent_plan_version_writers_yield_exactly_one_winner(db_path: Path)
 
 def test_concurrent_step_transitions_on_one_revision_yield_one_winner(db_path: Path) -> None:
     repo = SqliteGoalPlanRepository(db_path)
-    goal = repo.create_goal(make_goal())
+    goal = active_goal(repo)
     steps = tuple(make_step(objective=f"Root {index}") for index in range(6))
     snapshot = repo.create_plan(Plan(goal_id=goal.goal.id, steps=steps))
 
@@ -1194,7 +1206,7 @@ def schema_versions(path: Path) -> dict[str, int]:
 def test_fresh_database_initialization(db_path: Path) -> None:
     SqliteGoalPlanRepository(db_path)
 
-    assert schema_versions(db_path) == {"goal_plans": 1}
+    assert schema_versions(db_path) == {"goal_plans": 2}
     with raw(db_path) as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         tables = {
@@ -1212,7 +1224,7 @@ def test_reinitialization_is_idempotent(db_path: Path) -> None:
 
     assert repo.get_goal(goal.goal.id) == goal
     assert repo.get_latest_plan(goal.goal.id) == stored
-    assert schema_versions(db_path) == {"goal_plans": 1}
+    assert schema_versions(db_path) == {"goal_plans": 2}
 
 
 def test_relative_path_is_rejected() -> None:
@@ -1223,7 +1235,7 @@ def test_relative_path_is_rejected() -> None:
 def test_unsupported_schema_version_is_rejected(db_path: Path) -> None:
     SqliteGoalPlanRepository(db_path)
     with raw(db_path) as connection:
-        connection.execute("UPDATE velox_schema SET version = 2 WHERE name = 'goal_plans'")
+        connection.execute("UPDATE velox_schema SET version = 3 WHERE name = 'goal_plans'")
 
     with pytest.raises(GoalPlanRepositoryError, match="unsupported"):
         SqliteGoalPlanRepository(db_path)
@@ -1278,7 +1290,7 @@ def test_goal_plan_and_se_repositories_share_one_database(
         action_id = register_se_action(db_path)
         goal, stored = seeded(SqliteGoalPlanRepository(db_path))
 
-    assert schema_versions(db_path) == {"goal_plans": 1, "software_engineering_runs": 3}
+    assert schema_versions(db_path) == {"goal_plans": 2, "software_engineering_runs": 3}
     for _ in range(2):
         se = SqliteSoftwareEngineeringRunRepository(db_path)
         goals = SqliteGoalPlanRepository(db_path)
@@ -1340,11 +1352,11 @@ def test_existing_legacy_se_database_gains_goal_tables_without_migrating_se(
 
     goal, stored = seeded(SqliteGoalPlanRepository(db_path))
 
-    assert schema_versions(db_path) == {"goal_plans": 1, "software_engineering_runs": 1}
+    assert schema_versions(db_path) == {"goal_plans": 2, "software_engineering_runs": 1}
     se_state = SqliteSoftwareEngineeringRunRepository(db_path).get(action_id)
     assert se_state is not None
     assert se_state.execution_status == "succeeded"
-    assert schema_versions(db_path) == {"goal_plans": 1, "software_engineering_runs": 3}
+    assert schema_versions(db_path) == {"goal_plans": 2, "software_engineering_runs": 3}
     goals = SqliteGoalPlanRepository(db_path)
     assert goals.get_goal(goal.goal.id) == goal
     assert goals.get_latest_plan(goal.goal.id) == stored
@@ -1393,8 +1405,7 @@ def no_network(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 def test_full_lifecycle_needs_no_network_credentials_or_workers(
     repository: GoalPlanRepository,
 ) -> None:
-    goal, stored = seeded(repository)
-    repository.transition_goal(goal.goal.id, GoalStatus.ACTIVE, expected_revision=1)
+    _, stored = seeded(repository)
     for step in reversed(stored.plan.steps):
         stored = move(repository, stored, step.id, PlanStepStatus.IN_PROGRESS)
         stored = move(repository, stored, step.id, PlanStepStatus.SUCCEEDED)
@@ -1422,6 +1433,7 @@ def test_repository_module_imports_only_storage_and_core_contracts() -> None:
         "collections.abc",
         "contextlib",
         "dataclasses",
+        "enum",
         "pathlib",
         "typing",
         "uuid",
@@ -1429,3 +1441,224 @@ def test_repository_module_imports_only_storage_and_core_contracts() -> None:
         "apps.server.src.core.actions",
         "apps.server.src.core.goals",
     }
+
+
+# --- Step delegation boundary (Sprint 6 Slice 3) -------------------------------
+
+
+def recording_handoff(
+    calls: list[PlanStep],
+    status: StepDelegationStatus = StepDelegationStatus.QUEUED,
+) -> Callable[[PlanStep], StepHandoff]:
+    def handoff(step: PlanStep) -> StepHandoff:
+        calls.append(step)
+        return StepHandoff(action_id=uuid4(), status=status)
+
+    return handoff
+
+
+def delegate(
+    repo: GoalPlanRepository,
+    stored: StoredPlan,
+    step_id: UUID,
+    handoff: Callable[[PlanStep], StepHandoff],
+    *,
+    expected_revision: int | None = None,
+) -> tuple[StoredPlan, StepDelegation]:
+    return repo.delegate_step(
+        stored.plan.goal_id,
+        stored.plan.version,
+        step_id,
+        expected_revision=stored.revision if expected_revision is None else expected_revision,
+        requested_by="owner",
+        account_principal=None,
+        account_identifier=None,
+        handoff=handoff,
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "started"),
+    [
+        (StepDelegationStatus.QUEUED, True),
+        (StepDelegationStatus.AWAITING_APPROVAL, False),
+        (StepDelegationStatus.DENIED, False),
+        (StepDelegationStatus.ROUTE_REJECTED, False),
+    ],
+)
+def test_delegate_step_records_once_and_starts_only_queued_work(
+    repository: GoalPlanRepository,
+    status: StepDelegationStatus,
+    started: bool,
+) -> None:
+    _, stored = seeded(repository)
+    context = stored.plan.steps[2]
+    calls: list[PlanStep] = []
+
+    updated, delegation = delegate(repository, stored, context.id, recording_handoff(calls, status))
+
+    assert calls == [context]
+    assert delegation.status is status
+    assert updated.revision == stored.revision + 1
+    expected = PlanStepStatus.IN_PROGRESS if started else PlanStepStatus.PENDING
+    assert updated.plan.step(context.id).status is expected
+    assert repository.get_plan(stored.plan.goal_id, 1) == updated
+    assert repository.get_step_delegation(stored.plan.goal_id, 1, context.id) == delegation
+    assert repository.get_step_delegation_for_action(delegation.action_id) == delegation
+    with pytest.raises(GoalPlanDelegationExistsError) as error:
+        delegate(repository, updated, context.id, recording_handoff(calls))
+    assert error.value.delegation == delegation
+    assert len(calls) == 1
+
+
+def test_handoff_never_runs_when_a_precondition_fails(repository: GoalPlanRepository) -> None:
+    goal, stored = seeded(repository)
+    review, draft, context = stored.plan.steps
+    calls: list[PlanStep] = []
+    handoff = recording_handoff(calls)
+
+    with pytest.raises(GoalPlanConflictError, match="stale"):
+        delegate(repository, stored, context.id, handoff, expected_revision=9)
+    with pytest.raises(GoalPlanTransitionError, match="before dependency"):
+        delegate(repository, stored, draft.id, handoff)
+    with pytest.raises(GoalPlanNotFoundError):
+        delegate(repository, stored, uuid4(), handoff)
+    repository.transition_goal(goal.goal.id, GoalStatus.ABANDONED, expected_revision=2)
+    with pytest.raises(GoalPlanTransitionError, match="goal is active"):
+        delegate(repository, stored, context.id, handoff)
+
+    assert calls == []
+    assert repository.get_plan(goal.goal.id, 1) == stored
+    assert repository.get_step_delegation(goal.goal.id, 1, review.id) is None
+
+
+def test_failing_or_invalid_handoff_records_nothing(repository: GoalPlanRepository) -> None:
+    _, stored = seeded(repository)
+    context_id = stored.plan.steps[2].id
+
+    def explode(step: PlanStep) -> StepHandoff:
+        raise RuntimeError("delegator down")
+
+    with pytest.raises(RuntimeError, match="delegator down"):
+        delegate(repository, stored, context_id, explode)
+    with pytest.raises(GoalPlanContractError, match="StepHandoff"):
+        delegate(repository, stored, context_id, lambda step: "queued")  # type: ignore[arg-type,return-value]
+
+    assert repository.get_plan(stored.plan.goal_id, 1) == stored
+    assert repository.get_step_delegation(stored.plan.goal_id, 1, context_id) is None
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"requested_by": ""},
+        {"requested_by": " owner"},
+        {"account_principal": "someone", "account_identifier": None},
+        {"account_identifier": "  "},
+    ],
+)
+def test_delegate_step_requires_explicit_requester_and_account(
+    repository: GoalPlanRepository,
+    kwargs: dict[str, Any],
+) -> None:
+    _, stored = seeded(repository)
+    values: dict[str, Any] = {
+        "expected_revision": stored.revision,
+        "requested_by": "owner",
+        "account_principal": None,
+        "account_identifier": None,
+        "handoff": recording_handoff([]),
+        **kwargs,
+    }
+
+    with pytest.raises(GoalPlanContractError):
+        repository.delegate_step(stored.plan.goal_id, 1, stored.plan.steps[2].id, **values)
+    assert repository.get_plan(stored.plan.goal_id, 1) == stored
+
+
+def test_step_approval_starts_or_rejects_exactly_once(repository: GoalPlanRepository) -> None:
+    _, stored = seeded(repository)
+    context_id = stored.plan.steps[2].id
+    held, delegation = delegate(
+        repository,
+        stored,
+        context_id,
+        recording_handoff([], StepDelegationStatus.AWAITING_APPROVAL),
+    )
+
+    approved, record = repository.resolve_step_approval(delegation.action_id, approved=True)
+
+    assert record.status is StepDelegationStatus.APPROVED
+    assert approved.revision == held.revision + 1
+    assert approved.plan.step(context_id).status is PlanStepStatus.IN_PROGRESS
+    with pytest.raises(GoalPlanConflictError, match="not awaiting approval"):
+        repository.resolve_step_approval(delegation.action_id, approved=False)
+    with pytest.raises(GoalPlanNotFoundError):
+        repository.resolve_step_approval(uuid4(), approved=True)
+
+
+def test_rejection_is_recorded_even_after_supersession(repository: GoalPlanRepository) -> None:
+    goal, stored = seeded(repository)
+    _, delegation = delegate(
+        repository,
+        stored,
+        stored.plan.steps[2].id,
+        recording_handoff([], StepDelegationStatus.AWAITING_APPROVAL),
+    )
+    repository.create_plan(make_chain(goal.goal.id, 2))
+
+    with pytest.raises(GoalPlanConflictError, match="superseded"):
+        repository.resolve_step_approval(delegation.action_id, approved=True)
+    _, rejected = repository.resolve_step_approval(delegation.action_id, approved=False)
+
+    assert rejected.status is StepDelegationStatus.APPROVAL_REJECTED
+    first = repository.get_plan(goal.goal.id, 1)
+    assert first is not None
+    assert first.plan.steps[2].status is PlanStepStatus.PENDING
+
+
+def test_v1_database_upgrades_to_v2_with_data_intact(db_path: Path) -> None:
+    goal, stored = seeded(SqliteGoalPlanRepository(db_path))
+    with raw(db_path) as connection:
+        connection.execute("DROP TRIGGER goal_plan_step_delegations_definition_immutable")
+        connection.execute("DROP TRIGGER goal_plan_step_delegations_retained")
+        connection.execute("DROP TABLE goal_plan_step_delegations")
+        connection.execute("UPDATE velox_schema SET version = 1 WHERE name = 'goal_plans'")
+
+    repo = SqliteGoalPlanRepository(db_path)
+
+    assert schema_versions(db_path) == {"goal_plans": 2}
+    assert repo.get_goal(goal.goal.id) == goal
+    assert repo.get_latest_plan(goal.goal.id) == stored
+    _, delegation = delegate(repo, stored, stored.plan.steps[2].id, recording_handoff([]))
+    assert repo.get_step_delegation_for_action(delegation.action_id) == delegation
+
+
+def test_v1_database_missing_v1_objects_is_not_upgraded(db_path: Path) -> None:
+    SqliteGoalPlanRepository(db_path)
+    with raw(db_path) as connection:
+        connection.execute("DROP TRIGGER goal_plan_step_delegations_definition_immutable")
+        connection.execute("DROP TRIGGER goal_plan_step_delegations_retained")
+        connection.execute("DROP TABLE goal_plan_step_delegations")
+        connection.execute("DROP TRIGGER goals_retained")
+        connection.execute("UPDATE velox_schema SET version = 1 WHERE name = 'goal_plans'")
+
+    with pytest.raises(GoalPlanCorruptedError, match="incomplete"):
+        SqliteGoalPlanRepository(db_path)
+    assert schema_versions(db_path) == {"goal_plans": 1}
+
+
+def test_delegation_records_are_immutable_and_retained(db_path: Path) -> None:
+    repo = SqliteGoalPlanRepository(db_path)
+    _, stored = seeded(repo)
+    delegate(repo, stored, stored.plan.steps[2].id, recording_handoff([]))
+
+    with raw(db_path) as connection:
+        for statement in (
+            "UPDATE goal_plan_step_delegations SET action_id = 'x'",
+            "UPDATE goal_plan_step_delegations SET requested_by = 'mallory'",
+            "UPDATE goal_plan_step_delegations SET account_identifier = 'other'",
+            "DELETE FROM goal_plan_step_delegations",
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(statement)
