@@ -13,6 +13,36 @@ This file is the canonical repository handoff for Codex engineering sessions.
 
 ## Sprint Status
 
+Sprint 6 - Goal/Plan foundation (in progress).
+
+Slice 1 (PR [#45](https://github.com/Traffic-Solo/velox-server/pull/45), merged):
+`core/goals.py` adds immutable, provider-neutral `Goal`, `Plan` and `PlanStep`
+contracts with dependency/cycle validation and deterministic `Plan.ready_steps()`.
+
+Slice 2 adds durable persistence and controlled transitions:
+- `core/goal_lifecycle.py` holds the pure transition policy. Goal:
+  `draft -> active|abandoned`, `active -> achieved|abandoned`; `achieved` and
+  `abandoned` are terminal. PlanStep: `pending -> in_progress|cancelled`,
+  `in_progress -> succeeded|failed|cancelled`; `succeeded`, `failed` and
+  `cancelled` are terminal. Starting a step requires every dependency to have
+  succeeded; dependents never advance and a Goal is never achieved implicitly.
+  Same-status requests are no-ops.
+- `core/goal_plan_repository.py` adds the `GoalPlanRepository` Role with
+  in-memory and SQLite implementations. New Goals must be `draft`, new Plan
+  versions must have every step `pending`, and statuses change only through
+  `transition_goal` / `transition_step` with an expected storage revision.
+  `Plan.version` (logical definition version, strictly `latest + 1`) is separate
+  from the storage `revision` (per Goal row, and per Plan version for step
+  progress). Superseded Plan versions are read-only; definitions are immutable
+  and nothing is deleted (enforced by repository checks and SQLite triggers).
+  Writes use `BEGIN IMMEDIATE`; reads use one snapshot transaction; persisted
+  rows are decoded strictly and re-validated through the Slice 1 contracts.
+  Schema ownership is the `goal_plans` row of the shared `velox_schema` table,
+  independent of `software_engineering_runs`, so both repositories can share one
+  file in either initialization order.
+- Nothing is wired into the container, API, planner, delegator, workers or
+  permission engine. Persistence authorizes and executes nothing.
+
 Sprint 5 - Guarded Software Engineering dogfooding (closed). The operator CLI
 and its hardening are merged. PR [#42](https://github.com/Traffic-Solo/velox-server/pull/42)
 rejects non-finite CLI timeouts before HTTP. PR
@@ -652,6 +682,7 @@ After every implementation slice, update this file in the same commit if the imp
 - `tests/test_worker_executor.py` keeps Gmail capability fixtures module-local; `tests/conftest.py` holds only suite-wide settings isolation.
 - Software Engineering pending objective text is plaintext in the local SQLite database until rejection or terminal execution scrubs it.
 - Software Engineering has no worker heartbeat/process-liveness evidence after `execution_started_at`, no durable non-SE queue/approval layer, and no multi-node claim coordination.
+- Goal/Plan persistence has no runtime composition (no settings path, container wiring or API); step progress cannot be carried into a new Plan version (new versions start all-pending); there is no transition history/audit log, no retry/attempt identity, no coupling between Goal status and step transitions, and Goal objectives are plaintext in SQLite. One plan-level revision serializes all step transitions of a version.
 
 ## Known Limitations
 
