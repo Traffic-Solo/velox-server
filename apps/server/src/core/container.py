@@ -197,11 +197,10 @@ class ApplicationContainer:
         self.goal_plan_repository = _configured_goal_plan_repository(settings)
         self.goal_plan_delegation = GoalPlanDelegationService(
             repository=self.goal_plan_repository,
-            task_delegator=self.task_delegator,
+            staged_delegator=self._staged_task_delegator,
             action_queue=self.action_queue,
             pending_approval_registry=self.pending_approval_registry,
             lifecycle_repository=self.action_lifecycle_repository,
-            lifecycle_manager=self.action_lifecycle_manager,
             # Canonical SE work keeps its own durable ingress, approval and claim path.
             reserved_routes=(
                 (ExecutorRole.SOFTWARE_ENGINEERING, SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY),
@@ -298,6 +297,24 @@ class ApplicationContainer:
         self.calendar_ingress_adapter = CalendarIngressAdapter(
             normalizer=self.calendar_event_normalizer,
             workflow_service=self.event_workflow_service,
+        )
+
+    def _staged_task_delegator(
+        self,
+        action_queue: ActionQueue,
+        pending_approval_registry: PendingApprovalRegistry,
+        lifecycle_repository: ActionLifecycleRepository,
+    ) -> TaskDelegator:
+        """The existing delegator, routing and permission engine over staging sinks."""
+        return ActionTaskDelegator(
+            executor_registry=self.worker_executor_registry,
+            permission_runtime=PermissionEngineRuntime(
+                permission_engine=self.permission_engine,
+                action_lifecycle_manager=self.action_lifecycle_manager,
+                lifecycle_repository=lifecycle_repository,
+                pending_approval_registry=pending_approval_registry,
+            ),
+            action_queue=action_queue,
         )
 
 

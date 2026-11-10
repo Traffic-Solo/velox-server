@@ -9,23 +9,34 @@ Nothing here executes a worker, grants permission or reports work as done.
 
 The handoff runs inside the repository's lock / ``BEGIN IMMEDIATE`` transaction
 together with the durable delegation record, so a step is handed off at most
-once. Approval-required work stays ``pending``; ``GoalPlanApprovalRecorder``
-plugs into the existing approval entry points and re-validates the Goal, Plan
-version and step before an approved Action may be queued.
+once. Its side effects are staged: the delegator writes into per-call staging
+sinks (queue, approval hold, lifecycle) and the service publishes them to the
+shared ones only after the durable record has committed. Before that commit no
+``WorkerRuntime`` can dequeue the Action and no approver can find it; on any
+failure the staged work is discarded unpublished. Publication after commit is
+not atomic with it: a crash in between loses the Action (never duplicates it).
+
+Approval-required work stays ``pending``; ``GoalPlanApprovalRecorder`` plugs
+into the existing approval entry points, which record the decision durably
+before queueing, and re-validates the Goal, Plan version and step first.
 """
 
 import logging
-from collections.abc import Iterable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 from enum import StrEnum
 from uuid import UUID
 
-from apps.server.src.core.action_lifecycle import ActionStatus
-from apps.server.src.core.action_lifecycle_manager import ActionLifecycleManager
-from apps.server.src.core.action_lifecycle_repository import ActionLifecycleRepository
+from apps.server.src.core.action_lifecycle_repository import (
+    ActionLifecycleRepository,
+    InMemoryActionLifecycleRepository,
+)
 from apps.server.src.core.action_queue import ActionQueue
 from apps.server.src.core.actions import Action, ExecutorRole
-from apps.server.src.core.approvals import PendingApprovalRegistry
+from apps.server.src.core.approvals import (
+    InMemoryPendingApprovalRegistry,
+    PendingApprovalRegistry,
+)
 from apps.server.src.core.delegation import (
     TaskDelegationRequest,
     TaskDelegationResult,
@@ -145,6 +156,27 @@ class GoalPlanDelegationResult:
     reason: str | None = None
 
 
+StagedTaskDelegatorFactory = Callable[
+    [ActionQueue, PendingApprovalRegistry, ActionLifecycleRepository],
+    TaskDelegator,
+]
+"""Build the existing TaskDelegator (same routing and permission engine) over the
+given queue, approval-hold and lifecycle sinks instead of the shared ones."""
+
+
+@dataclass(frozen=True, slots=True)
+class _StagedHandoff:
+    """Per-request sinks that hold handoff side effects until the durable commit."""
+
+    queue: ActionQueue = field(default_factory=ActionQueue)
+    holds: InMemoryPendingApprovalRegistry = field(
+        default_factory=InMemoryPendingApprovalRegistry,
+    )
+    lifecycle: InMemoryActionLifecycleRepository = field(
+        default_factory=InMemoryActionLifecycleRepository,
+    )
+
+
 class _ReservedRouteError(Exception):
     """The step's route must use its own dedicated, durable ingress."""
 
@@ -160,19 +192,17 @@ class GoalPlanDelegationService:
         self,
         *,
         repository: GoalPlanRepository,
-        task_delegator: TaskDelegator,
+        staged_delegator: StagedTaskDelegatorFactory,
         action_queue: ActionQueue,
         pending_approval_registry: PendingApprovalRegistry,
         lifecycle_repository: ActionLifecycleRepository,
-        lifecycle_manager: ActionLifecycleManager,
         reserved_routes: Iterable[tuple[ExecutorRole, str]] = (),
     ) -> None:
         self._repository = repository
-        self._task_delegator = task_delegator
+        self._staged_delegator = staged_delegator
         self._action_queue = action_queue
         self._pending_approval_registry = pending_approval_registry
         self._lifecycle_repository = lifecycle_repository
-        self._lifecycle_manager = lifecycle_manager
         self._reserved_routes = frozenset(reserved_routes)
 
     def ready_steps(self, goal_id: UUID) -> tuple[PlanStep, ...]:
@@ -207,6 +237,8 @@ class GoalPlanDelegationService:
         if not isinstance(request, GoalPlanStepDelegationRequest):
             raise GoalPlanDelegationRequestError("step delegation request is invalid")
         context = request.account_context
+        staged = _StagedHandoff()
+        delegator = self._staged_delegator(staged.queue, staged.holds, staged.lifecycle)
         handed_off: list[TaskDelegationResult] = []
 
         def handoff(step: PlanStep) -> StepHandoff:
@@ -220,7 +252,7 @@ class GoalPlanDelegationService:
                 account_context=context,
             )
             try:
-                result = self._task_delegator.delegate(delegation_request)
+                result = delegator.delegate(delegation_request)
             except Exception as error:
                 raise _HandoffFailedError from error
             handed_off.append(result)
@@ -260,30 +292,30 @@ class GoalPlanDelegationService:
             return self._unrecorded(
                 request,
                 GoalPlanDelegationOutcome.FAILED,
-                reason="task delegation failed; nothing was recorded",
+                reason="task delegation failed; nothing was recorded or published",
             )
         except Exception:
             if not handed_off:
                 raise
-            action_id = handed_off[0].action_id
-            revoked = self._revoke(action_id)
-            logger.exception(
-                "plan step %s delegation could not be recorded; handoff %s",
-                request.step_id,
-                "revoked" if revoked else "revocation incomplete",
-            )
+            logger.exception("plan step %s delegation could not be recorded", request.step_id)
             return self._unrecorded(
                 request,
                 GoalPlanDelegationOutcome.FAILED,
-                action_id=action_id,
-                reason=(
-                    "delegation could not be recorded; the handoff was revoked"
-                    if revoked
-                    else "delegation could not be recorded and the handoff could not "
-                    "be revoked; the Action may still be executed"
-                ),
+                action_id=handed_off[0].action_id,
+                reason="delegation could not be recorded; the staged handoff was "
+                "discarded and never published",
             )
+        self._publish(staged)
         return self._result(request, delegation, stored.revision, duplicate=False)
+
+    def _publish(self, staged: _StagedHandoff) -> None:
+        """Expose committed handoff side effects: lifecycle, then holds, then queue."""
+        for action_id, state in staged.lifecycle.list_states().items():
+            self._lifecycle_repository.set(action_id, state)
+        for action in staged.holds.list_pending():
+            self._pending_approval_registry.add(action)
+        for action in staged.queue.list():
+            self._action_queue.enqueue(action)
 
     def _duplicate(
         self,
@@ -357,29 +389,14 @@ class GoalPlanDelegationService:
             reason=reason,
         )
 
-    def _revoke(self, action_id: UUID) -> bool:
-        """Withdraw an unrecorded handoff from the process-local queue/approval hold."""
-        queued = self._action_queue.remove(action_id)
-        pending = self._pending_approval_registry.remove(action_id)
-        if pending is not None:
-            state = self._lifecycle_repository.get(action_id)
-            if state is not None and state.status is ActionStatus.QUEUED:
-                self._lifecycle_repository.set(
-                    action_id,
-                    self._lifecycle_manager.transition(
-                        state,
-                        ActionStatus.REJECTED,
-                        reason="goal plan delegation could not be recorded",
-                    ),
-                )
-        return queued is not None or pending is not None
-
 
 class GoalPlanApprovalRecorder:
     """``ApprovalDecisionRecorder`` for Actions that a plan step delegation created.
 
     Invoked by the existing approve/reject entry points before any process-local
-    approval mutation. Actions without a step delegation are ignored. Approval
+    approval mutation, so the durable decision commits before the Action can be
+    queued; a crash between the two leaves the step ``in_progress`` without an
+    Action (never a duplicate). Actions without a step delegation are ignored. Approval
     re-validates the Goal, Plan version and step and starts the step; any
     conflict raises ``GoalPlanApprovalError`` so the Action is never queued.
     """

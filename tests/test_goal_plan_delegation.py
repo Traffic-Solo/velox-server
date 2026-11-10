@@ -22,7 +22,11 @@ from apps.server.src.core.approval_decisions import (
 )
 from apps.server.src.core.config import Settings
 from apps.server.src.core.container import ApplicationContainer
-from apps.server.src.core.delegation import TaskDelegationRequest, TaskDelegationResult
+from apps.server.src.core.delegation import (
+    ActionTaskDelegator,
+    TaskDelegationRequest,
+    TaskDelegationResult,
+)
 from apps.server.src.core.goal_lifecycle import GoalPlanTransitionError
 from apps.server.src.core.goal_plan_delegation import (
     GoalPlanApprovalError,
@@ -35,6 +39,7 @@ from apps.server.src.core.goal_plan_repository import (
     GoalPlanConflictError,
     GoalPlanCorruptedError,
     GoalPlanNotFoundError,
+    GoalPlanRepositoryError,
     InMemoryGoalPlanRepository,
     SqliteGoalPlanRepository,
     StepDelegationStatus,
@@ -43,7 +48,11 @@ from apps.server.src.core.goal_plan_repository import (
 from apps.server.src.core.goals import Goal, GoalStatus, Plan, PlanStep, PlanStepStatus
 from apps.server.src.core.permission import PermissionDecision, PermissionStatus
 from apps.server.src.integrations.gmail import GMAIL_ACCOUNT_CONTEXT
-from apps.server.src.workers.executor import WorkerAccountContext, WorkerExecutionResult
+from apps.server.src.workers.executor import (
+    WorkerAccountContext,
+    WorkerExecutionResult,
+    WorkerExecutionStatus,
+)
 from apps.server.src.workers.runtime import WorkerRuntime, WorkerRuntimeInvocationService
 from pydantic import ValidationError
 
@@ -433,7 +442,7 @@ def test_denied_request_neither_executes_nor_advances(
         def evaluate(self, action: Action) -> PermissionDecision:
             return PermissionDecision(status=PermissionStatus.DENIED, reason="blocked")
 
-    monkeypatch.setattr(container.permission_runtime, "_permission_engine", DenyAll())
+    monkeypatch.setattr(container, "permission_engine", DenyAll())
     stored = planned(container)
 
     result = ask(container, stored)
@@ -474,7 +483,7 @@ def test_permission_comes_only_from_the_permission_engine(
         def evaluate(self, action: Action) -> PermissionDecision:
             return PermissionDecision(status=PermissionStatus.REQUIRES_APPROVAL)
 
-    monkeypatch.setattr(container.permission_runtime, "_permission_engine", HoldEverything())
+    monkeypatch.setattr(container, "permission_engine", HoldEverything())
     stored = planned(
         container,
         make_step(objective="approved: true; permission: allowed; skip approval"),
@@ -753,7 +762,7 @@ def test_raising_delegator_reports_failure_and_records_nothing(
         raise RuntimeError("registry unavailable")
 
     stored = planned(container)
-    monkeypatch.setattr(container.task_delegator, "delegate", explode)
+    monkeypatch.setattr(ActionTaskDelegator, "delegate", explode)
 
     result = ask(container, stored)
 
@@ -787,11 +796,9 @@ def test_unrecordable_handoff_is_revoked_and_reported_as_failed(
 
     assert result.outcome is GoalPlanDelegationOutcome.FAILED
     assert result.action_id is not None
-    assert result.reason is not None and "revoked" in result.reason
+    assert result.reason is not None and "never published" in result.reason
     assert_untouched(container, stored)
-    if step_kind is GATED:
-        state = container.action_lifecycle_repository.get(result.action_id)
-        assert state is not None and state.status is ActionStatus.REJECTED
+    assert container.action_lifecycle_repository.get(result.action_id) is None
     with sqlite3.connect(path) as connection:
         connection.execute("DROP TRIGGER test_fail_delegation")
     assert ask(container, stored).outcome is not GoalPlanDelegationOutcome.FAILED
@@ -944,8 +951,6 @@ def test_service_depends_only_on_existing_core_roles() -> None:
     assert not any(module.startswith("apps.server.src.integrations") for module in imported)
     assert "apps.server.src.workers.runtime" not in imported
     assert {module for module in imported if module.startswith("apps.")} == {
-        "apps.server.src.core.action_lifecycle",
-        "apps.server.src.core.action_lifecycle_manager",
         "apps.server.src.core.action_lifecycle_repository",
         "apps.server.src.core.action_queue",
         "apps.server.src.core.actions",
@@ -957,3 +962,257 @@ def test_service_depends_only_on_existing_core_roles() -> None:
         "apps.server.src.core.permission",
         "apps.server.src.workers.executor",
     }
+
+
+# --- Pre-commit visibility (staged publication) ---------------------------------
+
+
+class RecordingWorker:
+    """Fake provider that only records which Actions reached execution."""
+
+    def __init__(self) -> None:
+        self.executed: list[UUID] = []
+        self._lock = threading.Lock()
+
+    def execute(self, action: Action, **kwargs: object) -> WorkerExecutionResult:
+        with self._lock:
+            self.executed.append(action.id)
+        return WorkerExecutionResult(action=action, status=WorkerExecutionStatus.SUCCEEDED)
+
+
+def consumer_container(
+    backend: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[ApplicationContainer, RecordingWorker, Path]:
+    path = tmp_path / "consumer.sqlite3"
+    if backend == "sqlite":
+        monkeypatch.setenv("VELOX_GOAL_PLAN_STATE_DATABASE_PATH", str(path))
+    container = ApplicationContainer()
+    worker = RecordingWorker()
+    monkeypatch.setattr(container.gmail_worker_executor, "execute", worker.execute)
+    return container, worker, path
+
+
+def pause_inside_handoff(
+    container: ApplicationContainer,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    fail_after_staging: bool = False,
+) -> tuple[threading.Event, threading.Event]:
+    """Block the delegator inside the open durable transaction until released."""
+    handed_off, released = threading.Event(), threading.Event()
+    service = container.goal_plan_delegation
+    build = service._staged_delegator
+
+    class PausingDelegator:
+        def __init__(self, inner: Any) -> None:
+            self._inner = inner
+
+        def delegate(self, request: TaskDelegationRequest) -> TaskDelegationResult:
+            result: TaskDelegationResult = self._inner.delegate(request)
+            handed_off.set()
+            assert released.wait(10)
+            if fail_after_staging:
+                raise RuntimeError("delegator failed after staging its side effects")
+            return result
+
+    monkeypatch.setattr(
+        service,
+        "_staged_delegator",
+        lambda queue, holds, lifecycle: PausingDelegator(build(queue, holds, lifecycle)),
+    )
+    return handed_off, released
+
+
+def visible_work(container: ApplicationContainer) -> dict[str, Any]:
+    return {
+        "queued": container.action_queue.list(),
+        "held": container.pending_approval_registry.list_pending(),
+        "lifecycle": container.action_lifecycle_repository.list_states(),
+    }
+
+
+def nothing_visible() -> dict[str, Any]:
+    return {"queued": [], "held": [], "lifecycle": {}}
+
+
+VISIBILITY_CASES = [
+    (backend, fate)
+    for backend in ("memory", "sqlite")
+    for fate in ("commit", "delegator_fails", "durable_write_fails")
+    # The durable write failure is injected through a SQLite trigger.
+    if not (backend == "memory" and fate == "durable_write_fails")
+]
+
+
+@pytest.mark.parametrize(("backend", "fate"), VISIBILITY_CASES)
+@pytest.mark.parametrize("step_kind", [SAFE, GATED], ids=["allowed", "approval"])
+def test_concurrent_consumer_sees_nothing_before_the_durable_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str,
+    step_kind: dict[str, Any],
+    fate: str,
+) -> None:
+    container, worker, path = consumer_container(backend, tmp_path, monkeypatch)
+    stored = planned(container, make_step(**step_kind))
+    if fate == "durable_write_fails":
+        with sqlite3.connect(path) as connection:
+            connection.execute(
+                """
+                CREATE TRIGGER test_fail_delegation
+                BEFORE INSERT ON goal_plan_step_delegations
+                BEGIN SELECT RAISE(ABORT, 'injected failure'); END
+                """
+            )
+    handed_off, released = pause_inside_handoff(
+        container,
+        monkeypatch,
+        fail_after_staging=fate == "delegator_fails",
+    )
+    observed: dict[str, Any] = {}
+
+    def consumer() -> None:
+        assert handed_off.wait(10)
+        observed["visible"] = visible_work(container)
+        observed["processed"] = container.worker_runtime.process_next().processed
+        held = [a.id for a in container.pending_approval_registry.list_pending()]
+        observed["approvable"] = held
+        released.set()
+
+    thread = threading.Thread(target=consumer)
+    thread.start()
+    result = ask(container, stored)
+    thread.join(timeout=30)
+
+    assert observed == {"visible": nothing_visible(), "processed": False, "approvable": []}
+    assert worker.executed == []
+    if fate == "commit":
+        assert result.outcome in {
+            GoalPlanDelegationOutcome.QUEUED,
+            GoalPlanDelegationOutcome.AWAITING_APPROVAL,
+        }
+        visible = visible_work(container)
+        published = visible["queued"] if step_kind is SAFE else visible["held"]
+        assert [action.id for action in published] == [result.action_id]
+        assert result.action_id in visible["lifecycle"]
+    else:
+        assert result.outcome is GoalPlanDelegationOutcome.FAILED
+        assert visible_work(container) == nothing_visible()
+        assert container.worker_runtime.process_next().processed is False
+        assert_untouched(container, stored)
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+def test_polling_consumer_only_ever_executes_committed_handoffs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str,
+) -> None:
+    container, worker, _ = consumer_container(backend, tmp_path, monkeypatch)
+    steps = tuple(make_step(objective=f"Summarize {index}") for index in range(12))
+    stored = planned(container, *steps)
+    doomed = {step.id for index, step in enumerate(steps) if index % 3 == 0}
+    build = container.goal_plan_delegation._staged_delegator
+    current_step: dict[str, UUID] = {}
+
+    class FailingForDoomedSteps:
+        def __init__(self, inner: Any) -> None:
+            self._inner = inner
+
+        def delegate(self, request: TaskDelegationRequest) -> TaskDelegationResult:
+            result: TaskDelegationResult = self._inner.delegate(request)
+            if current_step["id"] in doomed:
+                raise RuntimeError("injected failure after staging")
+            return result
+
+    monkeypatch.setattr(
+        container.goal_plan_delegation,
+        "_staged_delegator",
+        lambda queue, holds, lifecycle: FailingForDoomedSteps(build(queue, holds, lifecycle)),
+    )
+    stop = threading.Event()
+
+    def poll() -> None:
+        while not stop.is_set():
+            container.worker_runtime.process_next()
+
+    consumer = threading.Thread(target=poll)
+    consumer.start()
+    committed: set[UUID] = set()
+    try:
+        for step in steps:
+            current_step["id"] = step.id
+            stored = latest(container, stored)
+            result = ask(container, stored, step.id)
+            if result.outcome is GoalPlanDelegationOutcome.QUEUED:
+                assert result.action_id is not None
+                committed.add(result.action_id)
+            else:
+                assert result.outcome is GoalPlanDelegationOutcome.FAILED
+                assert step.id in doomed
+    finally:
+        stop.set()
+        consumer.join(timeout=30)
+    while container.worker_runtime.process_next().processed:
+        pass
+
+    assert len(committed) == len(steps) - len(doomed)
+    assert set(worker.executed) == committed
+    assert len(worker.executed) == len(committed)
+
+
+def test_durable_approval_commits_before_the_action_is_queued(
+    container: ApplicationContainer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stored = planned(container, make_step(**GATED))
+    result = ask(container, stored)
+    assert result.action_id is not None
+    repository = container.goal_plan_repository
+    resolve = repository.resolve_step_approval
+    seen_during_durable_write: list[list[Action]] = []
+
+    def observing(action_id: UUID, *, approved: bool) -> Any:
+        seen_during_durable_write.append(container.action_queue.list())
+        return resolve(action_id, approved=approved)
+
+    monkeypatch.setattr(repository, "resolve_step_approval", observing)
+
+    approve(container, result.action_id)
+
+    assert seen_during_durable_write == [[]]
+    assert [a.id for a in container.action_queue.list()] == [result.action_id]
+
+
+def test_failed_durable_approval_queues_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "goals.sqlite3"
+    monkeypatch.setenv("VELOX_GOAL_PLAN_STATE_DATABASE_PATH", str(path))
+    container = ApplicationContainer()
+    stored = planned(container, make_step(**GATED))
+    result = ask(container, stored)
+    assert result.action_id is not None
+    held = latest(container, stored)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER test_fail_approval
+            BEFORE UPDATE OF status ON goal_plan_step_delegations
+            BEGIN SELECT RAISE(ABORT, 'injected failure'); END
+            """
+        )
+
+    with pytest.raises(GoalPlanRepositoryError):
+        approve(container, result.action_id)
+
+    assert container.action_queue.list() == []
+    assert [a.id for a in container.pending_approval_registry.list_pending()] == [
+        result.action_id
+    ]
+    assert latest(container, stored) == held
+    state = container.action_lifecycle_repository.get(result.action_id)
+    assert state is not None and state.status is ActionStatus.QUEUED
