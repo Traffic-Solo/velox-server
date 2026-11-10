@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     software_engineering_state_database_path: str | None = None
     """Optional absolute SQLite path for durable Software Engineering run state."""
 
+    goal_plan_state_database_path: str | None = None
+    """Optional absolute SQLite path for durable Goal/Plan state; in-memory when unset."""
+
     claude_code_executable: str = "claude"
     """Claude Code CLI executable name or path (resolved on PATH when a name)."""
 
@@ -110,6 +113,10 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "VELOX_SOFTWARE_ENGINEERING_STATE_DATABASE_PATH must be absolute"
                 )
+        if self.goal_plan_state_database_path is not None and not Path(
+            self.goal_plan_state_database_path
+        ).expanduser().is_absolute():
+            raise ValueError("VELOX_GOAL_PLAN_STATE_DATABASE_PATH must be absolute")
         if self.software_engineering_promotion_enabled and (
             self.software_engineering_provider == "disabled"
         ):

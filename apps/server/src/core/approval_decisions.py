@@ -1,5 +1,6 @@
 """The single explicit-approval transition shared by every approval entrypoint."""
 
+from collections.abc import Sequence
 from typing import Protocol
 from uuid import UUID
 
@@ -30,6 +31,25 @@ class ApprovalDecisionRecorder(Protocol):
 
     def record_rejected(self, action: Action) -> None:
         ...
+
+
+class CompositeApprovalDecisionRecorder:
+    """Run several durable recorders in order; the first failure stops the decision.
+
+    Each recorder must ignore Actions it does not own, so composing recorders for
+    disjoint Action families never records one decision twice.
+    """
+
+    def __init__(self, recorders: Sequence[ApprovalDecisionRecorder]) -> None:
+        self._recorders = tuple(recorders)
+
+    def record_approved(self, action: Action) -> None:
+        for recorder in self._recorders:
+            recorder.record_approved(action)
+
+    def record_rejected(self, action: Action) -> None:
+        for recorder in self._recorders:
+            recorder.record_rejected(action)
 
 
 def _resolve_pending_action(

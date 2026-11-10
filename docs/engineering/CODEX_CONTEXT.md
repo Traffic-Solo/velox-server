@@ -41,8 +41,36 @@ Slice 2 adds durable persistence and controlled transitions:
   Schema ownership is the `goal_plans` row of the shared `velox_schema` table,
   independent of `software_engineering_runs`, so both repositories can share one
   file in either initialization order.
-- Nothing is wired into the container, API, planner, delegator, workers or
-  permission engine. Persistence authorizes and executes nothing.
+- Persistence alone authorizes and executes nothing.
+
+Slice 3 adds permission-gated step delegation (`core/goal_plan_delegation.py`):
+- Goal status gates the durable mutation boundary: only an `active` Goal may
+  start a step (directly, by delegation or by approval); terminal Goals receive
+  no new Plan versions; already started steps can always be finalized and
+  pending steps cancelled, whatever the Goal status. Goal status never changes
+  automatically.
+- `GoalPlanDelegationService.delegate` takes an explicit Goal/version/step,
+  expected plan revision, canonical `requested_by` and caller-owned
+  `WorkerAccountContext`. Inside the repository lock / `BEGIN IMMEDIATE`
+  transaction it validates the step, calls the existing `TaskDelegator`
+  (registry routing + `PermissionEngineRuntime`) and records one durable
+  `goal_plan_step_delegations` row (schema `goal_plans` v2, upgraded in place
+  from v1). Only a `queued` handoff moves the step to `in_progress`;
+  `awaiting_approval`, `denied` and `route_rejected` leave it `pending`.
+  Retries return the recorded delegation (`duplicate=True`); a different
+  requester or account context is a conflict. A delegator exception records
+  nothing; a failed durable write after the handoff revokes the process-local
+  queue/approval entry and reports `failed`.
+- `GoalPlanApprovalRecorder` joins the SE recorder in
+  `CompositeApprovalDecisionRecorder`, used by `/actions/{id}/approve|reject`.
+  Approval re-checks Goal `active`, latest version, pending step and succeeded
+  dependencies before the Action is queued; any conflict is a 409 and nothing
+  is queued.
+- The canonical SE route (`software_engineering` / `code.implement`) is
+  reserved for its own durable ingress and is not delegated from plans.
+- `VELOX_GOAL_PLAN_STATE_DATABASE_PATH` (absolute) selects the SQLite
+  repository; otherwise the container uses the in-memory one. No new HTTP
+  endpoint, planner, worker or permission-engine change.
 
 Sprint 5 - Guarded Software Engineering dogfooding (closed). The operator CLI
 and its hardening are merged. PR [#42](https://github.com/Traffic-Solo/velox-server/pull/42)
@@ -683,7 +711,8 @@ After every implementation slice, update this file in the same commit if the imp
 - `tests/test_worker_executor.py` keeps Gmail capability fixtures module-local; `tests/conftest.py` holds only suite-wide settings isolation.
 - Software Engineering pending objective text is plaintext in the local SQLite database until rejection or terminal execution scrubs it.
 - Software Engineering has no worker heartbeat/process-liveness evidence after `execution_started_at`, no durable non-SE queue/approval layer, and no multi-node claim coordination.
-- Goal/Plan persistence has no runtime composition (no settings path, container wiring or API); step progress cannot be carried into a new Plan version (new versions start all-pending); there is no transition history/audit log, no retry/attempt identity, no coupling between Goal status and step transitions, and Goal objectives are plaintext in SQLite. One plan-level revision serializes all step transitions of a version.
+- Goal/Plan: step progress cannot be carried into a new Plan version (new versions start all-pending); there is no transition history/audit log, no retry/attempt identity, and Goal objectives are plaintext in SQLite. One plan-level revision serializes all step transitions of a version.
+- Goal/Plan delegation: the Action queue and pending-approval registry stay process-local, so a restart after a recorded `queued`/`approved` handoff leaves the step `in_progress` with no Action (finalize it explicitly), and a held plan Action cannot be recovered for approval after restart (cancel the step or replan). There is no execution-evidence feedback from `WorkerRuntime` into step status, no HTTP surface for delegation, and one delegation per step per plan version (retries after denial/rejection need a new Plan version). Handoff runs while the SQLite write lock is held.
 
 ## Known Limitations
 

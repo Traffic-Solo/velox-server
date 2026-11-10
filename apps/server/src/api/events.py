@@ -20,6 +20,7 @@ from apps.server.src.core.events import (
     IntegrationRouteContext,
     UniversalEvent,
 )
+from apps.server.src.core.goal_plan_repository import GoalPlanRepositoryError
 from apps.server.src.integrations.software_engineering_recovery import (
     SoftwareEngineeringRecoveryError,
 )
@@ -98,7 +99,7 @@ def approve_action(action_id: UUID) -> dict[str, Any]:
             lifecycle_manager=container.action_lifecycle_manager,
             action_queue=container.action_queue,
             pending_action_recovery=container.software_engineering_action_recovery,
-            approval_recorder=container.software_engineering_action_recovery,
+            approval_recorder=container.action_approval_recorder,
         )
     except PendingActionNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
@@ -107,8 +108,8 @@ def approve_action(action_id: UUID) -> dict[str, Any]:
             status_code=status.HTTP_409_CONFLICT,
             detail=str(error),
         ) from error
-    except SoftwareEngineeringRecoveryError:
-        logger.exception("software engineering approval persistence failed")
+    except (SoftwareEngineeringRecoveryError, GoalPlanRepositoryError):
+        logger.exception("action approval persistence failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="action approval persistence failed",
@@ -137,7 +138,7 @@ def reject_action(
             lifecycle_manager=container.action_lifecycle_manager,
             reason=reason,
             pending_action_recovery=container.software_engineering_action_recovery,
-            approval_recorder=container.software_engineering_action_recovery,
+            approval_recorder=container.action_approval_recorder,
         )
     except PendingActionNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
@@ -146,8 +147,8 @@ def reject_action(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(error),
         ) from error
-    except SoftwareEngineeringRecoveryError:
-        logger.exception("software engineering rejection persistence failed")
+    except (SoftwareEngineeringRecoveryError, GoalPlanRepositoryError):
+        logger.exception("action rejection persistence failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="action rejection persistence failed",

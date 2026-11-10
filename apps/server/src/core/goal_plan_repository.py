@@ -18,6 +18,18 @@ Representation
     (``position``) plus each step's mutable ``status``. Only ``status`` changes,
     through ``transition_step``, and every effective change increments the owning
     plan version's ``revision``; it never creates a new logical version.
+``goal_plan_step_delegations``
+    At most one durable handoff record per step of a plan version: the Action id
+    the existing ``TaskDelegator`` created, who requested it, the explicit account
+    context it was routed with and the delegation/approval outcome. It is
+    evidence that work was handed off (or held, denied or rejected), never that
+    work started, ran or succeeded; Action lifecycle stays in the Action
+    lifecycle repository.
+
+Goal status gates every mutation boundary: terminal Goals receive no new Plan
+versions, and a step may start (directly, through delegation or through
+approval) only while its Goal is ``active``. Already started steps can always be
+finalized, whatever the Goal status, so no started work is stranded.
 
 SQLite triggers reject edits to immutable columns, deletes and changes to
 superseded versions, as defense in depth behind the repository checks. Schema
@@ -32,9 +44,10 @@ Holding or persisting a Goal or Plan authorizes nothing and executes nothing.
 import json
 import sqlite3
 import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from enum import StrEnum
 from pathlib import Path
 from typing import Protocol, TypeGuard
 from uuid import UUID
@@ -52,7 +65,7 @@ from apps.server.src.core.goals import (
 )
 
 _SCHEMA_NAME = "goal_plans"
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 _SCHEMA_V1_STATEMENTS = (
     """
@@ -160,6 +173,48 @@ _SCHEMA_V1_OBJECTS = frozenset(
 )
 
 
+_SCHEMA_V2_STATEMENTS = (
+    """
+    CREATE TABLE goal_plan_step_delegations (
+        goal_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        step_id TEXT NOT NULL,
+        action_id TEXT NOT NULL UNIQUE,
+        requested_by TEXT NOT NULL,
+        account_principal TEXT,
+        account_identifier TEXT,
+        status TEXT NOT NULL,
+        permission_status TEXT,
+        routing_reason TEXT,
+        PRIMARY KEY (goal_id, version, step_id),
+        FOREIGN KEY (goal_id, version, step_id)
+            REFERENCES goal_plan_steps(goal_id, version, step_id)
+    )
+    """,
+    """
+    CREATE TRIGGER goal_plan_step_delegations_definition_immutable
+    BEFORE UPDATE OF
+        goal_id, version, step_id, action_id, requested_by, account_principal,
+        account_identifier, permission_status, routing_reason
+    ON goal_plan_step_delegations
+    BEGIN SELECT RAISE(ABORT, 'step delegations are immutable'); END
+    """,
+    """
+    CREATE TRIGGER goal_plan_step_delegations_retained
+    BEFORE DELETE ON goal_plan_step_delegations
+    BEGIN SELECT RAISE(ABORT, 'step delegations are retained'); END
+    """,
+)
+
+_SCHEMA_V2_OBJECTS = _SCHEMA_V1_OBJECTS | frozenset(
+    {
+        ("table", "goal_plan_step_delegations"),
+        ("trigger", "goal_plan_step_delegations_definition_immutable"),
+        ("trigger", "goal_plan_step_delegations_retained"),
+    },
+)
+
+
 class GoalPlanRepositoryError(RuntimeError):
     """Durable Goal/Plan state is unavailable or could not be written."""
 
@@ -192,13 +247,91 @@ class StoredPlan:
     revision: int
 
 
+class StepDelegationStatus(StrEnum):
+    """Durable handoff outcome of one step; none of these means work ran.
+
+    The first four mirror ``TaskDelegationStatus``. ``approved`` and
+    ``approval_rejected`` record the later explicit decision on an
+    ``awaiting_approval`` handoff.
+    """
+
+    QUEUED = "queued"
+    AWAITING_APPROVAL = "awaiting_approval"
+    DENIED = "denied"
+    ROUTE_REJECTED = "route_rejected"
+    APPROVED = "approved"
+    APPROVAL_REJECTED = "approval_rejected"
+
+
+_HANDOFF_STATUSES = frozenset(
+    {
+        StepDelegationStatus.QUEUED,
+        StepDelegationStatus.AWAITING_APPROVAL,
+        StepDelegationStatus.DENIED,
+        StepDelegationStatus.ROUTE_REJECTED,
+    },
+)
+
+
+@dataclass(frozen=True, slots=True)
+class StepHandoff:
+    """What the delegation callback reports back from the existing TaskDelegator."""
+
+    action_id: UUID
+    status: StepDelegationStatus
+    permission_status: str | None = None
+    routing_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_uuid_argument(self.action_id, "handoff action id")
+        if self.status not in _HANDOFF_STATUSES:
+            raise GoalPlanContractError("step handoff requires a delegation outcome")
+        for value, name in (
+            (self.permission_status, "permission status"),
+            (self.routing_reason, "routing reason"),
+        ):
+            if value is not None and not isinstance(value, str):
+                raise GoalPlanContractError(f"step handoff {name} must be text")
+
+
+@dataclass(frozen=True, slots=True)
+class StepDelegation:
+    """Durable evidence that one plan step was handed to the TaskDelegator."""
+
+    goal_id: UUID
+    version: int
+    step_id: UUID
+    action_id: UUID
+    requested_by: str
+    account_principal: str | None
+    account_identifier: str | None
+    status: StepDelegationStatus
+    permission_status: str | None
+    routing_reason: str | None
+
+
+class GoalPlanDelegationExistsError(GoalPlanConflictError):
+    """The step already has a durable delegation; it is never handed off twice."""
+
+    def __init__(self, delegation: StepDelegation) -> None:
+        super().__init__(
+            f"plan step {delegation.step_id} was already delegated as action "
+            f"{delegation.action_id}",
+        )
+        self.delegation = delegation
+
+
+StepHandoffCallback = Callable[[PlanStep], StepHandoff]
+
+
 class GoalPlanRepository(Protocol):
     """Persistence Role for Goals and versioned Plans.
 
     New Goals must be ``draft`` and new Plan versions must have every step
     ``pending``; statuses change only through the transition operations, which
     apply ``goal_lifecycle`` policy and require the caller's expected revision.
-    There is no delete and no arbitrary status replacement.
+    There is no delete and no arbitrary status replacement. Steps start only while
+    their Goal is ``active``; terminal Goals receive no new Plan versions.
     """
 
     def create_goal(self, goal: Goal) -> StoredGoal:
@@ -236,6 +369,52 @@ class GoalPlanRepository(Protocol):
     ) -> StoredPlan:
         ...
 
+    def get_step_delegation(
+        self,
+        goal_id: UUID,
+        version: int,
+        step_id: UUID,
+    ) -> StepDelegation | None:
+        ...
+
+    def get_step_delegation_for_action(self, action_id: UUID) -> StepDelegation | None:
+        ...
+
+    def delegate_step(
+        self,
+        goal_id: UUID,
+        version: int,
+        step_id: UUID,
+        *,
+        expected_revision: int,
+        requested_by: str,
+        account_principal: str | None,
+        account_identifier: str | None,
+        handoff: StepHandoffCallback,
+    ) -> tuple[StoredPlan, StepDelegation]:
+        """Validate, hand off once and record the outcome in one atomic unit.
+
+        ``handoff`` runs only after every check passed and while the lock or write
+        transaction is held, so concurrent requests can never hand a step off
+        twice. If it raises, nothing is recorded. A ``queued`` outcome starts the
+        step; every outcome increments the plan revision.
+        """
+        ...
+
+    def resolve_step_approval(
+        self,
+        action_id: UUID,
+        *,
+        approved: bool,
+    ) -> tuple[StoredPlan, StepDelegation]:
+        """Record the explicit decision on an ``awaiting_approval`` delegation.
+
+        Approval re-checks that the Goal is active, the version is latest and the
+        step is still pending with succeeded dependencies, then starts the step.
+        Rejection only records the decision.
+        """
+        ...
+
 
 class InMemoryGoalPlanRepository:
     """Process-local implementation with the same rules as the SQLite repository."""
@@ -244,6 +423,8 @@ class InMemoryGoalPlanRepository:
         self._lock = threading.Lock()
         self._goals: dict[UUID, StoredGoal] = {}
         self._plans: dict[UUID, list[StoredPlan]] = {}
+        self._delegations: dict[tuple[UUID, int, UUID], StepDelegation] = {}
+        self._delegation_keys: dict[UUID, tuple[UUID, int, UUID]] = {}
 
     def create_goal(self, goal: Goal) -> StoredGoal:
         goal = _require_new_goal(goal)
@@ -283,8 +464,10 @@ class InMemoryGoalPlanRepository:
     def create_plan(self, plan: Plan) -> StoredPlan:
         plan = _require_new_plan(plan)
         with self._lock:
-            if plan.goal_id not in self._goals:
+            goal = self._goals.get(plan.goal_id)
+            if goal is None:
                 raise GoalPlanNotFoundError(f"goal {plan.goal_id} does not exist")
+            _require_goal_accepts_plans(goal.goal)
             versions = self._plans.setdefault(plan.goal_id, [])
             _require_next_version(plan, len(versions) or None)
             if versions:
@@ -332,9 +515,110 @@ class InMemoryGoalPlanRepository:
             plan = goal_lifecycle.transition_plan_step(stored.plan, step_id, status)
             if plan is stored.plan:
                 return stored
+            if status is PlanStepStatus.IN_PROGRESS:
+                _require_goal_allows_start(self._goals[goal_id].goal)
             updated = StoredPlan(plan=plan, revision=stored.revision + 1)
             versions[version - 1] = updated
             return updated
+
+    def get_step_delegation(
+        self,
+        goal_id: UUID,
+        version: int,
+        step_id: UUID,
+    ) -> StepDelegation | None:
+        _require_uuid_argument(goal_id, "goal id")
+        _require_version_argument(version)
+        _require_uuid_argument(step_id, "plan step id")
+        with self._lock:
+            return self._delegations.get((goal_id, version, step_id))
+
+    def get_step_delegation_for_action(self, action_id: UUID) -> StepDelegation | None:
+        _require_uuid_argument(action_id, "action id")
+        with self._lock:
+            key = self._delegation_keys.get(action_id)
+            return self._delegations[key] if key is not None else None
+
+    def delegate_step(
+        self,
+        goal_id: UUID,
+        version: int,
+        step_id: UUID,
+        *,
+        expected_revision: int,
+        requested_by: str,
+        account_principal: str | None,
+        account_identifier: str | None,
+        handoff: StepHandoffCallback,
+    ) -> tuple[StoredPlan, StepDelegation]:
+        _require_uuid_argument(goal_id, "goal id")
+        _require_version_argument(version)
+        _require_uuid_argument(step_id, "plan step id")
+        expected = _require_expected_revision(expected_revision)
+        _require_requester(requested_by)
+        _require_account(account_principal, account_identifier)
+        with self._lock:
+            versions = self._plans.get(goal_id, [])
+            if version > len(versions):
+                raise GoalPlanNotFoundError(
+                    f"plan version {version} of goal {goal_id} does not exist",
+                )
+            key = (goal_id, version, step_id)
+            existing = self._delegations.get(key)
+            if existing is not None:
+                raise GoalPlanDelegationExistsError(existing)
+            stored = versions[version - 1]
+            _require_latest_version(version, len(versions))
+            _require_current_revision(stored.revision, expected, "plan")
+            started = _require_startable(stored.plan, self._goals[goal_id].goal, step_id)
+            result = _require_handoff(handoff(stored.plan.step(step_id)))
+            if result.action_id in self._delegation_keys:
+                raise GoalPlanConflictError(
+                    f"action {result.action_id} is already linked to a plan step",
+                )
+            delegation = _delegation_from_handoff(
+                goal_id,
+                version,
+                step_id,
+                requested_by,
+                account_principal,
+                account_identifier,
+                result,
+            )
+            plan = started if result.status is StepDelegationStatus.QUEUED else stored.plan
+            updated = StoredPlan(plan=plan, revision=stored.revision + 1)
+            versions[version - 1] = updated
+            self._delegations[key] = delegation
+            self._delegation_keys[result.action_id] = key
+            return updated, delegation
+
+    def resolve_step_approval(
+        self,
+        action_id: UUID,
+        *,
+        approved: bool,
+    ) -> tuple[StoredPlan, StepDelegation]:
+        _require_uuid_argument(action_id, "action id")
+        with self._lock:
+            key = self._delegation_keys.get(action_id)
+            if key is None:
+                raise GoalPlanNotFoundError(f"no plan step delegation for action {action_id}")
+            delegation = self._delegations[key]
+            _require_awaiting_approval(delegation)
+            goal_id, version, step_id = key
+            versions = self._plans[goal_id]
+            stored = versions[version - 1]
+            if not approved:
+                rejected = replace(delegation, status=StepDelegationStatus.APPROVAL_REJECTED)
+                self._delegations[key] = rejected
+                return stored, rejected
+            _require_latest_version(version, len(versions))
+            started = _require_startable(stored.plan, self._goals[goal_id].goal, step_id)
+            updated = StoredPlan(plan=started, revision=stored.revision + 1)
+            approved_delegation = replace(delegation, status=StepDelegationStatus.APPROVED)
+            versions[version - 1] = updated
+            self._delegations[key] = approved_delegation
+            return updated, approved_delegation
 
 
 class SqliteGoalPlanRepository:
@@ -372,15 +656,24 @@ class SqliteGoalPlanRepository:
                 "SELECT version FROM velox_schema WHERE name = ?",
                 (_SCHEMA_NAME,),
             ).fetchone()
+            version = row["version"] if row is not None else None
             if row is None:
-                for statement in _SCHEMA_V1_STATEMENTS:
+                for statement in (*_SCHEMA_V1_STATEMENTS, *_SCHEMA_V2_STATEMENTS):
                     connection.execute(statement)
                 connection.execute(
                     "INSERT INTO velox_schema(name, version) VALUES (?, ?)",
                     (_SCHEMA_NAME, _SCHEMA_VERSION),
                 )
-            elif _is_int(row["version"]) and row["version"] == _SCHEMA_VERSION:
-                _require_schema_objects(connection)
+            elif _is_int(version) and version == 1:
+                _require_schema_objects(connection, _SCHEMA_V1_OBJECTS)
+                for statement in _SCHEMA_V2_STATEMENTS:
+                    connection.execute(statement)
+                connection.execute(
+                    "UPDATE velox_schema SET version = ? WHERE name = ? AND version = 1",
+                    (_SCHEMA_VERSION, _SCHEMA_NAME),
+                )
+            elif _is_int(version) and version == _SCHEMA_VERSION:
+                _require_schema_objects(connection, _SCHEMA_V2_OBJECTS)
             else:
                 raise GoalPlanRepositoryError("unsupported goal/plan state schema version")
 
@@ -456,8 +749,10 @@ class SqliteGoalPlanRepository:
     def create_plan(self, plan: Plan) -> StoredPlan:
         plan = _require_new_plan(plan)
         with self._transaction(write=True, failure="plan could not be persisted") as connection:
-            if not _goal_exists(connection, plan.goal_id):
+            goal = _load_goal(connection, plan.goal_id)
+            if goal is None:
                 raise GoalPlanNotFoundError(f"goal {plan.goal_id} does not exist")
+            _require_goal_accepts_plans(goal.goal)
             latest = _latest_version(connection, plan.goal_id)
             _require_next_version(plan, latest)
             if latest is not None:
@@ -535,26 +830,172 @@ class SqliteGoalPlanRepository:
             plan = goal_lifecycle.transition_plan_step(stored.plan, step_id, status)
             if plan is stored.plan:
                 return stored
-            previous = stored.plan.step(step_id).status
-            step_cursor = connection.execute(
-                """
-                UPDATE goal_plan_steps SET status = ?
-                WHERE goal_id = ? AND version = ? AND step_id = ? AND status = ?
-                """,
-                (status.value, str(goal_id), version, str(step_id), previous.value),
-            )
-            plan_cursor = connection.execute(
-                """
-                UPDATE goal_plans SET revision = revision + 1
-                WHERE goal_id = ? AND version = ? AND revision = ?
-                """,
-                (str(goal_id), version, stored.revision),
-            )
-            if step_cursor.rowcount != 1 or plan_cursor.rowcount != 1:
-                raise GoalPlanConflictError(
-                    f"plan version {version} of goal {goal_id} changed concurrently",
+            if status is PlanStepStatus.IN_PROGRESS:
+                _require_goal_allows_start(_require_goal(connection, goal_id))
+            return _write_progress(connection, stored, plan, step_id)
+
+    def get_step_delegation(
+        self,
+        goal_id: UUID,
+        version: int,
+        step_id: UUID,
+    ) -> StepDelegation | None:
+        _require_uuid_argument(goal_id, "goal id")
+        _require_version_argument(version)
+        _require_uuid_argument(step_id, "plan step id")
+        with self._transaction(
+            write=False,
+            failure="step delegation could not be read",
+        ) as connection:
+            return _load_delegation(connection, goal_id, version, step_id)
+
+    def get_step_delegation_for_action(self, action_id: UUID) -> StepDelegation | None:
+        _require_uuid_argument(action_id, "action id")
+        with self._transaction(
+            write=False,
+            failure="step delegation could not be read",
+        ) as connection:
+            row = connection.execute(
+                "SELECT * FROM goal_plan_step_delegations WHERE action_id = ?",
+                (str(action_id),),
+            ).fetchone()
+        return _delegation_from_row(row) if row is not None else None
+
+    def delegate_step(
+        self,
+        goal_id: UUID,
+        version: int,
+        step_id: UUID,
+        *,
+        expected_revision: int,
+        requested_by: str,
+        account_principal: str | None,
+        account_identifier: str | None,
+        handoff: StepHandoffCallback,
+    ) -> tuple[StoredPlan, StepDelegation]:
+        _require_uuid_argument(goal_id, "goal id")
+        _require_version_argument(version)
+        _require_uuid_argument(step_id, "plan step id")
+        expected = _require_expected_revision(expected_revision)
+        _require_requester(requested_by)
+        _require_account(account_principal, account_identifier)
+        with self._transaction(
+            write=True,
+            failure="plan step delegation could not be persisted",
+        ) as connection:
+            stored = _load_plan(connection, goal_id, version)
+            if stored is None:
+                raise GoalPlanNotFoundError(
+                    f"plan version {version} of goal {goal_id} does not exist",
                 )
-        return StoredPlan(plan=plan, revision=stored.revision + 1)
+            existing = _load_delegation(connection, goal_id, version, step_id)
+            if existing is not None:
+                raise GoalPlanDelegationExistsError(existing)
+            latest = _latest_version(connection, goal_id)
+            _require_latest_version(version, latest if latest is not None else version)
+            _require_current_revision(stored.revision, expected, "plan")
+            started = _require_startable(
+                stored.plan,
+                _require_goal(connection, goal_id),
+                step_id,
+            )
+            result = _require_handoff(handoff(stored.plan.step(step_id)))
+            if connection.execute(
+                "SELECT 1 FROM goal_plan_step_delegations WHERE action_id = ?",
+                (str(result.action_id),),
+            ).fetchone() is not None:
+                raise GoalPlanConflictError(
+                    f"action {result.action_id} is already linked to a plan step",
+                )
+            delegation = _delegation_from_handoff(
+                goal_id,
+                version,
+                step_id,
+                requested_by,
+                account_principal,
+                account_identifier,
+                result,
+            )
+            connection.execute(
+                """
+                INSERT INTO goal_plan_step_delegations (
+                    goal_id, version, step_id, action_id, requested_by,
+                    account_principal, account_identifier, status,
+                    permission_status, routing_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(goal_id),
+                    version,
+                    str(step_id),
+                    str(delegation.action_id),
+                    delegation.requested_by,
+                    delegation.account_principal,
+                    delegation.account_identifier,
+                    delegation.status.value,
+                    delegation.permission_status,
+                    delegation.routing_reason,
+                ),
+            )
+            plan = started if result.status is StepDelegationStatus.QUEUED else stored.plan
+            updated = _write_progress(connection, stored, plan, step_id)
+        return updated, delegation
+
+    def resolve_step_approval(
+        self,
+        action_id: UUID,
+        *,
+        approved: bool,
+    ) -> tuple[StoredPlan, StepDelegation]:
+        _require_uuid_argument(action_id, "action id")
+        with self._transaction(
+            write=True,
+            failure="step approval could not be persisted",
+        ) as connection:
+            row = connection.execute(
+                "SELECT * FROM goal_plan_step_delegations WHERE action_id = ?",
+                (str(action_id),),
+            ).fetchone()
+            if row is None:
+                raise GoalPlanNotFoundError(f"no plan step delegation for action {action_id}")
+            delegation = _delegation_from_row(row)
+            _require_awaiting_approval(delegation)
+            stored = _load_plan(connection, delegation.goal_id, delegation.version)
+            if stored is None:
+                raise GoalPlanCorruptedError("persisted step delegation is invalid")
+            status = (
+                StepDelegationStatus.APPROVED
+                if approved
+                else StepDelegationStatus.APPROVAL_REJECTED
+            )
+            if approved:
+                latest = _latest_version(connection, delegation.goal_id)
+                _require_latest_version(
+                    delegation.version,
+                    latest if latest is not None else delegation.version,
+                )
+                started = _require_startable(
+                    stored.plan,
+                    _require_goal(connection, delegation.goal_id),
+                    delegation.step_id,
+                )
+                stored = _write_progress(connection, stored, started, delegation.step_id)
+            cursor = connection.execute(
+                """
+                UPDATE goal_plan_step_delegations SET status = ?
+                WHERE action_id = ? AND status = ?
+                """,
+                (
+                    status.value,
+                    str(action_id),
+                    StepDelegationStatus.AWAITING_APPROVAL.value,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise GoalPlanConflictError(
+                    f"step delegation for action {action_id} changed concurrently",
+                )
+        return stored, replace(delegation, status=status)
 
     def _connect(self) -> sqlite3.Connection:
         try:
@@ -662,14 +1103,96 @@ def _require_step(plan: Plan, step_id: UUID) -> None:
         raise GoalPlanNotFoundError(f"plan step {step_id} does not exist")
 
 
-def _require_schema_objects(connection: sqlite3.Connection) -> None:
+def _require_goal_accepts_plans(goal: Goal) -> None:
+    if goal.status in goal_lifecycle.TERMINAL_GOAL_STATUSES:
+        raise GoalPlanTransitionError(
+            f"goal {goal.id} is {goal.status} and cannot receive new plan versions",
+        )
+
+
+def _require_goal_allows_start(goal: Goal) -> None:
+    if goal.status is not GoalStatus.ACTIVE:
+        raise GoalPlanTransitionError(
+            f"plan steps start only while their goal is active; goal {goal.id} "
+            f"is {goal.status}",
+        )
+
+
+def _require_startable(plan: Plan, goal: Goal, step_id: UUID) -> Plan:
+    """Return ``plan`` with ``step_id`` started, or raise why it cannot start."""
+    _require_step(plan, step_id)
+    step = plan.step(step_id)
+    if step.status is not PlanStepStatus.PENDING:
+        raise GoalPlanTransitionError(f"plan step {step_id} is {step.status}, not pending")
+    _require_goal_allows_start(goal)
+    return goal_lifecycle.transition_plan_step(plan, step_id, PlanStepStatus.IN_PROGRESS)
+
+
+def _require_requester(value: object) -> None:
+    if not isinstance(value, str) or not value.strip() or value != value.strip():
+        raise GoalPlanContractError("delegation requires an explicit canonical requester")
+
+
+def _require_account(principal: object, identifier: object) -> None:
+    if identifier is None:
+        if principal is not None:
+            raise GoalPlanContractError("account principal requires an account identifier")
+        return
+    for value, name in ((identifier, "account identifier"), (principal, "account principal")):
+        if value is None:
+            continue
+        if not isinstance(value, str) or not value.strip() or value != value.strip():
+            raise GoalPlanContractError(f"delegation {name} must be canonical text")
+
+
+def _require_handoff(value: object) -> StepHandoff:
+    if not isinstance(value, StepHandoff):
+        raise GoalPlanContractError("delegation handoff must return a StepHandoff")
+    return value
+
+
+def _require_awaiting_approval(delegation: StepDelegation) -> None:
+    if delegation.status is not StepDelegationStatus.AWAITING_APPROVAL:
+        raise GoalPlanConflictError(
+            f"step delegation for action {delegation.action_id} is {delegation.status}, "
+            "not awaiting approval",
+        )
+
+
+def _delegation_from_handoff(
+    goal_id: UUID,
+    version: int,
+    step_id: UUID,
+    requested_by: str,
+    account_principal: str | None,
+    account_identifier: str | None,
+    handoff: StepHandoff,
+) -> StepDelegation:
+    return StepDelegation(
+        goal_id=goal_id,
+        version=version,
+        step_id=step_id,
+        action_id=handoff.action_id,
+        requested_by=requested_by,
+        account_principal=account_principal,
+        account_identifier=account_identifier,
+        status=handoff.status,
+        permission_status=handoff.permission_status,
+        routing_reason=handoff.routing_reason,
+    )
+
+
+def _require_schema_objects(
+    connection: sqlite3.Connection,
+    required: frozenset[tuple[str, str]],
+) -> None:
     present = {
         (str(row["type"]), str(row["name"]))
         for row in connection.execute(
             "SELECT type, name FROM sqlite_master WHERE type IN ('table', 'trigger')",
         ).fetchall()
     }
-    if not _SCHEMA_V1_OBJECTS.issubset(present):
+    if not required.issubset(present):
         raise GoalPlanCorruptedError("goal/plan state schema is incomplete")
 
 
@@ -679,6 +1202,96 @@ def _goal_exists(connection: sqlite3.Connection, goal_id: UUID) -> bool:
         (str(goal_id),),
     ).fetchone()
     return row is not None
+
+
+def _load_goal(connection: sqlite3.Connection, goal_id: UUID) -> StoredGoal | None:
+    row = connection.execute(
+        "SELECT * FROM goals WHERE goal_id = ?",
+        (str(goal_id),),
+    ).fetchone()
+    return _stored_goal_from_row(row) if row is not None else None
+
+
+def _require_goal(connection: sqlite3.Connection, goal_id: UUID) -> Goal:
+    stored = _load_goal(connection, goal_id)
+    if stored is None:
+        raise GoalPlanCorruptedError(f"plan references missing goal {goal_id}")
+    return stored.goal
+
+
+def _write_progress(
+    connection: sqlite3.Connection,
+    stored: StoredPlan,
+    plan: Plan,
+    step_id: UUID,
+) -> StoredPlan:
+    """Persist one step's new status (if any) and bump the plan revision."""
+    goal_id, version = stored.plan.goal_id, stored.plan.version
+    previous = stored.plan.step(step_id).status
+    current = plan.step(step_id).status
+    if current is not previous:
+        step_cursor = connection.execute(
+            """
+            UPDATE goal_plan_steps SET status = ?
+            WHERE goal_id = ? AND version = ? AND step_id = ? AND status = ?
+            """,
+            (current.value, str(goal_id), version, str(step_id), previous.value),
+        )
+        if step_cursor.rowcount != 1:
+            raise GoalPlanConflictError(
+                f"plan version {version} of goal {goal_id} changed concurrently",
+            )
+    plan_cursor = connection.execute(
+        """
+        UPDATE goal_plans SET revision = revision + 1
+        WHERE goal_id = ? AND version = ? AND revision = ?
+        """,
+        (str(goal_id), version, stored.revision),
+    )
+    if plan_cursor.rowcount != 1:
+        raise GoalPlanConflictError(
+            f"plan version {version} of goal {goal_id} changed concurrently",
+        )
+    return StoredPlan(plan=plan, revision=stored.revision + 1)
+
+
+def _load_delegation(
+    connection: sqlite3.Connection,
+    goal_id: UUID,
+    version: int,
+    step_id: UUID,
+) -> StepDelegation | None:
+    row = connection.execute(
+        """
+        SELECT * FROM goal_plan_step_delegations
+        WHERE goal_id = ? AND version = ? AND step_id = ?
+        """,
+        (str(goal_id), version, str(step_id)),
+    ).fetchone()
+    return _delegation_from_row(row) if row is not None else None
+
+
+def _delegation_from_row(row: sqlite3.Row) -> StepDelegation:
+    try:
+        principal = _decode_optional_text(row["account_principal"])
+        identifier = _decode_optional_text(row["account_identifier"])
+        requested_by = _decode_text(row["requested_by"])
+        _require_requester(requested_by)
+        _require_account(principal, identifier)
+        return StepDelegation(
+            goal_id=_decode_uuid(row["goal_id"]),
+            version=_decode_positive_int(row["version"]),
+            step_id=_decode_uuid(row["step_id"]),
+            action_id=_decode_uuid(row["action_id"]),
+            requested_by=requested_by,
+            account_principal=principal,
+            account_identifier=identifier,
+            status=StepDelegationStatus(_decode_text(row["status"])),
+            permission_status=_decode_optional_text(row["permission_status"]),
+            routing_reason=_decode_optional_text(row["routing_reason"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        raise GoalPlanCorruptedError("persisted step delegation is invalid") from None
 
 
 def _latest_version(connection: sqlite3.Connection, goal_id: UUID) -> int | None:
@@ -770,6 +1383,10 @@ def _decode_text(value: object) -> str:
     if not isinstance(value, str):
         raise TypeError("persisted value must be text")
     return value
+
+
+def _decode_optional_text(value: object) -> str | None:
+    return None if value is None else _decode_text(value)
 
 
 def _decode_texts(value: object) -> tuple[str, ...]:
