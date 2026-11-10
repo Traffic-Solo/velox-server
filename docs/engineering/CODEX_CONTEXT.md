@@ -33,7 +33,8 @@ Slice 2 adds durable persistence and controlled transitions:
   `transition_goal` / `transition_step` with an expected storage revision.
   `Plan.version` (logical definition version, strictly `latest + 1`) is separate
   from the storage `revision` (per Goal row, and per Plan version for step
-  progress). Superseded Plan versions are read-only; definitions are immutable
+  progress). Superseded Plan versions are read-only, and a version with an
+  `in_progress` step cannot be superseded until that step is terminal; definitions are immutable
   and nothing is deleted (enforced by repository checks and SQLite triggers).
   Writes use `BEGIN IMMEDIATE`; reads use one snapshot transaction; persisted
   rows are decoded strictly and re-validated through the Slice 1 contracts.

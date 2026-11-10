@@ -11,6 +11,8 @@ Representation
     version (``Plan.version``); ``revision`` is the storage revision of that
     version's execution progress. A new logical version is a new row, earlier
     versions are never rewritten, and only the latest version accepts changes.
+    A version with an ``in_progress`` step cannot be superseded, so no started
+    step is ever frozen before it reaches a terminal status.
 ``goal_plan_steps``
     The immutable step definitions of one plan version in plan order
     (``position``) plus each step's mutable ``status``. Only ``status`` changes,
@@ -285,6 +287,8 @@ class InMemoryGoalPlanRepository:
                 raise GoalPlanNotFoundError(f"goal {plan.goal_id} does not exist")
             versions = self._plans.setdefault(plan.goal_id, [])
             _require_next_version(plan, len(versions) or None)
+            if versions:
+                _require_supersedable(versions[-1].plan)
             stored = StoredPlan(plan=plan, revision=1)
             versions.append(stored)
             return stored
@@ -454,7 +458,13 @@ class SqliteGoalPlanRepository:
         with self._transaction(write=True, failure="plan could not be persisted") as connection:
             if not _goal_exists(connection, plan.goal_id):
                 raise GoalPlanNotFoundError(f"goal {plan.goal_id} does not exist")
-            _require_next_version(plan, _latest_version(connection, plan.goal_id))
+            latest = _latest_version(connection, plan.goal_id)
+            _require_next_version(plan, latest)
+            if latest is not None:
+                current = _load_plan(connection, plan.goal_id, latest)
+                if current is None:
+                    raise GoalPlanCorruptedError("persisted plan is invalid")
+                _require_supersedable(current.plan)
             connection.execute(
                 "INSERT INTO goal_plans (goal_id, version, revision) VALUES (?, ?, 1)",
                 (str(plan.goal_id), plan.version),
@@ -628,6 +638,15 @@ def _require_next_version(plan: Plan, latest: int | None) -> None:
     if plan.version != latest_version + 1:
         raise GoalPlanConflictError(
             f"plan version must be {latest_version + 1}, not {plan.version}",
+        )
+
+
+def _require_supersedable(latest: Plan) -> None:
+    started = [str(step.id) for step in latest.steps if step.status is PlanStepStatus.IN_PROGRESS]
+    if started:
+        raise GoalPlanConflictError(
+            f"plan version {latest.version} of goal {latest.goal_id} cannot be superseded "
+            f"while steps are in progress: {', '.join(started)}",
         )
 
 

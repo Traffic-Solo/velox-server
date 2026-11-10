@@ -562,15 +562,93 @@ def test_step_transition_rejects_unknown_targets(repository: GoalPlanRepository)
 
 def test_superseded_plan_version_is_frozen(repository: GoalPlanRepository) -> None:
     goal, first = seeded(repository)
-    context_id = first.plan.steps[2].id
-    first = move(repository, first, context_id, PlanStepStatus.IN_PROGRESS)
+    _, draft, context = first.plan.steps
+    first = move(repository, first, context.id, PlanStepStatus.IN_PROGRESS)
+    first = move(repository, first, context.id, PlanStepStatus.SUCCEEDED)
     second = repository.create_plan(make_chain(goal.goal.id, 2))
 
     with pytest.raises(GoalPlanConflictError, match="superseded"):
-        move(repository, first, context_id, PlanStepStatus.SUCCEEDED)
+        move(repository, first, draft.id, PlanStepStatus.IN_PROGRESS)
     assert repository.get_plan(goal.goal.id, 1) == first
     assert repository.get_latest_plan(goal.goal.id) == second
     assert second.plan.step(second.plan.steps[2].id).status is PlanStepStatus.PENDING
+
+
+def assert_no_superseded_step_in_progress(repo: GoalPlanRepository, goal_id: UUID) -> None:
+    latest = repo.get_latest_plan(goal_id)
+    assert latest is not None
+    for version in range(1, latest.plan.version):
+        stored = repo.get_plan(goal_id, version)
+        assert stored is not None
+        assert all(step.status is not PlanStepStatus.IN_PROGRESS for step in stored.plan.steps)
+
+
+@pytest.mark.parametrize(
+    "terminal",
+    [PlanStepStatus.SUCCEEDED, PlanStepStatus.FAILED, PlanStepStatus.CANCELLED],
+)
+def test_in_progress_step_blocks_supersession_until_terminal(
+    repository: GoalPlanRepository,
+    terminal: PlanStepStatus,
+) -> None:
+    goal, first = seeded(repository)
+    context_id = first.plan.steps[2].id
+    first = move(repository, first, context_id, PlanStepStatus.IN_PROGRESS)
+    replacement = make_chain(goal.goal.id, 2)
+
+    with pytest.raises(GoalPlanConflictError, match="cannot be superseded") as error:
+        repository.create_plan(replacement)
+    assert str(context_id) in str(error.value)
+    assert repository.get_latest_plan(goal.goal.id) == first
+    assert repository.get_plan(goal.goal.id, 2) is None
+
+    first = move(repository, first, context_id, terminal)
+    second = repository.create_plan(replacement)
+
+    assert second == StoredPlan(plan=replacement, revision=1)
+    assert repository.get_plan(goal.goal.id, 1) == first
+    assert first.plan.step(context_id).status is terminal
+    assert_no_superseded_step_in_progress(repository, goal.goal.id)
+
+
+def test_every_in_progress_step_must_finish_before_supersession(
+    repository: GoalPlanRepository,
+) -> None:
+    goal = repository.create_goal(make_goal())
+    a, b, c = make_step(), make_step(objective="Second root"), make_step(objective="Third root")
+    stored = repository.create_plan(Plan(goal_id=goal.goal.id, steps=(a, b, c)))
+    stored = move(repository, stored, a.id, PlanStepStatus.IN_PROGRESS)
+    stored = move(repository, stored, b.id, PlanStepStatus.IN_PROGRESS)
+    stored = move(repository, stored, a.id, PlanStepStatus.FAILED)
+    replacement = make_chain(goal.goal.id, 2)
+
+    with pytest.raises(GoalPlanConflictError, match=str(b.id)) as error:
+        repository.create_plan(replacement)
+    assert str(a.id) not in str(error.value)
+    assert repository.get_latest_plan(goal.goal.id) == stored
+
+    stored = move(repository, stored, b.id, PlanStepStatus.CANCELLED)
+    assert stored.plan.step(c.id).status is PlanStepStatus.PENDING
+    assert repository.create_plan(replacement).plan == replacement
+    assert repository.get_plan(goal.goal.id, 1) == stored
+
+
+def test_rejected_supersession_writes_nothing(db_path: Path) -> None:
+    repo = SqliteGoalPlanRepository(db_path)
+    goal, first = seeded(repo)
+    first = move(repo, first, first.plan.steps[2].id, PlanStepStatus.IN_PROGRESS)
+    with raw(db_path) as connection:
+        before = connection.execute("SELECT * FROM goal_plan_steps ORDER BY position").fetchall()
+
+    with pytest.raises(GoalPlanConflictError, match="cannot be superseded"):
+        repo.create_plan(make_chain(goal.goal.id, 2))
+
+    with raw(db_path) as connection:
+        plans = connection.execute("SELECT version, revision FROM goal_plans").fetchall()
+        after = connection.execute("SELECT * FROM goal_plan_steps ORDER BY position").fetchall()
+    assert [tuple(row) for row in plans] == [(1, 2)]
+    assert [tuple(row) for row in after] == [tuple(row) for row in before]
+    assert SqliteGoalPlanRepository(db_path).get_latest_plan(goal.goal.id) == first
 
 
 def test_stale_plan_revision_prevents_lost_update(repository: GoalPlanRepository) -> None:
@@ -926,6 +1004,61 @@ def test_concurrent_goal_transitions_yield_one_winner(db_path: Path) -> None:
     assert winner == results[0]
     assert winner is not None
     assert winner.revision == 2
+
+
+@pytest.mark.parametrize("attempt", range(10))
+def test_step_start_racing_supersession_never_strands_a_step(
+    repository: GoalPlanRepository,
+    attempt: int,
+) -> None:
+    goal, first = seeded(repository)
+    context_id = first.plan.steps[2].id
+
+    results, errors = race(
+        [
+            partial(move, repository, first, context_id, PlanStepStatus.IN_PROGRESS),
+            partial(repository.create_plan, make_chain(goal.goal.id, 2)),
+        ],
+    )
+
+    assert len(results) == 1
+    assert len(errors) == 1
+    assert isinstance(errors[0], GoalPlanConflictError)
+    assert_no_superseded_step_in_progress(repository, goal.goal.id)
+    latest = repository.get_latest_plan(goal.goal.id)
+    assert latest == results[0]
+
+
+@pytest.mark.parametrize("attempt", range(10))
+def test_step_finish_racing_supersession_always_lets_the_step_finish(
+    repository: GoalPlanRepository,
+    attempt: int,
+) -> None:
+    goal, first = seeded(repository)
+    context_id = first.plan.steps[2].id
+    first = move(repository, first, context_id, PlanStepStatus.IN_PROGRESS)
+    replacement = make_chain(goal.goal.id, 2)
+
+    results, errors = race(
+        [
+            partial(move, repository, first, context_id, PlanStepStatus.SUCCEEDED),
+            partial(repository.create_plan, replacement),
+        ],
+    )
+
+    finished = repository.get_plan(goal.goal.id, 1)
+    assert finished is not None
+    assert finished.plan.step(context_id).status is PlanStepStatus.SUCCEEDED
+    assert finished in results
+    assert all(isinstance(error, GoalPlanConflictError) for error in errors)
+    if errors:
+        assert repository.get_latest_plan(goal.goal.id) == finished
+    else:
+        assert repository.get_latest_plan(goal.goal.id) == StoredPlan(
+            plan=replacement,
+            revision=1,
+        )
+    assert_no_superseded_step_in_progress(repository, goal.goal.id)
 
 
 def test_reader_sees_committed_snapshot_while_writer_holds_lock(db_path: Path) -> None:
