@@ -436,9 +436,10 @@ def test_forged_queued_action_cannot_attach_evidence_or_run(
     )
     container.action_queue.enqueue(forged)
 
-    with pytest.raises(GoalPlanExecutionEvidenceError):
-        container.worker_runtime.process_next()
+    result = container.worker_runtime.process_next()
 
+    assert result.admission_rejected is True
+    assert result.execution_reason == "pre-execution admission rejected: action_mismatch"
     assert worker.executed == []
     assert attempts(container, stored) == ()
     assert container.action_queue.list() == []
@@ -487,7 +488,7 @@ def test_distinct_attempts_are_all_preserved(
     stored, action_id = delegated(container)
     first = finish(repo, start(repo, action_id), StepExecutionStatus.FAILED,
                    failure_category="transient", external_execution_reported=False)
-    second = finish(repo, start(repo, action_id))
+    second = finish(repo, start(repo, action_id, authorized_retry=True))
 
     assert attempts(container, stored) == (first, second)
     report = reconcile(container, stored)
@@ -700,26 +701,25 @@ def test_explicit_finalization_is_reflected_not_performed(
     assert goal_of(container, stored).goal.status is GoalStatus.ACTIVE
 
 
-def test_evidence_never_reopens_a_terminal_step(
+def test_cancelled_step_blocks_its_queued_action(
     monkeypatch: pytest.MonkeyPatch,
     db_path: Path,
     backend: str,
 ) -> None:
+    """Slice 6 closes the Slice 5 gap where cancelled queued work still executed."""
     container, worker = boot(monkeypatch, db_path, backend)
-    stored, action_id = delegated(container)
+    stored, _ = delegated(container)
     container.goal_plan_repository.transition_step(
         stored.plan.goal_id, 1, stored.plan.steps[0].id, PlanStepStatus.CANCELLED,
         expected_revision=stored.revision,
     )
 
-    container.worker_runtime.process_next()
+    result = container.worker_runtime.process_next()
 
-    assert worker.executed == [action_id]
+    assert result.admission_rejected is True
+    assert worker.executed == []
+    assert attempts(container, stored) == ()
     assert current(container, stored).plan.steps[0].status is PlanStepStatus.CANCELLED
-    report = reconcile(container, stored)
-    assert report.category is StepExecutionCategory.INCONSISTENT
-    assert report.requires_operator is True
-    assert "after cancellation" in report.reason
 
 
 def test_started_without_finish_is_uncertain(
@@ -1074,7 +1074,7 @@ def test_multiple_attempts_on_a_terminal_step_need_review(
     stored, action_id = delegated(container)
     finish(repo, start(repo, action_id), StepExecutionStatus.FAILED,
            failure_category="transient", external_execution_reported=False)
-    second = start(repo, action_id)
+    second = start(repo, action_id, authorized_retry=True)
     if not unfinished:
         finish(repo, second)
     finalize(container, stored, PlanStepStatus.SUCCEEDED)
@@ -1120,7 +1120,7 @@ def test_reconciliation_mutates_nothing(
     first, second = make_step(), make_step(objective="Second", target="gmail-message-2")
     stored, action_id = delegated(container, first, second)
     container.worker_runtime.process_next()
-    start(container.goal_plan_repository, action_id)
+    start(container.goal_plan_repository, action_id, authorized_retry=True)
     before = snapshot(container, stored, db_path)
 
     for _ in range(3):

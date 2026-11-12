@@ -534,11 +534,15 @@ class GoalPlanRepository(Protocol):
         executor_role: ExecutorRole,
         capability: str,
         started_at: datetime,
+        authorized_retry: bool = False,
     ) -> StepExecution:
-        """Record an observed attempt start for a ``queued``/``approved`` delegation.
+        """Claim and record an attempt start for a ``queued``/``approved`` delegation.
 
         The step association comes from the delegation; the route must equal the
         stored step's Role and capability. Replaying the same start is idempotent.
+        The claim is once per Action: a new ``execution_id`` for an Action that
+        already has an attempt is refused atomically, unless ``authorized_retry``
+        is passed by a future explicit retry policy (no runtime caller does).
         """
         ...
 
@@ -737,6 +741,7 @@ class InMemoryGoalPlanRepository:
         executor_role: ExecutorRole,
         capability: str,
         started_at: datetime,
+        authorized_retry: bool = False,
     ) -> StepExecution:
         _require_uuid_argument(action_id, "action id")
         with self._lock:
@@ -756,6 +761,18 @@ class InMemoryGoalPlanRepository:
             existing = self._executions.get(execution_id)
             if existing is not None:
                 return _require_same_start(existing, candidate)
+            if not authorized_retry:
+                _require_first_attempt(
+                    action_id,
+                    any(e.action_id == action_id for e in self._executions.values()),
+                )
+            versions = self._plans[delegation.goal_id]
+            _require_admissible(
+                self._goals[delegation.goal_id].goal,
+                len(versions),
+                versions[-1].plan,
+                delegation,
+            )
             self._executions[execution_id] = candidate
             return candidate
 
@@ -1153,6 +1170,7 @@ class SqliteGoalPlanRepository:
         executor_role: ExecutorRole,
         capability: str,
         started_at: datetime,
+        authorized_retry: bool = False,
     ) -> StepExecution:
         _require_uuid_argument(action_id, "action id")
         with self._transaction(
@@ -1180,6 +1198,21 @@ class SqliteGoalPlanRepository:
             existing = _load_execution(connection, execution_id)
             if existing is not None:
                 return _require_same_start(existing, candidate)
+            if not authorized_retry:
+                _require_first_attempt(
+                    action_id,
+                    connection.execute(
+                        "SELECT 1 FROM goal_plan_step_executions WHERE action_id = ? LIMIT 1",
+                        (str(action_id),),
+                    ).fetchone()
+                    is not None,
+                )
+            _require_admissible(
+                _require_goal(connection, delegation.goal_id),
+                _latest_version(connection, delegation.goal_id) or delegation.version,
+                stored.plan,
+                delegation,
+            )
             connection.execute(
                 """
                 INSERT INTO goal_plan_step_executions (
@@ -1703,6 +1736,33 @@ def _started_execution(
         capability=step.capability,
         started_at=started_at,
     )
+
+
+def _require_first_attempt(action_id: UUID, attempted: bool) -> None:
+    if attempted:
+        raise GoalPlanConflictError(
+            f"action {action_id} already has an execution attempt; execution not admitted",
+        )
+
+
+def _require_admissible(
+    goal: Goal,
+    latest_version: int,
+    plan: Plan,
+    delegation: StepDelegation,
+) -> None:
+    """The durable start claim re-checks lifecycle state inside its own write."""
+    if goal.status is not GoalStatus.ACTIVE:
+        raise GoalPlanConflictError(f"goal {goal.id} is {goal.status}; execution not admitted")
+    if latest_version != delegation.version:
+        raise GoalPlanConflictError(
+            f"plan version {delegation.version} is superseded; execution not admitted",
+        )
+    step = plan.step(delegation.step_id) if plan.version == delegation.version else None
+    if step is None or step.status is not PlanStepStatus.IN_PROGRESS:
+        raise GoalPlanConflictError(
+            f"plan step {delegation.step_id} is not in progress; execution not admitted",
+        )
 
 
 def _require_same_start(existing: StepExecution, candidate: StepExecution) -> StepExecution:

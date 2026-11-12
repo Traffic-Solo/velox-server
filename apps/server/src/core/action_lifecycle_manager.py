@@ -14,6 +14,8 @@ class ActionLifecycleManager:
         (ActionStatus.QUEUED, ActionStatus.APPROVED),
         (ActionStatus.QUEUED, ActionStatus.REJECTED),
         (ActionStatus.APPROVED, ActionStatus.EXECUTING),
+        # Pre-execution admission refusal: approved work that may no longer run.
+        (ActionStatus.APPROVED, ActionStatus.REJECTED),
         (ActionStatus.EXECUTING, ActionStatus.COMPLETED),
         (ActionStatus.EXECUTING, ActionStatus.SKIPPED),
         (ActionStatus.EXECUTING, ActionStatus.FAILED),
