@@ -687,6 +687,9 @@ def test_repository_role_exposes_no_raw_status_replacement() -> None:
         "get_step_delegation",
         "get_step_delegation_for_action",
         "list_step_delegations",
+        "record_execution_start",
+        "record_execution_finish",
+        "list_step_executions",
         "delegate_step",
         "resolve_step_approval",
     }
@@ -1207,7 +1210,7 @@ def schema_versions(path: Path) -> dict[str, int]:
 def test_fresh_database_initialization(db_path: Path) -> None:
     SqliteGoalPlanRepository(db_path)
 
-    assert schema_versions(db_path) == {"goal_plans": 2}
+    assert schema_versions(db_path) == {"goal_plans": 3}
     with raw(db_path) as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         tables = {
@@ -1225,7 +1228,7 @@ def test_reinitialization_is_idempotent(db_path: Path) -> None:
 
     assert repo.get_goal(goal.goal.id) == goal
     assert repo.get_latest_plan(goal.goal.id) == stored
-    assert schema_versions(db_path) == {"goal_plans": 2}
+    assert schema_versions(db_path) == {"goal_plans": 3}
 
 
 def test_relative_path_is_rejected() -> None:
@@ -1236,7 +1239,7 @@ def test_relative_path_is_rejected() -> None:
 def test_unsupported_schema_version_is_rejected(db_path: Path) -> None:
     SqliteGoalPlanRepository(db_path)
     with raw(db_path) as connection:
-        connection.execute("UPDATE velox_schema SET version = 3 WHERE name = 'goal_plans'")
+        connection.execute("UPDATE velox_schema SET version = 4 WHERE name = 'goal_plans'")
 
     with pytest.raises(GoalPlanRepositoryError, match="unsupported"):
         SqliteGoalPlanRepository(db_path)
@@ -1291,7 +1294,7 @@ def test_goal_plan_and_se_repositories_share_one_database(
         action_id = register_se_action(db_path)
         goal, stored = seeded(SqliteGoalPlanRepository(db_path))
 
-    assert schema_versions(db_path) == {"goal_plans": 2, "software_engineering_runs": 3}
+    assert schema_versions(db_path) == {"goal_plans": 3, "software_engineering_runs": 3}
     for _ in range(2):
         se = SqliteSoftwareEngineeringRunRepository(db_path)
         goals = SqliteGoalPlanRepository(db_path)
@@ -1353,11 +1356,11 @@ def test_existing_legacy_se_database_gains_goal_tables_without_migrating_se(
 
     goal, stored = seeded(SqliteGoalPlanRepository(db_path))
 
-    assert schema_versions(db_path) == {"goal_plans": 2, "software_engineering_runs": 1}
+    assert schema_versions(db_path) == {"goal_plans": 3, "software_engineering_runs": 1}
     se_state = SqliteSoftwareEngineeringRunRepository(db_path).get(action_id)
     assert se_state is not None
     assert se_state.execution_status == "succeeded"
-    assert schema_versions(db_path) == {"goal_plans": 2, "software_engineering_runs": 3}
+    assert schema_versions(db_path) == {"goal_plans": 3, "software_engineering_runs": 3}
     goals = SqliteGoalPlanRepository(db_path)
     assert goals.get_goal(goal.goal.id) == goal
     assert goals.get_latest_plan(goal.goal.id) == stored
@@ -1434,6 +1437,7 @@ def test_repository_module_imports_only_storage_and_core_contracts() -> None:
         "collections.abc",
         "contextlib",
         "dataclasses",
+        "datetime",
         "enum",
         "pathlib",
         "typing",
@@ -1618,9 +1622,20 @@ def test_rejection_is_recorded_even_after_supersession(repository: GoalPlanRepos
     assert first.plan.steps[2].status is PlanStepStatus.PENDING
 
 
-def test_v1_database_upgrades_to_v2_with_data_intact(db_path: Path) -> None:
+def drop_v3_objects(connection: sqlite3.Connection) -> None:
+    for trigger in (
+        "goal_plan_step_executions_identity_immutable",
+        "goal_plan_step_executions_completed_immutable",
+        "goal_plan_step_executions_retained",
+    ):
+        connection.execute(f"DROP TRIGGER {trigger}")
+    connection.execute("DROP TABLE goal_plan_step_executions")
+
+
+def test_v1_database_upgrades_to_v3_with_data_intact(db_path: Path) -> None:
     goal, stored = seeded(SqliteGoalPlanRepository(db_path))
     with raw(db_path) as connection:
+        drop_v3_objects(connection)
         connection.execute("DROP TRIGGER goal_plan_step_delegations_definition_immutable")
         connection.execute("DROP TRIGGER goal_plan_step_delegations_retained")
         connection.execute("DROP TABLE goal_plan_step_delegations")
@@ -1628,7 +1643,7 @@ def test_v1_database_upgrades_to_v2_with_data_intact(db_path: Path) -> None:
 
     repo = SqliteGoalPlanRepository(db_path)
 
-    assert schema_versions(db_path) == {"goal_plans": 2}
+    assert schema_versions(db_path) == {"goal_plans": 3}
     assert repo.get_goal(goal.goal.id) == goal
     assert repo.get_latest_plan(goal.goal.id) == stored
     _, delegation = delegate(repo, stored, stored.plan.steps[2].id, recording_handoff([]))

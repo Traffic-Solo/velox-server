@@ -38,6 +38,11 @@ from apps.server.src.core.goal_plan_delegation import (
     GoalPlanApprovalRecorder,
     GoalPlanDelegationService,
 )
+from apps.server.src.core.goal_plan_execution import (
+    DurableGoalPlanExecutionObserver,
+    GoalPlanExecutionReconciliation,
+    GoalPlanRetryPolicy,
+)
 from apps.server.src.core.goal_plan_recovery import (
     GoalPlanActionRecovery,
     GoalPlanHandoffReconciliation,
@@ -252,9 +257,15 @@ class ApplicationContainer:
                     ),
             },
         )
-        self.worker_execution_observer = DurableSoftwareEngineeringExecutionObserver(
-            InMemoryWorkerExecutionObserver(),
-            self.software_engineering_run_repository,
+        self.worker_execution_observer = DurableGoalPlanExecutionObserver(
+            DurableSoftwareEngineeringExecutionObserver(
+                InMemoryWorkerExecutionObserver(),
+                self.software_engineering_run_repository,
+            ),
+            self.goal_plan_repository,
+        )
+        self.goal_plan_execution_reconciliation = GoalPlanExecutionReconciliation(
+            self.goal_plan_repository,
         )
         self.worker_runtime = WorkerRuntime(
             action_queue=self.action_queue,
@@ -264,6 +275,7 @@ class ApplicationContainer:
             execution_observer=self.worker_execution_observer,
             lifecycle_repository=self.action_lifecycle_repository,
             max_transient_retries=settings.max_transient_retries,
+            retry_policy=GoalPlanRetryPolicy(self.goal_plan_repository),
         )
         self.worker_runtime_invocation = WorkerRuntimeInvocationService(
             worker_runtime=self.worker_runtime,

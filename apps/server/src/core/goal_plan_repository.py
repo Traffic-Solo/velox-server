@@ -26,6 +26,15 @@ Representation
     work started, ran or succeeded; Action lifecycle stays in the Action
     lifecycle repository.
 
+``goal_plan_step_executions``
+    Append-only evidence of individual worker execution attempts for delegated
+    Actions, keyed by the runtime's ``execution_id``: the observed start, and
+    once observed the executor-reported status, completion time, whether the
+    executor reported an external execution, failure category and reason. The
+    association with Goal, Plan version and step is taken from the delegation,
+    never from the caller. A completed attempt is immutable. Evidence never
+    changes step or Goal status and is not proof that the step objective was met.
+
 Goal status gates every mutation boundary: terminal Goals receive no new Plan
 versions, and a step may start (directly, through delegation or through
 approval) only while its Goal is ``active``. Already started steps can always be
@@ -47,6 +56,7 @@ import threading
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol, TypeGuard
@@ -65,7 +75,7 @@ from apps.server.src.core.goals import (
 )
 
 _SCHEMA_NAME = "goal_plans"
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 _SCHEMA_V1_STATEMENTS = (
     """
@@ -214,6 +224,58 @@ _SCHEMA_V2_OBJECTS = _SCHEMA_V1_OBJECTS | frozenset(
     },
 )
 
+_SCHEMA_V3_STATEMENTS = (
+    """
+    CREATE TABLE goal_plan_step_executions (
+        execution_id TEXT PRIMARY KEY,
+        action_id TEXT NOT NULL REFERENCES goal_plan_step_delegations(action_id),
+        goal_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        step_id TEXT NOT NULL,
+        executor_role TEXT NOT NULL,
+        capability TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        status TEXT NOT NULL,
+        finished_at TEXT,
+        external_execution_reported INTEGER,
+        failure_category TEXT,
+        reason TEXT,
+        FOREIGN KEY (goal_id, version, step_id)
+            REFERENCES goal_plan_step_delegations(goal_id, version, step_id)
+    )
+    """,
+    """
+    CREATE TRIGGER goal_plan_step_executions_identity_immutable
+    BEFORE UPDATE OF
+        execution_id, action_id, goal_id, version, step_id, executor_role,
+        capability, started_at
+    ON goal_plan_step_executions
+    BEGIN SELECT RAISE(ABORT, 'execution identity is immutable'); END
+    """,
+    """
+    CREATE TRIGGER goal_plan_step_executions_completed_immutable
+    BEFORE UPDATE ON goal_plan_step_executions
+    WHEN OLD.status <> 'started'
+    BEGIN SELECT RAISE(ABORT, 'completed execution evidence is immutable'); END
+    """,
+    """
+    CREATE TRIGGER goal_plan_step_executions_retained
+    BEFORE DELETE ON goal_plan_step_executions
+    BEGIN SELECT RAISE(ABORT, 'execution evidence is retained'); END
+    """,
+)
+
+_SCHEMA_V3_OBJECTS = _SCHEMA_V2_OBJECTS | frozenset(
+    {
+        ("table", "goal_plan_step_executions"),
+        ("trigger", "goal_plan_step_executions_identity_immutable"),
+        ("trigger", "goal_plan_step_executions_completed_immutable"),
+        ("trigger", "goal_plan_step_executions_retained"),
+    },
+)
+
+_MAX_REASON_LENGTH = 1000
+
 
 class GoalPlanRepositoryError(RuntimeError):
     """Durable Goal/Plan state is unavailable or could not be written."""
@@ -324,6 +386,86 @@ class GoalPlanDelegationExistsError(GoalPlanConflictError):
 StepHandoffCallback = Callable[[PlanStep], StepHandoff]
 
 
+class StepExecutionStatus(StrEnum):
+    """Executor-reported status of one attempt; ``started`` until finish is observed."""
+
+    STARTED = "started"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+_EXECUTABLE_DELEGATIONS = frozenset(
+    {StepDelegationStatus.QUEUED, StepDelegationStatus.APPROVED},
+)
+
+
+@dataclass(frozen=True, slots=True)
+class StepExecution:
+    """Durable evidence of one worker execution attempt of a delegated step Action.
+
+    ``succeeded`` is what the executor reported, not proof that the step
+    objective was met; ``external_execution_reported`` is the executor's claim,
+    and ``False`` is not proof that no side effect happened.
+    """
+
+    execution_id: UUID
+    action_id: UUID
+    goal_id: UUID
+    version: int
+    step_id: UUID
+    executor_role: ExecutorRole
+    capability: str
+    started_at: datetime
+    status: StepExecutionStatus = StepExecutionStatus.STARTED
+    finished_at: datetime | None = None
+    external_execution_reported: bool | None = None
+    failure_category: str | None = None
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        for value, name in (
+            (self.execution_id, "execution id"),
+            (self.action_id, "action id"),
+            (self.goal_id, "goal id"),
+            (self.step_id, "plan step id"),
+        ):
+            _require_uuid_argument(value, name)
+        _require_version_argument(self.version)
+        if not isinstance(self.executor_role, ExecutorRole):
+            raise GoalPlanContractError("execution requires a known executor role")
+        if not isinstance(self.capability, str) or not self.capability.strip():
+            raise GoalPlanContractError("execution requires a capability")
+        if not isinstance(self.status, StepExecutionStatus):
+            raise GoalPlanContractError("execution requires a known status")
+        _require_aware(self.started_at, "execution start")
+        started = self.status is StepExecutionStatus.STARTED
+        if started:
+            if (
+                self.finished_at is not None
+                or self.external_execution_reported is not None
+                or self.failure_category is not None
+                or self.reason is not None
+            ):
+                raise GoalPlanContractError("a started execution has no completion facts")
+            return
+        if self.finished_at is None:
+            raise GoalPlanContractError("a completed execution requires its finish time")
+        _require_aware(self.finished_at, "execution finish")
+        if not isinstance(self.external_execution_reported, bool):
+            raise GoalPlanContractError("a completed execution requires its external report")
+        if self.failure_category is not None and (
+            self.status is not StepExecutionStatus.FAILED
+            or not isinstance(self.failure_category, str)
+            or not self.failure_category.strip()
+        ):
+            raise GoalPlanContractError("only a failed execution carries a failure category")
+        if self.reason is not None and (
+            not isinstance(self.reason, str) or len(self.reason) > _MAX_REASON_LENGTH
+        ):
+            raise GoalPlanContractError("execution reason must be bounded text")
+
+
 class GoalPlanRepository(Protocol):
     """Persistence Role for Goals and versioned Plans.
 
@@ -384,6 +526,45 @@ class GoalPlanRepository(Protocol):
         """Every durable step delegation, in creation order (read-only)."""
         ...
 
+    def record_execution_start(
+        self,
+        *,
+        execution_id: UUID,
+        action_id: UUID,
+        executor_role: ExecutorRole,
+        capability: str,
+        started_at: datetime,
+    ) -> StepExecution:
+        """Record an observed attempt start for a ``queued``/``approved`` delegation.
+
+        The step association comes from the delegation; the route must equal the
+        stored step's Role and capability. Replaying the same start is idempotent.
+        """
+        ...
+
+    def record_execution_finish(
+        self,
+        *,
+        execution_id: UUID,
+        action_id: UUID,
+        status: StepExecutionStatus,
+        finished_at: datetime,
+        external_execution_reported: bool,
+        failure_category: str | None,
+        reason: str | None,
+    ) -> StepExecution:
+        """Complete a started attempt once; an identical replay is idempotent."""
+        ...
+
+    def list_step_executions(
+        self,
+        goal_id: UUID,
+        version: int,
+        step_id: UUID,
+    ) -> tuple[StepExecution, ...]:
+        """Every recorded attempt of one step, in recording order (read-only)."""
+        ...
+
     def delegate_step(
         self,
         goal_id: UUID,
@@ -429,6 +610,7 @@ class InMemoryGoalPlanRepository:
         self._plans: dict[UUID, list[StoredPlan]] = {}
         self._delegations: dict[tuple[UUID, int, UUID], StepDelegation] = {}
         self._delegation_keys: dict[UUID, tuple[UUID, int, UUID]] = {}
+        self._executions: dict[UUID, StepExecution] = {}
 
     def create_goal(self, goal: Goal) -> StoredGoal:
         goal = _require_new_goal(goal)
@@ -546,6 +728,82 @@ class InMemoryGoalPlanRepository:
     def list_step_delegations(self) -> tuple[StepDelegation, ...]:
         with self._lock:
             return tuple(self._delegations.values())
+
+    def record_execution_start(
+        self,
+        *,
+        execution_id: UUID,
+        action_id: UUID,
+        executor_role: ExecutorRole,
+        capability: str,
+        started_at: datetime,
+    ) -> StepExecution:
+        _require_uuid_argument(action_id, "action id")
+        with self._lock:
+            key = self._delegation_keys.get(action_id)
+            if key is None:
+                raise GoalPlanNotFoundError(f"no plan step delegation for action {action_id}")
+            delegation = self._delegations[key]
+            stored = self._plans[delegation.goal_id][delegation.version - 1]
+            candidate = _started_execution(
+                delegation,
+                stored.plan,
+                execution_id=execution_id,
+                executor_role=executor_role,
+                capability=capability,
+                started_at=started_at,
+            )
+            existing = self._executions.get(execution_id)
+            if existing is not None:
+                return _require_same_start(existing, candidate)
+            self._executions[execution_id] = candidate
+            return candidate
+
+    def record_execution_finish(
+        self,
+        *,
+        execution_id: UUID,
+        action_id: UUID,
+        status: StepExecutionStatus,
+        finished_at: datetime,
+        external_execution_reported: bool,
+        failure_category: str | None,
+        reason: str | None,
+    ) -> StepExecution:
+        _require_uuid_argument(execution_id, "execution id")
+        with self._lock:
+            existing = self._executions.get(execution_id)
+            if existing is None:
+                raise GoalPlanNotFoundError(f"execution {execution_id} was never started")
+            completed = _completed_execution(
+                existing,
+                action_id=action_id,
+                status=status,
+                finished_at=finished_at,
+                external_execution_reported=external_execution_reported,
+                failure_category=failure_category,
+                reason=reason,
+            )
+            if completed is not existing:
+                self._executions[execution_id] = completed
+            return completed
+
+    def list_step_executions(
+        self,
+        goal_id: UUID,
+        version: int,
+        step_id: UUID,
+    ) -> tuple[StepExecution, ...]:
+        _require_uuid_argument(goal_id, "goal id")
+        _require_version_argument(version)
+        _require_uuid_argument(step_id, "plan step id")
+        with self._lock:
+            return tuple(
+                execution
+                for execution in self._executions.values()
+                if (execution.goal_id, execution.version, execution.step_id)
+                == (goal_id, version, step_id)
+            )
 
     def delegate_step(
         self,
@@ -666,22 +924,30 @@ class SqliteGoalPlanRepository:
             ).fetchone()
             version = row["version"] if row is not None else None
             if row is None:
-                for statement in (*_SCHEMA_V1_STATEMENTS, *_SCHEMA_V2_STATEMENTS):
+                for statement in (
+                    *_SCHEMA_V1_STATEMENTS,
+                    *_SCHEMA_V2_STATEMENTS,
+                    *_SCHEMA_V3_STATEMENTS,
+                ):
                     connection.execute(statement)
                 connection.execute(
                     "INSERT INTO velox_schema(name, version) VALUES (?, ?)",
                     (_SCHEMA_NAME, _SCHEMA_VERSION),
                 )
-            elif _is_int(version) and version == 1:
-                _require_schema_objects(connection, _SCHEMA_V1_OBJECTS)
-                for statement in _SCHEMA_V2_STATEMENTS:
+            elif _is_int(version) and version in (1, 2):
+                _require_schema_objects(
+                    connection,
+                    _SCHEMA_V1_OBJECTS if version == 1 else _SCHEMA_V2_OBJECTS,
+                )
+                upgrades = _SCHEMA_V2_STATEMENTS if version == 1 else ()
+                for statement in (*upgrades, *_SCHEMA_V3_STATEMENTS):
                     connection.execute(statement)
                 connection.execute(
-                    "UPDATE velox_schema SET version = ? WHERE name = ? AND version = 1",
-                    (_SCHEMA_VERSION, _SCHEMA_NAME),
+                    "UPDATE velox_schema SET version = ? WHERE name = ? AND version = ?",
+                    (_SCHEMA_VERSION, _SCHEMA_NAME, version),
                 )
             elif _is_int(version) and version == _SCHEMA_VERSION:
-                _require_schema_objects(connection, _SCHEMA_V2_OBJECTS)
+                _require_schema_objects(connection, _SCHEMA_V3_OBJECTS)
             else:
                 raise GoalPlanRepositoryError("unsupported goal/plan state schema version")
 
@@ -878,6 +1144,137 @@ class SqliteGoalPlanRepository:
                 "SELECT * FROM goal_plan_step_delegations ORDER BY rowid",
             ).fetchall()
         return tuple(_delegation_from_row(row) for row in rows)
+
+    def record_execution_start(
+        self,
+        *,
+        execution_id: UUID,
+        action_id: UUID,
+        executor_role: ExecutorRole,
+        capability: str,
+        started_at: datetime,
+    ) -> StepExecution:
+        _require_uuid_argument(action_id, "action id")
+        with self._transaction(
+            write=True,
+            failure="execution start could not be persisted",
+        ) as connection:
+            row = connection.execute(
+                "SELECT * FROM goal_plan_step_delegations WHERE action_id = ?",
+                (str(action_id),),
+            ).fetchone()
+            if row is None:
+                raise GoalPlanNotFoundError(f"no plan step delegation for action {action_id}")
+            delegation = _delegation_from_row(row)
+            stored = _load_plan(connection, delegation.goal_id, delegation.version)
+            if stored is None:
+                raise GoalPlanCorruptedError("persisted step delegation is invalid")
+            candidate = _started_execution(
+                delegation,
+                stored.plan,
+                execution_id=execution_id,
+                executor_role=executor_role,
+                capability=capability,
+                started_at=started_at,
+            )
+            existing = _load_execution(connection, execution_id)
+            if existing is not None:
+                return _require_same_start(existing, candidate)
+            connection.execute(
+                """
+                INSERT INTO goal_plan_step_executions (
+                    execution_id, action_id, goal_id, version, step_id,
+                    executor_role, capability, started_at, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(candidate.execution_id),
+                    str(candidate.action_id),
+                    str(candidate.goal_id),
+                    candidate.version,
+                    str(candidate.step_id),
+                    candidate.executor_role.value,
+                    candidate.capability,
+                    candidate.started_at.isoformat(),
+                    candidate.status.value,
+                ),
+            )
+        return candidate
+
+    def record_execution_finish(
+        self,
+        *,
+        execution_id: UUID,
+        action_id: UUID,
+        status: StepExecutionStatus,
+        finished_at: datetime,
+        external_execution_reported: bool,
+        failure_category: str | None,
+        reason: str | None,
+    ) -> StepExecution:
+        _require_uuid_argument(execution_id, "execution id")
+        with self._transaction(
+            write=True,
+            failure="execution finish could not be persisted",
+        ) as connection:
+            existing = _load_execution(connection, execution_id)
+            if existing is None:
+                raise GoalPlanNotFoundError(f"execution {execution_id} was never started")
+            completed = _completed_execution(
+                existing,
+                action_id=action_id,
+                status=status,
+                finished_at=finished_at,
+                external_execution_reported=external_execution_reported,
+                failure_category=failure_category,
+                reason=reason,
+            )
+            if completed is existing:
+                return existing
+            assert completed.finished_at is not None
+            cursor = connection.execute(
+                """
+                UPDATE goal_plan_step_executions
+                SET status = ?, finished_at = ?, external_execution_reported = ?,
+                    failure_category = ?, reason = ?
+                WHERE execution_id = ? AND status = ?
+                """,
+                (
+                    completed.status.value,
+                    completed.finished_at.isoformat(),
+                    int(bool(completed.external_execution_reported)),
+                    completed.failure_category,
+                    completed.reason,
+                    str(execution_id),
+                    StepExecutionStatus.STARTED.value,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise GoalPlanConflictError(f"execution {execution_id} changed concurrently")
+        return completed
+
+    def list_step_executions(
+        self,
+        goal_id: UUID,
+        version: int,
+        step_id: UUID,
+    ) -> tuple[StepExecution, ...]:
+        _require_uuid_argument(goal_id, "goal id")
+        _require_version_argument(version)
+        _require_uuid_argument(step_id, "plan step id")
+        with self._transaction(
+            write=False,
+            failure="execution evidence could not be read",
+        ) as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM goal_plan_step_executions
+                WHERE goal_id = ? AND version = ? AND step_id = ?
+                ORDER BY rowid
+                """,
+                (str(goal_id), version, str(step_id)),
+            ).fetchall()
+        return tuple(_execution_from_row(row) for row in rows)
 
     def delegate_step(
         self,
@@ -1273,6 +1670,125 @@ def _write_progress(
     return StoredPlan(plan=plan, revision=stored.revision + 1)
 
 
+def _started_execution(
+    delegation: StepDelegation,
+    plan: Plan,
+    *,
+    execution_id: UUID,
+    executor_role: object,
+    capability: object,
+    started_at: datetime,
+) -> StepExecution:
+    """Build start evidence from the trusted delegation; reject foreign routes."""
+    if delegation.status not in _EXECUTABLE_DELEGATIONS:
+        raise GoalPlanConflictError(
+            f"action {delegation.action_id} is {delegation.status} and was not released "
+            "for execution",
+        )
+    try:
+        step = plan.step(delegation.step_id)
+    except KeyError:
+        raise GoalPlanCorruptedError("persisted step delegation is invalid") from None
+    if (executor_role, capability) != (step.executor_role, step.capability):
+        raise GoalPlanConflictError(
+            f"execution route of action {delegation.action_id} differs from its plan step",
+        )
+    return StepExecution(
+        execution_id=execution_id,
+        action_id=delegation.action_id,
+        goal_id=delegation.goal_id,
+        version=delegation.version,
+        step_id=delegation.step_id,
+        executor_role=step.executor_role,
+        capability=step.capability,
+        started_at=started_at,
+    )
+
+
+def _require_same_start(existing: StepExecution, candidate: StepExecution) -> StepExecution:
+    identity = (
+        "action_id",
+        "goal_id",
+        "version",
+        "step_id",
+        "executor_role",
+        "capability",
+        "started_at",
+    )
+    if any(getattr(existing, name) != getattr(candidate, name) for name in identity):
+        raise GoalPlanConflictError(
+            f"execution {existing.execution_id} is already recorded with a different identity",
+        )
+    return existing
+
+
+def _completed_execution(
+    existing: StepExecution,
+    *,
+    action_id: UUID,
+    status: StepExecutionStatus,
+    finished_at: datetime,
+    external_execution_reported: bool,
+    failure_category: str | None,
+    reason: str | None,
+) -> StepExecution:
+    """Return the completed evidence, ``existing`` itself for an identical replay."""
+    if existing.action_id != action_id:
+        raise GoalPlanConflictError(
+            f"execution {existing.execution_id} belongs to a different action",
+        )
+    if status is StepExecutionStatus.STARTED:
+        raise GoalPlanContractError("an execution cannot be completed as started")
+    completed = replace(
+        existing,
+        status=status,
+        finished_at=finished_at,
+        external_execution_reported=external_execution_reported,
+        failure_category=failure_category,
+        reason=reason[:_MAX_REASON_LENGTH] if isinstance(reason, str) else reason,
+    )
+    if existing.status is StepExecutionStatus.STARTED:
+        return completed
+    if completed == existing:
+        return existing
+    raise GoalPlanConflictError(
+        f"execution {existing.execution_id} already completed with a different outcome",
+    )
+
+
+def _load_execution(connection: sqlite3.Connection, execution_id: UUID) -> StepExecution | None:
+    row = connection.execute(
+        "SELECT * FROM goal_plan_step_executions WHERE execution_id = ?",
+        (str(execution_id),),
+    ).fetchone()
+    return _execution_from_row(row) if row is not None else None
+
+
+def _execution_from_row(row: sqlite3.Row) -> StepExecution:
+    try:
+        reported = row["external_execution_reported"]
+        if reported is not None and (not _is_int(reported) or reported not in (0, 1)):
+            raise ValueError("external execution report must be 0 or 1")
+        finished = _decode_optional_text(row["finished_at"])
+        return StepExecution(
+            execution_id=_decode_uuid(row["execution_id"]),
+            action_id=_decode_uuid(row["action_id"]),
+            goal_id=_decode_uuid(row["goal_id"]),
+            version=_decode_positive_int(row["version"]),
+            step_id=_decode_uuid(row["step_id"]),
+            executor_role=ExecutorRole(_decode_text(row["executor_role"])),
+            capability=_decode_text(row["capability"]),
+            started_at=_decode_datetime(_decode_text(row["started_at"])),
+            status=StepExecutionStatus(_decode_text(row["status"])),
+            finished_at=_decode_datetime(finished) if finished is not None else None,
+            external_execution_reported=bool(reported) if reported is not None else None,
+            failure_category=_decode_optional_text(row["failure_category"]),
+            reason=_decode_optional_text(row["reason"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        raise GoalPlanCorruptedError("persisted execution evidence is invalid") from None
+
+
 def _load_delegation(
     connection: sqlite3.Connection,
     goal_id: UUID,
@@ -1400,6 +1916,19 @@ def _encode_texts(values: Sequence[str]) -> str:
 def _decode_text(value: object) -> str:
     if not isinstance(value, str):
         raise TypeError("persisted value must be text")
+    return value
+
+
+def _decode_datetime(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    if parsed.isoformat() != value:
+        raise ValueError("persisted timestamp is not canonical")
+    return _require_aware(parsed, "persisted timestamp")
+
+
+def _require_aware(value: object, name: str) -> datetime:
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+        raise GoalPlanContractError(f"{name} must be a timezone-aware datetime")
     return value
 
 
