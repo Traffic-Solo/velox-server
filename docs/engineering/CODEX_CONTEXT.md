@@ -141,10 +141,13 @@ Slice 6 adds the pre-execution admission gate (`core/goal_plan_admission.py`):
   step is `in_progress`, the Action equals the envelope rebuilt from the stored
   step and delegation (role, type, target, payload incl. account context), and
   no attempt was recorded. Unreadable or corrupted state refuses.
-- `record_execution_start` re-checks Goal active / current version / step
-  `in_progress` inside its write transaction, so a cancellation committed
-  between admission and the durable start still stops the worker (the
-  observer raises, nothing runs). Residual: a cancellation committed after the
+- `record_execution_start` is the once-only durable start claim: inside its
+  write transaction / lock it refuses a new `execution_id` for an Action that
+  already has an attempt (unless a future explicit retry policy passes
+  `authorized_retry=True`; no runtime caller does) and re-checks Goal active /
+  current version / step `in_progress`. Duplicate queue copies processed
+  concurrently, or a cancellation committed between admission and the durable
+  start, therefore stop before the worker (the observer raises, nothing runs). Residual: a cancellation committed after the
   start write cannot stop a worker already running; reconciliation reports it.
 
 Sprint 5 - Guarded Software Engineering dogfooding (closed). The operator CLI

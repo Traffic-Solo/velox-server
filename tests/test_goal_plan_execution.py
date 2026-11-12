@@ -488,7 +488,7 @@ def test_distinct_attempts_are_all_preserved(
     stored, action_id = delegated(container)
     first = finish(repo, start(repo, action_id), StepExecutionStatus.FAILED,
                    failure_category="transient", external_execution_reported=False)
-    second = finish(repo, start(repo, action_id))
+    second = finish(repo, start(repo, action_id, authorized_retry=True))
 
     assert attempts(container, stored) == (first, second)
     report = reconcile(container, stored)
@@ -1074,7 +1074,7 @@ def test_multiple_attempts_on_a_terminal_step_need_review(
     stored, action_id = delegated(container)
     finish(repo, start(repo, action_id), StepExecutionStatus.FAILED,
            failure_category="transient", external_execution_reported=False)
-    second = start(repo, action_id)
+    second = start(repo, action_id, authorized_retry=True)
     if not unfinished:
         finish(repo, second)
     finalize(container, stored, PlanStepStatus.SUCCEEDED)
@@ -1120,7 +1120,7 @@ def test_reconciliation_mutates_nothing(
     first, second = make_step(), make_step(objective="Second", target="gmail-message-2")
     stored, action_id = delegated(container, first, second)
     container.worker_runtime.process_next()
-    start(container.goal_plan_repository, action_id)
+    start(container.goal_plan_repository, action_id, authorized_retry=True)
     before = snapshot(container, stored, db_path)
 
     for _ in range(3):

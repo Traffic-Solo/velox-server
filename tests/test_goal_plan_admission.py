@@ -595,3 +595,158 @@ def test_concurrent_cancellation_never_runs_unrecorded_work(
     assert base.current(container, stored).plan.steps[0].status is PlanStepStatus.CANCELLED
     assert container.action_queue.list() == []
     assert container.worker_runtime.process_next().processed is False
+
+
+# --- Once-only start claim under duplicate queue entries ------------------------------
+
+
+def contend(
+    container: ApplicationContainer,
+    monkeypatch: pytest.MonkeyPatch,
+    consumers: int = 2,
+) -> list[Any]:
+    """Run ``consumers`` workers that all pass admission before any durable start."""
+    admit = GoalPlanAdmissionGate.admit
+    admitted = threading.Barrier(consumers)
+
+    def admit_together(self: GoalPlanAdmissionGate, action: Action) -> WorkerAdmission:
+        decision = admit(self, action)
+        admitted.wait(timeout=10)
+        return decision
+
+    monkeypatch.setattr(GoalPlanAdmissionGate, "admit", admit_together)
+    outcomes: list[Any] = []
+    lock = threading.Lock()
+
+    def consume() -> None:
+        try:
+            outcome: Any = container.worker_runtime.process_next()
+        except GoalPlanExecutionEvidenceError as error:
+            outcome = error
+        with lock:
+            outcomes.append(outcome)
+
+    threads = [threading.Thread(target=consume) for _ in range(consumers)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    monkeypatch.setattr(GoalPlanAdmissionGate, "admit", admit)
+    return outcomes
+
+
+@pytest.mark.parametrize("attempt", range(10))
+def test_duplicate_queue_entries_start_the_worker_at_most_once(
+    monkeypatch: pytest.MonkeyPatch,
+    db_path: Path,
+    backend: str,
+    attempt: int,
+) -> None:
+    container, worker = base.boot(monkeypatch, db_path, backend)
+    stored, action_id = base.delegated(container)
+    [queued] = container.action_queue.list()
+    container.action_queue.enqueue(queued)
+
+    outcomes = contend(container, monkeypatch)
+
+    assert worker.executed == [action_id]
+    assert len(base.attempts(container, stored)) == 1
+    executed = [o for o in outcomes if not isinstance(o, Exception) and o.processed]
+    refused = [o for o in outcomes if isinstance(o, GoalPlanExecutionEvidenceError)]
+    assert (len(executed), len(refused)) == (1, 1)
+    assert container.action_queue.list() == []
+
+
+@pytest.mark.parametrize("backend_name", ["memory", "sqlite"])
+def test_second_start_claim_for_one_action_is_refused_atomically(
+    monkeypatch: pytest.MonkeyPatch,
+    db_path: Path,
+    backend_name: str,
+) -> None:
+    container, _ = base.boot(monkeypatch, db_path, backend_name)
+    stored, action_id = base.delegated(container)
+    repo = container.goal_plan_repository
+    barrier = threading.Barrier(8)
+    outcomes: list[Any] = []
+    lock = threading.Lock()
+
+    def claim() -> None:
+        barrier.wait()
+        try:
+            outcome: Any = base.start(repo, action_id)
+        except Exception as error:
+            outcome = error
+        with lock:
+            outcomes.append(outcome)
+
+    threads = [threading.Thread(target=claim) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    claimed = [o for o in outcomes if not isinstance(o, Exception)]
+    assert len(claimed) == 1
+    assert all("already has an execution attempt" in str(o) for o in outcomes if o not in claimed)
+    assert base.attempts(container, stored) == (claimed[0],)
+
+
+def test_contention_after_reopen_still_starts_at_most_once(
+    monkeypatch: pytest.MonkeyPatch,
+    db_path: Path,
+) -> None:
+    first, _ = base.boot(monkeypatch, db_path)
+    stored, action_id = base.delegated(first)
+    [queued] = first.action_queue.list()
+    first.worker_runtime.process_next()
+
+    reopened, worker = base.boot(monkeypatch, db_path)
+    for _ in range(2):
+        reopened.action_queue.enqueue(queued)
+    reopened.action_lifecycle_repository.set(
+        action_id, ActionLifecycleState(status=ActionStatus.APPROVED)
+    )
+    stale = contend(reopened, monkeypatch)
+
+    assert worker.executed == []
+    assert all(o.admission_rejected for o in stale)
+    assert len(base.attempts(reopened, stored)) == 1
+
+    fresh_stored = base.planned(reopened, base.make_step(objective="Fresh"))
+    fresh = reopened.goal_plan_delegation.delegate(
+        GoalPlanStepDelegationRequest(
+            goal_id=fresh_stored.plan.goal_id, version=1, step_id=fresh_stored.plan.steps[0].id,
+            expected_revision=fresh_stored.revision, requested_by="owner",
+            account_context=GMAIL_ACCOUNT_CONTEXT,
+        ),
+    )
+    [fresh_action] = reopened.action_queue.list()
+    reopened.action_queue.enqueue(fresh_action)
+
+    contend(reopened, monkeypatch)
+
+    assert worker.executed == [fresh.action_id]
+    again, _ = base.boot(monkeypatch, db_path)
+    assert len(base.attempts(again, base.current(again, fresh_stored))) == 1
+
+
+def test_duplicate_unrelated_entries_keep_existing_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+    db_path: Path,
+    backend: str,
+) -> None:
+    container, worker = base.boot(monkeypatch, db_path, backend)
+    unrelated = container.task_delegator.delegate(
+        TaskDelegationRequest(
+            objective="Summarize something else", target="gmail-message-2",
+            executor_role=ExecutorRole.CONTENT_SUMMARY, capability="summarize_email",
+            account_context=GMAIL_ACCOUNT_CONTEXT,
+        ),
+    )
+    [queued] = container.action_queue.list()
+    container.action_queue.enqueue(queued)
+
+    outcomes = contend(container, monkeypatch)
+
+    assert all(not isinstance(o, Exception) and o.processed for o in outcomes)
+    assert worker.executed == [unrelated.action_id, unrelated.action_id]
