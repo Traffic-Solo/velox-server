@@ -122,9 +122,11 @@ Slice 5 adds worker execution evidence (`core/goal_plan_execution.py`):
   before.
 - `GoalPlanExecutionReconciliation` is read-only: `no_evidence`,
   `started_uncertain`, `worker_reported_success`, `worker_reported_failure`,
-  `skipped`, `retry_intermediate`, `verified` (step explicitly finalized
-  `succeeded` and the only attempt reported success) and `inconsistent`.
-  Evidence never changes PlanStep or Goal status.
+  `skipped`, `retry_intermediate`, `explicitly_finalized_consistent` (an
+  explicit terminal transition agrees with the single completed attempt; not
+  independent objective verification) and `inconsistent`. A terminal step
+  status never suppresses operator review of missing, unfinished, multiple or
+  contrary evidence. Evidence never changes PlanStep or Goal status.
 
 Sprint 5 - Guarded Software Engineering dogfooding (closed). The operator CLI
 and its hardening are merged. PR [#42](https://github.com/Traffic-Solo/velox-server/pull/42)
@@ -766,7 +768,8 @@ After every implementation slice, update this file in the same commit if the imp
 - Software Engineering pending objective text is plaintext in the local SQLite database until rejection or terminal execution scrubs it.
 - Software Engineering has no worker heartbeat/process-liveness evidence after `execution_started_at`, no durable non-SE queue/approval layer, and no multi-node claim coordination.
 - Goal/Plan: step progress cannot be carried into a new Plan version (new versions start all-pending); there is no transition history/audit log, no retry/attempt identity, and Goal objectives are plaintext in SQLite. One plan-level revision serializes all step transitions of a version.
-- Goal/Plan execution evidence: `verified` reflects an explicit step transition, not an independent verifier (no verifier identity is recorded); a crash between the external effect and the finish write leaves `started_uncertain`; explicit retry authorization/attempt policy does not exist, so Goal/Plan Actions never retry; there is no HTTP surface for reconciliation.
+- Pre-runtime-expansion safety task: a queued Goal/Plan Action can still execute after its step is cancelled (cancellation does not withdraw the queued Action). Reconciliation reports it as `inconsistent`, but it must be blocked before any live autonomous execution.
+- Goal/Plan execution evidence: no independent objective verification exists (`explicitly_finalized_consistent` only reflects an explicit step transition; no verifier identity is recorded), and there is no acknowledgement mechanism, so contrary terminal evidence stays flagged; a crash between the external effect and the finish write leaves `started_uncertain`; explicit retry authorization/attempt policy does not exist, so Goal/Plan Actions never retry; there is no HTTP surface for reconciliation.
 - Goal/Plan recovery: only approval holds are recoverable; `execution_uncertain` handoffs need an operator to finalize the step (no execution evidence exists to decide automatically), recovered Actions lack the original `permission_decision` metadata (re-approval is the authority), and there is no HTTP surface for the reconciliation report.
 - Goal/Plan delegation: publication after the durable commit is not atomic with it, and the Action queue and pending-approval registry stay process-local, so a crash between commit and publication, or a restart after a recorded `queued`/`approved` handoff, leaves the step `in_progress` (or `pending` with an unapprovable hold) with no Action — work is lost, never duplicated; finalize it explicitly. Delivery is at most once, not exactly once, and a held plan Action cannot be recovered for approval after restart (cancel the step or replan). There is no execution-evidence feedback from `WorkerRuntime` into step status, no HTTP surface for delegation, and one delegation per step per plan version (retries after denial/rejection need a new Plan version). Handoff runs while the SQLite write lock is held.
 

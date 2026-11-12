@@ -653,20 +653,25 @@ def test_reconciliation_never_changes_step_or_goal(
     assert container.action_queue.list() == []
 
 
-@pytest.mark.parametrize(
-    ("worker_status", "final", "category"),
-    [
-        (WorkerExecutionStatus.SUCCEEDED, PlanStepStatus.SUCCEEDED, StepExecutionCategory.VERIFIED),
-        (WorkerExecutionStatus.SUCCEEDED, PlanStepStatus.FAILED,
-         StepExecutionCategory.WORKER_REPORTED_SUCCESS),
-        (WorkerExecutionStatus.FAILED, PlanStepStatus.FAILED,
-         StepExecutionCategory.WORKER_REPORTED_FAILURE),
-        (WorkerExecutionStatus.FAILED, PlanStepStatus.SUCCEEDED,
-         StepExecutionCategory.INCONSISTENT),
-        (WorkerExecutionStatus.SKIPPED, PlanStepStatus.SUCCEEDED,
-         StepExecutionCategory.INCONSISTENT),
-    ],
-)
+CONSISTENT = StepExecutionCategory.EXPLICITLY_FINALIZED_CONSISTENT
+INCONSISTENT = StepExecutionCategory.INCONSISTENT
+WORKER_OK = WorkerExecutionStatus.SUCCEEDED
+WORKER_FAILED = WorkerExecutionStatus.FAILED
+WORKER_SKIPPED = WorkerExecutionStatus.SKIPPED
+FINALIZATIONS = [
+    (WORKER_OK, PlanStepStatus.SUCCEEDED, CONSISTENT),
+    (WORKER_OK, PlanStepStatus.FAILED, INCONSISTENT),
+    (WORKER_OK, PlanStepStatus.CANCELLED, INCONSISTENT),
+    (WORKER_FAILED, PlanStepStatus.FAILED, CONSISTENT),
+    (WORKER_FAILED, PlanStepStatus.CANCELLED, CONSISTENT),
+    (WORKER_FAILED, PlanStepStatus.SUCCEEDED, INCONSISTENT),
+    (WORKER_SKIPPED, PlanStepStatus.CANCELLED, CONSISTENT),
+    (WORKER_SKIPPED, PlanStepStatus.FAILED, CONSISTENT),
+    (WORKER_SKIPPED, PlanStepStatus.SUCCEEDED, INCONSISTENT),
+]
+
+
+@pytest.mark.parametrize(("worker_status", "final", "category"), FINALIZATIONS)
 def test_explicit_finalization_is_reflected_not_performed(
     monkeypatch: pytest.MonkeyPatch,
     db_path: Path,
@@ -690,6 +695,8 @@ def test_explicit_finalization_is_reflected_not_performed(
     assert report.category is category
     assert report.step_status is final
     assert report.requires_operator is (category is StepExecutionCategory.INCONSISTENT)
+    if category is StepExecutionCategory.EXPLICITLY_FINALIZED_CONSISTENT:
+        assert "no independent objective verification" in report.reason
     assert goal_of(container, stored).goal.status is GoalStatus.ACTIVE
 
 
@@ -710,8 +717,9 @@ def test_evidence_never_reopens_a_terminal_step(
     assert worker.executed == [action_id]
     assert current(container, stored).plan.steps[0].status is PlanStepStatus.CANCELLED
     report = reconcile(container, stored)
-    assert report.category is StepExecutionCategory.WORKER_REPORTED_SUCCESS
-    assert report.requires_operator is False
+    assert report.category is StepExecutionCategory.INCONSISTENT
+    assert report.requires_operator is True
+    assert "after cancellation" in report.reason
 
 
 def test_started_without_finish_is_uncertain(
@@ -967,3 +975,156 @@ def test_incomplete_v3_schema_is_rejected(db_path: Path) -> None:
 
     with pytest.raises(GoalPlanCorruptedError, match="incomplete"):
         SqliteGoalPlanRepository(db_path)
+
+
+# --- Terminal steps never hide missing or contrary evidence ----------------------
+
+
+def finalize(container: ApplicationContainer, stored: StoredPlan, *path: PlanStepStatus) -> None:
+    for status in path:
+        container.goal_plan_repository.transition_step(
+            stored.plan.goal_id, 1, stored.plan.steps[0].id, status,
+            expected_revision=current(container, stored).revision,
+        )
+
+
+def snapshot(container: ApplicationContainer, stored: StoredPlan, db_path: Path) -> Any:
+    repo = container.goal_plan_repository
+    state: list[Any] = [
+        repo.get_goal(stored.plan.goal_id),
+        repo.get_plan(stored.plan.goal_id, 1),
+        repo.list_step_delegations(),
+        [repo.list_step_executions(stored.plan.goal_id, 1, step.id) for step in stored.plan.steps],
+        container.action_queue.list(),
+        container.action_lifecycle_repository.list_states(),
+    ]
+    if db_path.exists():
+        with sqlite3.connect(db_path) as connection:
+            state.append(list(connection.iterdump()))
+    return state
+
+
+def test_success_finalized_without_any_evidence_needs_review(
+    monkeypatch: pytest.MonkeyPatch,
+    db_path: Path,
+    backend: str,
+) -> None:
+    container, _ = boot(monkeypatch, db_path, backend)
+    handed_off, _ = delegated(container)
+    finalize(container, handed_off, PlanStepStatus.SUCCEEDED)
+    never_delegated = planned(container, make_step())
+    finalize(container, never_delegated, PlanStepStatus.IN_PROGRESS, PlanStepStatus.SUCCEEDED)
+
+    for stored in (handed_off, never_delegated):
+        report = reconcile(container, stored)
+        assert report.category is StepExecutionCategory.NO_EVIDENCE
+        assert report.requires_operator is True
+        assert "without any execution evidence" in report.reason
+
+
+@pytest.mark.parametrize("final", [PlanStepStatus.FAILED, PlanStepStatus.CANCELLED])
+def test_handed_off_step_closed_before_any_attempt_needs_review(
+    monkeypatch: pytest.MonkeyPatch,
+    db_path: Path,
+    backend: str,
+    final: PlanStepStatus,
+) -> None:
+    container, _ = boot(monkeypatch, db_path, backend)
+    stored, _ = delegated(container)
+    finalize(container, stored, final)
+
+    report = reconcile(container, stored)
+
+    assert report.category is StepExecutionCategory.NO_EVIDENCE
+    assert report.requires_operator is True
+    assert "may still run" in report.reason
+
+
+@pytest.mark.parametrize(
+    "final",
+    [PlanStepStatus.SUCCEEDED, PlanStepStatus.FAILED, PlanStepStatus.CANCELLED],
+)
+def test_unfinished_attempt_stays_uncertain_whatever_the_step_says(
+    monkeypatch: pytest.MonkeyPatch,
+    db_path: Path,
+    backend: str,
+    final: PlanStepStatus,
+) -> None:
+    container, _ = boot(monkeypatch, db_path, backend)
+    stored, action_id = delegated(container)
+    start(container.goal_plan_repository, action_id)
+    finalize(container, stored, final)
+
+    report = reconcile(container, stored)
+
+    assert report.category is StepExecutionCategory.STARTED_UNCERTAIN
+    assert report.requires_operator is True
+    assert report.step_status is final
+
+
+@pytest.mark.parametrize("unfinished", [True, False])
+def test_multiple_attempts_on_a_terminal_step_need_review(
+    monkeypatch: pytest.MonkeyPatch,
+    db_path: Path,
+    backend: str,
+    unfinished: bool,
+) -> None:
+    container, _ = boot(monkeypatch, db_path, backend)
+    repo = container.goal_plan_repository
+    stored, action_id = delegated(container)
+    finish(repo, start(repo, action_id), StepExecutionStatus.FAILED,
+           failure_category="transient", external_execution_reported=False)
+    second = start(repo, action_id)
+    if not unfinished:
+        finish(repo, second)
+    finalize(container, stored, PlanStepStatus.SUCCEEDED)
+
+    report = reconcile(container, stored)
+
+    assert report.category is StepExecutionCategory.RETRY_INTERMEDIATE
+    assert report.requires_operator is True
+    assert len(report.attempts) == 2
+
+
+def test_ordinary_pending_and_failed_work(
+    monkeypatch: pytest.MonkeyPatch,
+    db_path: Path,
+    backend: str,
+) -> None:
+    worker = FakeWorker(
+        WorkerExecutionStatus.FAILED,
+        failure=WorkerExecutionFailure(WorkerExecutionFailureCategory.PERMANENT),
+        metadata={},
+    )
+    container, _ = boot(monkeypatch, db_path, backend, worker)
+    pending = planned(container, make_step())
+    stored, _ = delegated(container)
+    container.worker_runtime.process_next()
+
+    idle = reconcile(container, pending)
+    failed = reconcile(container, stored)
+
+    assert (idle.category, idle.requires_operator) == (StepExecutionCategory.NO_EVIDENCE, False)
+    assert (failed.category, failed.requires_operator) == (
+        StepExecutionCategory.WORKER_REPORTED_FAILURE,
+        True,
+    )
+
+
+def test_reconciliation_mutates_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+    db_path: Path,
+    backend: str,
+) -> None:
+    container, worker = boot(monkeypatch, db_path, backend)
+    first, second = make_step(), make_step(objective="Second", target="gmail-message-2")
+    stored, action_id = delegated(container, first, second)
+    container.worker_runtime.process_next()
+    start(container.goal_plan_repository, action_id)
+    before = snapshot(container, stored, db_path)
+
+    for _ in range(3):
+        container.goal_plan_execution_reconciliation.reconcile_plan(stored.plan.goal_id, 1)
+
+    assert snapshot(container, stored, db_path) == before
+    assert worker.executed == [action_id]

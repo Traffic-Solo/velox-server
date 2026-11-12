@@ -171,7 +171,12 @@ class GoalPlanRetryPolicy:
 
 
 class StepExecutionCategory(StrEnum):
-    """What durable evidence says about a step's execution; nothing here is applied."""
+    """What durable evidence says about a step's execution; nothing here is applied.
+
+    ``explicitly_finalized_consistent`` only means an explicit terminal step
+    transition agrees with the single recorded attempt; it is not independent
+    verification that the step objective was met.
+    """
 
     NO_EVIDENCE = "no_evidence"
     STARTED_UNCERTAIN = "started_uncertain"
@@ -179,7 +184,7 @@ class StepExecutionCategory(StrEnum):
     WORKER_REPORTED_FAILURE = "worker_reported_failure"
     SKIPPED = "skipped"
     RETRY_INTERMEDIATE = "retry_intermediate"
-    VERIFIED = "verified"
+    EXPLICITLY_FINALIZED_CONSISTENT = "explicitly_finalized_consistent"
     INCONSISTENT = "inconsistent"
 
 
@@ -251,12 +256,23 @@ class GoalPlanExecutionReconciliation:
         )
 
 
+# A single completed attempt agrees with an explicit terminal finalization only
+# when the finalization claims no more than the worker reported.
+_CONSISTENT_FINALIZATIONS = {
+    StepExecutionStatus.SUCCEEDED: frozenset({PlanStepStatus.SUCCEEDED}),
+    StepExecutionStatus.FAILED: frozenset({PlanStepStatus.FAILED, PlanStepStatus.CANCELLED}),
+    StepExecutionStatus.SKIPPED: frozenset({PlanStepStatus.FAILED, PlanStepStatus.CANCELLED}),
+}
+
+_UNVERIFIED = "no independent objective verification or verifier identity is recorded"
+
+
 def _classify(
     step: PlanStep,
     delegation: StepDelegation | None,
     attempts: tuple[StepExecution, ...],
 ) -> tuple[StepExecutionCategory, bool, str]:
-    terminal = step.status in TERMINAL_PLAN_STEP_STATUSES
+    """Classify evidence; a terminal step status never hides missing or contrary evidence."""
     released = delegation is not None and delegation.status in _EXECUTABLE
     if attempts and (delegation is None or not released):
         return (
@@ -275,58 +291,76 @@ def _classify(
             "execution evidence does not match the delegated step",
         )
     if not attempts:
-        if not released:
-            return StepExecutionCategory.NO_EVIDENCE, False, "not released for execution"
-        if step.status is PlanStepStatus.PENDING:
-            return (
-                StepExecutionCategory.INCONSISTENT,
-                True,
-                "released for execution but the step never started",
-            )
-        return (
-            StepExecutionCategory.NO_EVIDENCE,
-            not terminal,
-            "handed off but no execution attempt was recorded; it may not have started "
-            "or its evidence was lost",
-        )
+        return _without_attempts(step, released)
     unfinished = [a for a in attempts if a.status is StepExecutionStatus.STARTED]
     if len(attempts) > 1:
         return (
             StepExecutionCategory.RETRY_INTERMEDIATE,
-            not terminal,
-            f"{len(attempts)} attempts recorded ({len(unfinished)} unfinished); "
-            "review every attempt before finalizing",
+            True,
+            f"{len(attempts)} attempts recorded ({len(unfinished)} unfinished) while the "
+            f"step is {step.status}; review every attempt",
         )
     if unfinished:
         return (
             StepExecutionCategory.STARTED_UNCERTAIN,
-            not terminal,
-            "an attempt started without a recorded completion; an external effect may "
-            "or may not have happened",
+            True,
+            f"an attempt started without a recorded completion while the step is "
+            f"{step.status}; an external effect may or may not have happened",
         )
     [attempt] = attempts
-    if attempt.status is StepExecutionStatus.SUCCEEDED:
-        if step.status is PlanStepStatus.SUCCEEDED:
-            return (
-                StepExecutionCategory.VERIFIED,
-                False,
-                "explicitly finalized as succeeded and the worker reported success; the "
-                "repository records no verifier identity",
-            )
+    if step.status not in TERMINAL_PLAN_STEP_STATUSES:
+        category = {
+            StepExecutionStatus.SUCCEEDED: StepExecutionCategory.WORKER_REPORTED_SUCCESS,
+            StepExecutionStatus.FAILED: StepExecutionCategory.WORKER_REPORTED_FAILURE,
+            StepExecutionStatus.SKIPPED: StepExecutionCategory.SKIPPED,
+        }[attempt.status]
         return (
-            StepExecutionCategory.WORKER_REPORTED_SUCCESS,
-            not terminal,
-            "the worker reported success; the step objective is not verified",
+            category,
+            True,
+            f"the worker reported {attempt.status}; the step objective is not verified "
+            "and the step awaits explicit finalization",
         )
-    category = (
-        StepExecutionCategory.WORKER_REPORTED_FAILURE
-        if attempt.status is StepExecutionStatus.FAILED
-        else StepExecutionCategory.SKIPPED
+    if step.status in _CONSISTENT_FINALIZATIONS[attempt.status]:
+        return (
+            StepExecutionCategory.EXPLICITLY_FINALIZED_CONSISTENT,
+            False,
+            f"the step was explicitly finalized as {step.status} and the only attempt "
+            f"reported {attempt.status}; {_UNVERIFIED}",
+        )
+    return (
+        StepExecutionCategory.INCONSISTENT,
+        True,
+        f"the step was finalized as {step.status} but the only attempt reported "
+        f"{attempt.status}"
+        + (
+            "; the handed-off Action may have run after cancellation"
+            if step.status is PlanStepStatus.CANCELLED
+            else ""
+        ),
     )
+
+
+def _without_attempts(
+    step: PlanStep,
+    released: bool,
+) -> tuple[StepExecutionCategory, bool, str]:
     if step.status is PlanStepStatus.SUCCEEDED:
+        return (
+            StepExecutionCategory.NO_EVIDENCE,
+            True,
+            "the step was finalized as succeeded without any execution evidence",
+        )
+    if not released:
+        return StepExecutionCategory.NO_EVIDENCE, False, "not released for execution"
+    if step.status is PlanStepStatus.PENDING:
         return (
             StepExecutionCategory.INCONSISTENT,
             True,
-            f"the step was finalized as succeeded but the only attempt {attempt.status}",
+            "released for execution but the step never started",
         )
-    return category, not terminal, f"the worker reported {attempt.status}"
+    return (
+        StepExecutionCategory.NO_EVIDENCE,
+        True,
+        f"handed off but no execution attempt was recorded while the step is "
+        f"{step.status}; it may not have run yet, may still run, or its evidence was lost",
+    )
