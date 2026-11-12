@@ -180,6 +180,17 @@ class InMemoryWorkerExecutionObserver:
         return list(self._observations)
 
 
+class WorkerRetryPolicy(Protocol):
+    """Trusted veto over the runtime's automatic transient retry of one Action.
+
+    Returning ``False`` keeps a transiently failed Action ``failed`` instead of
+    re-queueing it. Without a policy every transient failure stays retryable.
+    """
+
+    def allows_automatic_retry(self, action: Action) -> bool:
+        ...
+
+
 @dataclass(frozen=True)
 class WorkerProcessingResult:
     """Result returned after one worker runtime processing attempt."""
@@ -214,6 +225,7 @@ class WorkerRuntime:
         execution_observer: WorkerExecutionObserver | None = None,
         lifecycle_repository: ActionLifecycleRepository | None = None,
         max_transient_retries: int = 3,
+        retry_policy: WorkerRetryPolicy | None = None,
     ) -> None:
         self._action_queue = action_queue
         self._action_lifecycle_manager = action_lifecycle_manager
@@ -227,6 +239,7 @@ class WorkerRuntime:
             else InMemoryActionLifecycleRepository()
         )
         self._max_transient_retries = max_transient_retries
+        self._retry_policy = retry_policy
 
     def pending_action_count(self) -> int:
         """Return the number of actions currently waiting in the queue."""
@@ -435,7 +448,14 @@ class WorkerRuntime:
             and failure.category == WorkerExecutionFailureCategory.TRANSIENT
         ):
             retry_count = int(lifecycle_state.metadata.get("transient_retry_count", 0))
-            if retry_count < self._max_transient_retries:
+            retryable = retry_count < self._max_transient_retries
+            if retryable and self._retry_withheld(action):
+                logger.info(
+                    "transient failure for action %s (%s); automatic retry withheld by policy",
+                    action.id,
+                    action.type,
+                )
+            elif retryable:
                 retry_state = self._action_lifecycle_manager.transition(
                     lifecycle_state,
                     ActionStatus.QUEUED,
@@ -501,6 +521,11 @@ class WorkerRuntime:
             execution_reason=execution_result.reason,
             processed=True,
             external_execution_performed=external_execution_performed,
+        )
+
+    def _retry_withheld(self, action: Action) -> bool:
+        return self._retry_policy is not None and not self._retry_policy.allows_automatic_retry(
+            action,
         )
 
     def _failure_for_result(
