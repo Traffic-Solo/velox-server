@@ -90,6 +90,11 @@ Slice 4 adds restart-safe handoff recovery (`core/goal_plan_recovery.py`):
   `/actions/pending-approval`, `/approve` and `/reject`; an Action claimed by
   two owners, or any unreadable/dangling durable record, fails closed
   (`PendingActionRecoveryError`, HTTP 500) without queueing.
+- `_resolve_pending_action` always consults the durable recovery owner, even
+  when a live hold exists: an ownership collision, or a live hold whose
+  id/role/type/target/payload (objective compared stripped; metadata ignored)
+  differs from the durable envelope, fails closed before any durable decision
+  or queue mutation. Live-only holds without a durable owner are unchanged.
 - `GoalPlanHandoffReconciliation.classify()` is a read-only report:
   `recoverable_approval`, `stale_approval` (approval would be refused),
   `execution_uncertain` (`queued`/`approved` with the step still

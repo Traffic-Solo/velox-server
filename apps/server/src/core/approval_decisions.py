@@ -95,15 +95,52 @@ class CompositeApprovalDecisionRecorder:
             recorder.record_rejected(action)
 
 
+def _canonical_envelope(action: Action) -> tuple[object, ...]:
+    """Identity that live and durable copies must share; metadata may differ.
+
+    Permission-evaluation and recovery markers live in metadata and are expected
+    to differ. Objective text is compared without surrounding whitespace because
+    durable owners store it stripped.
+    """
+    payload = dict(action.payload)
+    objective = payload.get("objective")
+    if isinstance(objective, str):
+        payload["objective"] = objective.strip()
+    role = action.executor_role
+    return (
+        action.id,
+        str(role) if role is not None else None,
+        action.type,
+        action.target,
+        payload,
+    )
+
+
 def _resolve_pending_action(
     action_id: UUID,
     *,
     pending_approval_registry: PendingApprovalRegistry,
     pending_action_recovery: PendingActionRecovery | None,
 ) -> Action:
+    """Return the held Action, validated against its durable owner when one exists.
+
+    The durable owner is always consulted, even for a live hold, so ownership
+    collisions and live/durable envelope conflicts fail closed before any durable
+    decision is recorded or anything is queued. Live-only Actions without a
+    durable owner are returned unchanged.
+    """
     action = pending_approval_registry.get(action_id)
-    if action is None and pending_action_recovery is not None:
-        action = pending_action_recovery.recover_pending(action_id)
+    durable = (
+        pending_action_recovery.recover_pending(action_id)
+        if pending_action_recovery is not None
+        else None
+    )
+    if action is None:
+        action = durable
+    elif durable is not None and _canonical_envelope(action) != _canonical_envelope(durable):
+        raise PendingActionRecoveryError(
+            f"held action {action_id} conflicts with its durable recovery owner",
+        )
     if action is None:
         raise PendingActionNotFoundError("action is not awaiting approval")
     return action

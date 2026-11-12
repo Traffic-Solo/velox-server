@@ -21,6 +21,7 @@ from apps.server.src.core.approval_decisions import (
     reject_pending_action,
 )
 from apps.server.src.core.container import ApplicationContainer
+from apps.server.src.core.delegation import TaskDelegationRequest, task_delegation_action
 from apps.server.src.core.goal_plan_delegation import (
     GoalPlanApprovalError,
     GoalPlanDelegationOutcome,
@@ -723,3 +724,193 @@ def test_http_approval_after_restart(
     assert response.status_code == 200
     assert [a.id for a in after.action_queue.list()] == [action_id]
     assert client.post(f"/actions/{action_id}/approve").status_code == 404
+
+
+# --- Live holds are validated against their durable owner ------------------------
+
+
+def se_state(container: ApplicationContainer, action_id: UUID) -> Any:
+    state = container.software_engineering_run_repository.get(action_id)
+    assert state is not None
+    return state
+
+
+@pytest.mark.parametrize("decide", [approve, reject])
+def test_live_hold_claimed_by_two_durable_owners_fails_closed(
+    db_path: Path,
+    boot: Callable[[], ApplicationContainer],
+    decide: Callable[[ApplicationContainer, UUID], None],
+) -> None:
+    container = boot()
+    stored = planned(container)
+    live, action_id = held(container, stored)
+    register_se_pending(container, action_id)
+    revision = current(container, stored).revision
+    lifecycle = container.action_lifecycle_repository.get(action_id)
+
+    with pytest.raises(PendingActionRecoveryError, match="more than one recovery owner"):
+        decide(container, action_id)
+
+    assert container.action_queue.list() == []
+    assert container.pending_approval_registry.list_pending() == [live]
+    assert container.action_lifecycle_repository.get(action_id) == lifecycle
+    assert delegation_status(container, action_id) is StepDelegationStatus.AWAITING_APPROVAL
+    assert current(container, stored).revision == revision
+    assert (
+        se_state(container, action_id).approval_status
+        is SoftwareEngineeringApprovalStatus.AWAITING_APPROVAL
+    )
+
+
+CONFLICTING_ENVELOPES: list[tuple[str, Callable[[Action], Action]]] = [
+    ("target", lambda a: a.model_copy(update={"target": "gmail-message-999"})),
+    ("type", lambda a: a.model_copy(update={"type": "gmail.archive"})),
+    ("role", lambda a: a.model_copy(update={"executor_role": ExecutorRole.CONTENT_REVIEW})),
+    (
+        "capability",
+        lambda a: a.model_copy(update={"payload": {**a.payload, "capability": "gmail.archive"}}),
+    ),
+    (
+        "account",
+        lambda a: a.model_copy(
+            update={
+                "payload": {
+                    **a.payload,
+                    "account_context": {"principal": None, "account_identifier": "other"},
+                },
+            },
+        ),
+    ),
+    (
+        "no_account",
+        lambda a: a.model_copy(
+            update={"payload": {k: v for k, v in a.payload.items() if k != "account_context"}},
+        ),
+    ),
+    ("objective", lambda a: a.model_copy(update={"payload": {**a.payload, "objective": "x"}})),
+    ("extra_payload", lambda a: a.model_copy(update={"payload": {**a.payload, "to": "all"}})),
+]
+
+
+@pytest.mark.parametrize("decide", [approve, reject])
+@pytest.mark.parametrize(
+    "mutate",
+    [mutate for _, mutate in CONFLICTING_ENVELOPES],
+    ids=[name for name, _ in CONFLICTING_ENVELOPES],
+)
+def test_live_hold_conflicting_with_durable_envelope_fails_closed(
+    db_path: Path,
+    boot: Callable[[], ApplicationContainer],
+    decide: Callable[[ApplicationContainer, UUID], None],
+    mutate: Callable[[Action], Action],
+) -> None:
+    container = boot()
+    stored = planned(container)
+    live, action_id = held(container, stored)
+    forged = mutate(live)
+    container.pending_approval_registry.add(forged)
+    revision = current(container, stored).revision
+
+    with pytest.raises(PendingActionRecoveryError, match="conflicts with its durable"):
+        decide(container, action_id)
+
+    assert container.action_queue.list() == []
+    assert container.pending_approval_registry.list_pending() == [forged]
+    assert delegation_status(container, action_id) is StepDelegationStatus.AWAITING_APPROVAL
+    assert current(container, stored).revision == revision
+
+
+def test_conflict_over_http_is_a_500_without_side_effects(
+    db_path: Path,
+    boot: Callable[[], ApplicationContainer],
+    client_for: Callable[[ApplicationContainer], TestClient],
+) -> None:
+    container = boot()
+    live, action_id = held(container, planned(container))
+    container.pending_approval_registry.add(live.model_copy(update={"target": "elsewhere"}))
+    client = client_for(container)
+
+    assert client.post(f"/actions/{action_id}/approve").status_code == 500
+    assert client.post(f"/actions/{action_id}/reject").status_code == 500
+    assert container.action_queue.list() == []
+    assert delegation_status(container, action_id) is StepDelegationStatus.AWAITING_APPROVAL
+
+
+@pytest.mark.parametrize(
+    ("decide", "expected"),
+    [(approve, StepDelegationStatus.APPROVED), (reject, StepDelegationStatus.APPROVAL_REJECTED)],
+)
+def test_live_goal_plan_hold_matching_its_durable_owner_is_decided(
+    db_path: Path,
+    boot: Callable[[], ApplicationContainer],
+    decide: Callable[[ApplicationContainer, UUID], None],
+    expected: StepDelegationStatus,
+) -> None:
+    container = boot()
+    live, action_id = held(container, planned(container))
+    assert "permission_decision" in live.metadata
+
+    decide(container, action_id)
+
+    assert delegation_status(container, action_id) is expected
+    queued = [a.id for a in container.action_queue.list()]
+    assert queued == ([action_id] if expected is StepDelegationStatus.APPROVED else [])
+    assert container.pending_approval_registry.list_pending() == []
+
+
+def live_se_hold(container: ApplicationContainer) -> Action:
+    """An SE Action held in-process exactly as the SE ingress would create it."""
+    action = task_delegation_action(
+        TaskDelegationRequest(
+            objective="  Implement the slice  ",
+            target="velox-server",
+            executor_role=ExecutorRole.SOFTWARE_ENGINEERING,
+            capability=SOFTWARE_ENGINEERING_IMPLEMENT_CAPABILITY,
+        ),
+    )
+    container.pending_approval_registry.add(
+        action.model_copy(update={"metadata": {**action.metadata, "permission_decision": {}}}),
+    )
+    register_se_pending(container, action.id)
+    return action
+
+
+@pytest.mark.parametrize(
+    ("decide", "expected"),
+    [
+        (approve, SoftwareEngineeringApprovalStatus.APPROVED),
+        (reject, SoftwareEngineeringApprovalStatus.REJECTED),
+    ],
+)
+def test_live_se_hold_matching_its_durable_owner_is_decided(
+    db_path: Path,
+    boot: Callable[[], ApplicationContainer],
+    decide: Callable[[ApplicationContainer, UUID], None],
+    expected: SoftwareEngineeringApprovalStatus,
+) -> None:
+    container = boot()
+    action = live_se_hold(container)
+
+    decide(container, action.id)
+
+    assert se_state(container, action.id).approval_status is expected
+    assert container.goal_plan_repository.get_step_delegation_for_action(action.id) is None
+    queued = [a.id for a in container.action_queue.list()]
+    assert queued == ([action.id] if expected is SoftwareEngineeringApprovalStatus.APPROVED else [])
+
+
+@pytest.mark.parametrize("decide", [approve, reject])
+def test_live_only_hold_without_durable_owner_is_unchanged(
+    db_path: Path,
+    boot: Callable[[], ApplicationContainer],
+    decide: Callable[[ApplicationContainer, UUID], None],
+) -> None:
+    container = boot()
+    action = Action(type="calendar.update", target="event-1", executor_role="context_preparation")
+    container.pending_approval_registry.add(action)
+
+    decide(container, action.id)
+
+    queued = [a.id for a in container.action_queue.list()]
+    assert queued == ([action.id] if decide is approve else [])
+    assert container.pending_approval_registry.list_pending() == []
