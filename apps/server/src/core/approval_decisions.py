@@ -33,6 +33,49 @@ class ApprovalDecisionRecorder(Protocol):
         ...
 
 
+class PendingActionRecoveryError(RuntimeError):
+    """Durable pending-approval recovery failed closed (for example, two owners)."""
+
+
+class ListablePendingActionRecovery(PendingActionRecovery, Protocol):
+    """Recovery owner that can also list its durable awaiting-approval Actions."""
+
+    def list_pending(self) -> list[Action]:
+        ...
+
+
+class CompositePendingActionRecovery:
+    """Ask every recovery owner; an Action claimed by more than one fails closed."""
+
+    def __init__(self, recoveries: Sequence[ListablePendingActionRecovery]) -> None:
+        self._recoveries = tuple(recoveries)
+
+    def recover_pending(self, action_id: UUID) -> Action | None:
+        recovered = [
+            action
+            for recovery in self._recoveries
+            if (action := recovery.recover_pending(action_id)) is not None
+        ]
+        if len(recovered) > 1:
+            raise PendingActionRecoveryError(
+                f"action {action_id} is claimed by more than one recovery owner",
+            )
+        return recovered[0] if recovered else None
+
+    def list_pending(self) -> list[Action]:
+        actions: list[Action] = []
+        seen: set[UUID] = set()
+        for recovery in self._recoveries:
+            for action in recovery.list_pending():
+                if action.id in seen:
+                    raise PendingActionRecoveryError(
+                        f"action {action.id} is claimed by more than one recovery owner",
+                    )
+                seen.add(action.id)
+                actions.append(action)
+        return actions
+
+
 class CompositeApprovalDecisionRecorder:
     """Run several durable recorders in order; the first failure stops the decision.
 

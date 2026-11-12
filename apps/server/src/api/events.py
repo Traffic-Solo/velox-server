@@ -8,6 +8,7 @@ from apps.server.src.api.dependencies import require_api_token
 from apps.server.src.core.action_lifecycle import ActionLifecycleState, ActionStatus
 from apps.server.src.core.approval_decisions import (
     PendingActionNotFoundError,
+    PendingActionRecoveryError,
     approve_pending_action,
     reject_pending_action,
 )
@@ -54,17 +55,17 @@ def list_action_queue() -> list[dict[str, Any]]:
 
 @router.get("/actions/pending-approval")
 def list_pending_approval_actions() -> list[dict[str, Any]]:
-    """Return process-local plus restart-recovered SE approval work."""
+    """Return process-local plus restart-recovered SE and Goal/Plan approval work."""
     container = get_container()
     actions = list(container.pending_approval_registry.list_pending())
     known = {action.id for action in actions}
     try:
-        for action in container.software_engineering_action_recovery.list_pending():
+        for action in container.pending_action_recovery.list_pending():
             if action.id not in known:
                 actions.append(action)
                 known.add(action.id)
-    except SoftwareEngineeringRecoveryError:
-        logger.exception("software engineering pending approval recovery failed")
+    except (SoftwareEngineeringRecoveryError, PendingActionRecoveryError):
+        logger.exception("pending approval recovery failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="pending approval recovery failed",
@@ -98,7 +99,7 @@ def approve_action(action_id: UUID) -> dict[str, Any]:
             lifecycle_repository=container.action_lifecycle_repository,
             lifecycle_manager=container.action_lifecycle_manager,
             action_queue=container.action_queue,
-            pending_action_recovery=container.software_engineering_action_recovery,
+            pending_action_recovery=container.pending_action_recovery,
             approval_recorder=container.action_approval_recorder,
         )
     except PendingActionNotFoundError:
@@ -108,7 +109,11 @@ def approve_action(action_id: UUID) -> dict[str, Any]:
             status_code=status.HTTP_409_CONFLICT,
             detail=str(error),
         ) from error
-    except (SoftwareEngineeringRecoveryError, GoalPlanRepositoryError):
+    except (
+        SoftwareEngineeringRecoveryError,
+        GoalPlanRepositoryError,
+        PendingActionRecoveryError,
+    ):
         logger.exception("action approval persistence failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -137,7 +142,7 @@ def reject_action(
             lifecycle_repository=container.action_lifecycle_repository,
             lifecycle_manager=container.action_lifecycle_manager,
             reason=reason,
-            pending_action_recovery=container.software_engineering_action_recovery,
+            pending_action_recovery=container.pending_action_recovery,
             approval_recorder=container.action_approval_recorder,
         )
     except PendingActionNotFoundError:
@@ -147,7 +152,11 @@ def reject_action(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(error),
         ) from error
-    except (SoftwareEngineeringRecoveryError, GoalPlanRepositoryError):
+    except (
+        SoftwareEngineeringRecoveryError,
+        GoalPlanRepositoryError,
+        PendingActionRecoveryError,
+    ):
         logger.exception("action rejection persistence failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

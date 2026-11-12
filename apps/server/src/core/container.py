@@ -11,7 +11,10 @@ from apps.server.src.core.action_lifecycle_repository import (
 )
 from apps.server.src.core.action_queue import ActionQueue
 from apps.server.src.core.actions import ExecutorRole
-from apps.server.src.core.approval_decisions import CompositeApprovalDecisionRecorder
+from apps.server.src.core.approval_decisions import (
+    CompositeApprovalDecisionRecorder,
+    CompositePendingActionRecovery,
+)
 from apps.server.src.core.approvals import (
     InMemoryPendingApprovalRegistry,
     PendingApprovalRegistry,
@@ -34,6 +37,10 @@ from apps.server.src.core.events.context import ContextResolver
 from apps.server.src.core.goal_plan_delegation import (
     GoalPlanApprovalRecorder,
     GoalPlanDelegationService,
+)
+from apps.server.src.core.goal_plan_recovery import (
+    GoalPlanActionRecovery,
+    GoalPlanHandoffReconciliation,
 )
 from apps.server.src.core.goal_plan_repository import (
     GoalPlanRepository,
@@ -211,6 +218,15 @@ class ApplicationContainer:
                 GoalPlanApprovalRecorder(self.goal_plan_repository),
                 self.software_engineering_action_recovery,
             ),
+        )
+        self.goal_plan_action_recovery = GoalPlanActionRecovery(self.goal_plan_repository)
+        self.pending_action_recovery = CompositePendingActionRecovery(
+            (self.software_engineering_action_recovery, self.goal_plan_action_recovery),
+        )
+        self.goal_plan_handoff_reconciliation = GoalPlanHandoffReconciliation(
+            repository=self.goal_plan_repository,
+            action_queue=self.action_queue,
+            pending_approval_registry=self.pending_approval_registry,
         )
         self.calendar_event_list_orchestrator = CalendarEventListOrchestrator(
             self.calendar_worker_executor

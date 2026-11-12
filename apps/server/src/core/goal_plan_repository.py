@@ -380,6 +380,10 @@ class GoalPlanRepository(Protocol):
     def get_step_delegation_for_action(self, action_id: UUID) -> StepDelegation | None:
         ...
 
+    def list_step_delegations(self) -> tuple[StepDelegation, ...]:
+        """Every durable step delegation, in creation order (read-only)."""
+        ...
+
     def delegate_step(
         self,
         goal_id: UUID,
@@ -538,6 +542,10 @@ class InMemoryGoalPlanRepository:
         with self._lock:
             key = self._delegation_keys.get(action_id)
             return self._delegations[key] if key is not None else None
+
+    def list_step_delegations(self) -> tuple[StepDelegation, ...]:
+        with self._lock:
+            return tuple(self._delegations.values())
 
     def delegate_step(
         self,
@@ -860,6 +868,16 @@ class SqliteGoalPlanRepository:
                 (str(action_id),),
             ).fetchone()
         return _delegation_from_row(row) if row is not None else None
+
+    def list_step_delegations(self) -> tuple[StepDelegation, ...]:
+        with self._transaction(
+            write=False,
+            failure="step delegations could not be read",
+        ) as connection:
+            rows = connection.execute(
+                "SELECT * FROM goal_plan_step_delegations ORDER BY rowid",
+            ).fetchall()
+        return tuple(_delegation_from_row(row) for row in rows)
 
     def delegate_step(
         self,

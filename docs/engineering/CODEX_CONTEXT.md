@@ -77,6 +77,26 @@ Slice 3 adds permission-gated step delegation (`core/goal_plan_delegation.py`):
   repository; otherwise the container uses the in-memory one. No new HTTP
   endpoint, planner, worker or permission-engine change.
 
+Slice 4 adds restart-safe handoff recovery (`core/goal_plan_recovery.py`):
+- `GoalPlanActionRecovery` is a `PendingActionRecovery` owner for plan step
+  Actions. After a restart it rebuilds only `awaiting_approval` handoffs from
+  the durable delegation and stored step (original Action UUID, Role,
+  capability, objective, target and stored account context) through the shared
+  `task_delegation_action` envelope, marked `durable_recovery.pending`. It never
+  queues or executes; approve/reject still go through the existing entry
+  points, the durable compare-and-set (`awaiting_approval` only) and the
+  Goal/version/step/dependency re-validation, so competing approvals queue once.
+- `CompositePendingActionRecovery` (SE first, Goal/Plan second) backs
+  `/actions/pending-approval`, `/approve` and `/reject`; an Action claimed by
+  two owners, or any unreadable/dangling durable record, fails closed
+  (`PendingActionRecoveryError`, HTTP 500) without queueing.
+- `GoalPlanHandoffReconciliation.classify()` is a read-only report:
+  `recoverable_approval`, `stale_approval` (approval would be refused),
+  `execution_uncertain` (`queued`/`approved` with the step still
+  `in_progress` and no durable execution evidence), `resolved`,
+  `not_executable` (`denied`/`route_rejected`/`approval_rejected`) and
+  `inconsistent`. Nothing is republished, retried or finalized automatically.
+
 Sprint 5 - Guarded Software Engineering dogfooding (closed). The operator CLI
 and its hardening are merged. PR [#42](https://github.com/Traffic-Solo/velox-server/pull/42)
 rejects non-finite CLI timeouts before HTTP. PR
@@ -717,6 +737,7 @@ After every implementation slice, update this file in the same commit if the imp
 - Software Engineering pending objective text is plaintext in the local SQLite database until rejection or terminal execution scrubs it.
 - Software Engineering has no worker heartbeat/process-liveness evidence after `execution_started_at`, no durable non-SE queue/approval layer, and no multi-node claim coordination.
 - Goal/Plan: step progress cannot be carried into a new Plan version (new versions start all-pending); there is no transition history/audit log, no retry/attempt identity, and Goal objectives are plaintext in SQLite. One plan-level revision serializes all step transitions of a version.
+- Goal/Plan recovery: only approval holds are recoverable; `execution_uncertain` handoffs need an operator to finalize the step (no execution evidence exists to decide automatically), recovered Actions lack the original `permission_decision` metadata (re-approval is the authority), and there is no HTTP surface for the reconciliation report.
 - Goal/Plan delegation: publication after the durable commit is not atomic with it, and the Action queue and pending-approval registry stay process-local, so a crash between commit and publication, or a restart after a recorded `queued`/`approved` handoff, leaves the step `in_progress` (or `pending` with an unapprovable hold) with no Action — work is lost, never duplicated; finalize it explicitly. Delivery is at most once, not exactly once, and a held plan Action cannot be recovered for approval after restart (cancel the step or replan). There is no execution-evidence feedback from `WorkerRuntime` into step status, no HTTP surface for delegation, and one delegation per step per plan version (retries after denial/rejection need a new Plan version). Handoff runs while the SQLite write lock is held.
 
 ## Known Limitations

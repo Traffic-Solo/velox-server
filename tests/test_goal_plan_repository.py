@@ -686,6 +686,7 @@ def test_repository_role_exposes_no_raw_status_replacement() -> None:
         "transition_step",
         "get_step_delegation",
         "get_step_delegation_for_action",
+        "list_step_delegations",
         "delegate_step",
         "resolve_step_approval",
     }

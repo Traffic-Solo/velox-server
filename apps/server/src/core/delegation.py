@@ -133,21 +133,31 @@ class ActionTaskDelegator:
 
     @staticmethod
     def _action_for(request: TaskDelegationRequest) -> Action:
-        payload: dict[str, object] = {
-            "capability": request.capability,
-            "objective": request.objective,
-        }
-        if request.account_context is not None:
-            payload["account_context"] = request.account_context.as_metadata()
-        return Action(
-            type=request.capability,
-            target=request.target,
-            executor_role=request.executor_role,
-            payload=payload,
-            metadata={
-                "task_delegation": {
-                    "requested_role": request.executor_role.value,
-                    "requested_capability": request.capability,
-                },
+        return task_delegation_action(request)
+
+
+def task_delegation_action(
+    request: TaskDelegationRequest,
+    *,
+    action_id: UUID | None = None,
+) -> Action:
+    """The one Action envelope for a delegation; recovery passes the original id."""
+    payload: dict[str, object] = {
+        "capability": request.capability,
+        "objective": request.objective,
+    }
+    if request.account_context is not None:
+        payload["account_context"] = request.account_context.as_metadata()
+    action = Action(
+        type=request.capability,
+        target=request.target,
+        executor_role=request.executor_role,
+        payload=payload,
+        metadata={
+            "task_delegation": {
+                "requested_role": request.executor_role.value,
+                "requested_capability": request.capability,
             },
-        )
+        },
+    )
+    return action if action_id is None else action.model_copy(update={"id": action_id})
