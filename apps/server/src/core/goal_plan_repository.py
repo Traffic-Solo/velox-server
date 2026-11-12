@@ -756,6 +756,13 @@ class InMemoryGoalPlanRepository:
             existing = self._executions.get(execution_id)
             if existing is not None:
                 return _require_same_start(existing, candidate)
+            versions = self._plans[delegation.goal_id]
+            _require_admissible(
+                self._goals[delegation.goal_id].goal,
+                len(versions),
+                versions[-1].plan,
+                delegation,
+            )
             self._executions[execution_id] = candidate
             return candidate
 
@@ -1180,6 +1187,12 @@ class SqliteGoalPlanRepository:
             existing = _load_execution(connection, execution_id)
             if existing is not None:
                 return _require_same_start(existing, candidate)
+            _require_admissible(
+                _require_goal(connection, delegation.goal_id),
+                _latest_version(connection, delegation.goal_id) or delegation.version,
+                stored.plan,
+                delegation,
+            )
             connection.execute(
                 """
                 INSERT INTO goal_plan_step_executions (
@@ -1703,6 +1716,26 @@ def _started_execution(
         capability=step.capability,
         started_at=started_at,
     )
+
+
+def _require_admissible(
+    goal: Goal,
+    latest_version: int,
+    plan: Plan,
+    delegation: StepDelegation,
+) -> None:
+    """The durable start claim re-checks lifecycle state inside its own write."""
+    if goal.status is not GoalStatus.ACTIVE:
+        raise GoalPlanConflictError(f"goal {goal.id} is {goal.status}; execution not admitted")
+    if latest_version != delegation.version:
+        raise GoalPlanConflictError(
+            f"plan version {delegation.version} is superseded; execution not admitted",
+        )
+    step = plan.step(delegation.step_id) if plan.version == delegation.version else None
+    if step is None or step.status is not PlanStepStatus.IN_PROGRESS:
+        raise GoalPlanConflictError(
+            f"plan step {delegation.step_id} is not in progress; execution not admitted",
+        )
 
 
 def _require_same_start(existing: StepExecution, candidate: StepExecution) -> StepExecution:

@@ -180,6 +180,25 @@ class InMemoryWorkerExecutionObserver:
         return list(self._observations)
 
 
+@dataclass(frozen=True)
+class WorkerAdmission:
+    """Whether a dequeued, approved Action may start executing now."""
+
+    admitted: bool
+    reason: str | None = None
+
+
+class WorkerAdmissionGate(Protocol):
+    """Trusted pre-execution check run before ``executing``, observation or the worker.
+
+    It must answer for every Action (admitting unrelated ones) and refuse when it
+    cannot decide. A refusal rejects the Action; it is never retried.
+    """
+
+    def admit(self, action: Action) -> WorkerAdmission:
+        ...
+
+
 class WorkerRetryPolicy(Protocol):
     """Trusted veto over the runtime's automatic transient retry of one Action.
 
@@ -201,6 +220,7 @@ class WorkerProcessingResult:
     execution_reason: str | None
     processed: bool
     external_execution_performed: bool
+    admission_rejected: bool = False
 
 
 @dataclass(frozen=True)
@@ -226,6 +246,7 @@ class WorkerRuntime:
         lifecycle_repository: ActionLifecycleRepository | None = None,
         max_transient_retries: int = 3,
         retry_policy: WorkerRetryPolicy | None = None,
+        admission_gate: WorkerAdmissionGate | None = None,
     ) -> None:
         self._action_queue = action_queue
         self._action_lifecycle_manager = action_lifecycle_manager
@@ -240,6 +261,7 @@ class WorkerRuntime:
         )
         self._max_transient_retries = max_transient_retries
         self._retry_policy = retry_policy
+        self._admission_gate = admission_gate
 
     def pending_action_count(self) -> int:
         """Return the number of actions currently waiting in the queue."""
@@ -325,6 +347,26 @@ class WorkerRuntime:
                 ),
                 processed=False,
                 external_execution_performed=False,
+            )
+
+        admission = self._admission_for(action)
+        if not admission.admitted:
+            reason = f"pre-execution admission rejected: {admission.reason or 'unspecified'}"
+            lifecycle_state = self._action_lifecycle_manager.transition(
+                lifecycle_state,
+                ActionStatus.REJECTED,
+                reason=reason,
+            )
+            self._lifecycle_repository.set(action.id, lifecycle_state)
+            logger.warning("action %s (%s) not executed: %s", action.id, action.type, reason)
+            return WorkerProcessingResult(
+                action=action,
+                lifecycle_state=lifecycle_state,
+                execution_status=None,
+                execution_reason=reason,
+                processed=False,
+                external_execution_performed=False,
+                admission_rejected=True,
             )
 
         lifecycle_state = self._action_lifecycle_manager.transition(
@@ -523,6 +565,15 @@ class WorkerRuntime:
             external_execution_performed=external_execution_performed,
         )
 
+    def _admission_for(self, action: Action) -> WorkerAdmission:
+        if self._admission_gate is None:
+            return WorkerAdmission(admitted=True)
+        try:
+            return self._admission_gate.admit(action)
+        except Exception:
+            logger.exception("admission gate raised for action %s; refusing", action.id)
+            return WorkerAdmission(admitted=False, reason="admission_unavailable")
+
     def _retry_withheld(self, action: Action) -> bool:
         return self._retry_policy is not None and not self._retry_policy.allows_automatic_retry(
             action,
@@ -572,7 +623,7 @@ class WorkerRuntimeInvocationService:
         for _ in range(max_actions):
             result = self._worker_runtime.process_next()
             results.append(result)
-            if not result.processed:
+            if not result.processed and not result.admission_rejected:
                 break
 
         processed_count = sum(1 for result in results if result.processed)

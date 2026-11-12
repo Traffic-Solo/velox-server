@@ -34,6 +34,7 @@ from apps.server.src.core.events import (
 )
 from apps.server.src.core.events.classifier import EventClassifier
 from apps.server.src.core.events.context import ContextResolver
+from apps.server.src.core.goal_plan_admission import GoalPlanAdmissionGate
 from apps.server.src.core.goal_plan_delegation import (
     GoalPlanApprovalRecorder,
     GoalPlanDelegationService,
@@ -276,6 +277,7 @@ class ApplicationContainer:
             lifecycle_repository=self.action_lifecycle_repository,
             max_transient_retries=settings.max_transient_retries,
             retry_policy=GoalPlanRetryPolicy(self.goal_plan_repository),
+            admission_gate=GoalPlanAdmissionGate(self.goal_plan_repository),
         )
         self.worker_runtime_invocation = WorkerRuntimeInvocationService(
             worker_runtime=self.worker_runtime,
