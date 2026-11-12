@@ -33,6 +33,49 @@ class ApprovalDecisionRecorder(Protocol):
         ...
 
 
+class PendingActionRecoveryError(RuntimeError):
+    """Durable pending-approval recovery failed closed (for example, two owners)."""
+
+
+class ListablePendingActionRecovery(PendingActionRecovery, Protocol):
+    """Recovery owner that can also list its durable awaiting-approval Actions."""
+
+    def list_pending(self) -> list[Action]:
+        ...
+
+
+class CompositePendingActionRecovery:
+    """Ask every recovery owner; an Action claimed by more than one fails closed."""
+
+    def __init__(self, recoveries: Sequence[ListablePendingActionRecovery]) -> None:
+        self._recoveries = tuple(recoveries)
+
+    def recover_pending(self, action_id: UUID) -> Action | None:
+        recovered = [
+            action
+            for recovery in self._recoveries
+            if (action := recovery.recover_pending(action_id)) is not None
+        ]
+        if len(recovered) > 1:
+            raise PendingActionRecoveryError(
+                f"action {action_id} is claimed by more than one recovery owner",
+            )
+        return recovered[0] if recovered else None
+
+    def list_pending(self) -> list[Action]:
+        actions: list[Action] = []
+        seen: set[UUID] = set()
+        for recovery in self._recoveries:
+            for action in recovery.list_pending():
+                if action.id in seen:
+                    raise PendingActionRecoveryError(
+                        f"action {action.id} is claimed by more than one recovery owner",
+                    )
+                seen.add(action.id)
+                actions.append(action)
+        return actions
+
+
 class CompositeApprovalDecisionRecorder:
     """Run several durable recorders in order; the first failure stops the decision.
 
@@ -52,15 +95,52 @@ class CompositeApprovalDecisionRecorder:
             recorder.record_rejected(action)
 
 
+def _canonical_envelope(action: Action) -> tuple[object, ...]:
+    """Identity that live and durable copies must share; metadata may differ.
+
+    Permission-evaluation and recovery markers live in metadata and are expected
+    to differ. Objective text is compared without surrounding whitespace because
+    durable owners store it stripped.
+    """
+    payload = dict(action.payload)
+    objective = payload.get("objective")
+    if isinstance(objective, str):
+        payload["objective"] = objective.strip()
+    role = action.executor_role
+    return (
+        action.id,
+        str(role) if role is not None else None,
+        action.type,
+        action.target,
+        payload,
+    )
+
+
 def _resolve_pending_action(
     action_id: UUID,
     *,
     pending_approval_registry: PendingApprovalRegistry,
     pending_action_recovery: PendingActionRecovery | None,
 ) -> Action:
+    """Return the held Action, validated against its durable owner when one exists.
+
+    The durable owner is always consulted, even for a live hold, so ownership
+    collisions and live/durable envelope conflicts fail closed before any durable
+    decision is recorded or anything is queued. Live-only Actions without a
+    durable owner are returned unchanged.
+    """
     action = pending_approval_registry.get(action_id)
-    if action is None and pending_action_recovery is not None:
-        action = pending_action_recovery.recover_pending(action_id)
+    durable = (
+        pending_action_recovery.recover_pending(action_id)
+        if pending_action_recovery is not None
+        else None
+    )
+    if action is None:
+        action = durable
+    elif durable is not None and _canonical_envelope(action) != _canonical_envelope(durable):
+        raise PendingActionRecoveryError(
+            f"held action {action_id} conflicts with its durable recovery owner",
+        )
     if action is None:
         raise PendingActionNotFoundError("action is not awaiting approval")
     return action
